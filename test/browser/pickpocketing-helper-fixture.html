@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Pickpocket helper responsive fixture</title>
+    <style>
+        * { box-sizing: border-box; }
+        html { background: #101214; color-scheme: dark; }
+        body { margin: 0; background: #101214; color: #f1f3f5; font: 14px/1.4 Arial, sans-serif; }
+        main { width: min(1180px, 100%); margin: 0 auto; padding: 16px; }
+        .fixture-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .fixture-toolbar h1 { margin: 0; font-size: 20px; }
+        .skill { min-height: 36px; padding: 7px 12px; border: 1px solid #464c54; border-radius: 4px; background: #24272b; color: inherit; }
+        #target-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+        .target-card { min-width: 0; min-height: 92px; padding: 12px; border: 1px solid #34383e; border-radius: 6px; background: #1b1d20; }
+        .target-body { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 10px; }
+        .target-body img { width: 52px; height: 52px; border-radius: 50%; background: #34383e; }
+        .titleAndProps___fixture > div:first-child { font-size: 16px; font-weight: 700; }
+        .fixture-note { margin-top: 3px; color: #aeb4bb; font-size: 12px; }
+        @media (max-width: 760px) {
+            main { padding: 8px; }
+            #target-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .target-card { min-height: 104px; padding: 9px; }
+            .target-body { grid-template-columns: 42px minmax(0, 1fr); gap: 7px; }
+            .target-body img { width: 42px; height: 42px; }
+        }
+        @media (max-width: 360px) { #target-grid { grid-template-columns: 1fr; } }
+        html.pp-virtual-fixture #target-grid {
+            position: relative;
+            display: block;
+            height: 600px;
+        }
+        html.pp-virtual-fixture [class*="currentCrime___"] { height: 760px; }
+        html.pp-virtual-fixture [class*="crimeSlider___"] { padding-bottom: 500px; }
+        html.pp-virtual-fixture #target-grid > .target-card {
+            position: absolute;
+            inset: 0 0 auto;
+            width: 100%;
+            height: 92px;
+            transform: translateY(var(--virtual-y));
+        }
+    </style>
+</head>
+<body>
+<main>
+    <div class="fixture-toolbar">
+        <h1>Pickpocketing</h1>
+        <button class="skill" aria-label="Skill: 70">Skill 70</button>
+    </div>
+    <div class="crimeSlider___fixture">
+    <section class="currentCrime___fixture">
+    <div id="target-grid">
+        <article class="target-card" style="--virtual-y: 0px"><div class="target-body"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==#/crimes/faces/101.webp" alt=""><div class="titleAndProps___fixture"><div>Drunk man</div><div class="fixture-note">Street target</div></div></div></article>
+        <article class="target-card" style="--virtual-y: 100px"><div class="target-body"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==#/crimes/faces/102.webp" alt=""><div class="titleAndProps___fixture"><div>Jogger</div><div class="fixture-note">Street target</div></div></div></article>
+        <article class="target-card" style="--virtual-y: 200px"><div class="target-body"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==#/crimes/faces/103.webp" alt=""><div class="titleAndProps___fixture"><div>Sex worker</div><div class="fixture-note">Street target</div></div></div></article>
+        <article class="target-card" style="--virtual-y: 300px"><div class="target-body"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==#/crimes/faces/104.webp" alt=""><div class="titleAndProps___fixture"><div>Mobster</div><div class="fixture-note">Street target</div></div></div></article>
+        <article class="target-card" style="--virtual-y: 400px"><div class="target-body"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==#/crimes/faces/105.webp" alt=""><div class="titleAndProps___fixture"><div>Police officer</div><div class="fixture-note">Street target</div></div></div></article>
+        <article class="target-card" style="--virtual-y: 500px"><div class="target-body"><img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==#/crimes/faces/101.webp" alt=""><div class="titleAndProps___fixture"><div>Young woman</div><div class="fixture-note">Street target</div></div></div></article>
+    </div>
+    </section>
+    </div>
+</main>
+<script>
+    if (new URLSearchParams(location.search).get('virtual') === '1') {
+        document.documentElement.classList.add('pp-virtual-fixture');
+    }
+    window.fixtureFetchCalls = 0;
+    window.fetch = async function fixtureFetch(input) {
+        window.fixtureFetchCalls += 1;
+        const url = typeof input === "string" ? input : input?.url || "";
+        if (url.includes("step=attemptCrime")) {
+            return new Response(JSON.stringify({ result: { outcome: "Success" } }), { headers: { "content-type": "application/json" } });
+        }
+        return new Response(JSON.stringify({
+            DB: { crimesByType: [
+                { iconClass: "101", crimeInfo: { status: { icon: "stumbling", title: "Stumbling" }, muscular: false } },
+                { iconClass: "102", crimeInfo: { status: { icon: "running", title: "Running" }, muscular: true } },
+                { iconClass: "103", crimeInfo: { status: { icon: "soliciting", title: "Soliciting" }, muscular: false } },
+                { iconClass: "104", crimeInfo: { status: { icon: "phone", title: "On phone" }, muscular: true } },
+                { iconClass: "105", crimeInfo: { status: { icon: "walking", title: "Walking" }, muscular: true } },
+                { iconClass: "101", crimeInfo: { status: { icon: "music", title: "Listening to music" }, muscular: false } }
+            ] }
+        }), { headers: { "content-type": "application/json" } });
+    };
+</script>
+</body>
+</html>

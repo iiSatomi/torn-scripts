@@ -1,0 +1,21 @@
+# Local-only scratch copy from initial staging
+tests/workspace/
+# Dependencies and generated data
+**/node_modules/
+**/.git/
+**/.claude/
+**/settings.local.json
+**/.env
+**/.env.*
+**/*.zip
+**/*.exe
+**/*.png
+**/*.jsonl
+**/shots/
+**/fixtures/
+**/*capture*
+**/*record*
+**/Cookies
+**/Local State
+
+legacy/oc-suite-v5/tests/torn_page_REAL_ui.html

@@ -1,0 +1,22 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const source=fs.readFileSync(path.resolve(__dirname,'../Torn_OC_Suite_Codex.user.js'),'utf8');
+function fn(name){const start=source.search(new RegExp('^  (?:async )?function '+name+'\\(','m'));assert.ok(start>=0,name+' exists');return source.slice(start,source.indexOf('\n  }',start)+4);}
+const make=new Function(fn('buildCprCoverage')+'\nreturn buildCprCoverage;')();
+const roster=Object.fromEntries(Array.from({length:49},(_,i)=>[String(i+1),{id:i+1,name:'Member '+(i+1)}]));
+const ts=Object.fromEntries(Array.from({length:22},(_,i)=>[String(i+1),{'Bidding War':{'Bidder #1':70}}]));
+const archive={'23':{slots:{a:{ocName:'Bidding War',role:'Bidder',cpr:65,executedAt:100}}},'24':{slots:{a:{ocName:'Bidding War',role:'Bidder',cpr:99,executedAt:null}}}};
+const model=make(roster,{'1':{'bidding war':{bidder:80}}},ts,archive,{'25':{'bidding war':{bidder:{sum:120,count:2}}}});
+assert.equal(model.members.length,49,'Full current roster is retained');
+const records=model.byCrime['Bidding War'].bidder;
+assert.equal(records.length,24,'22 imported members plus two genuine history fallbacks');
+assert.equal(records.find(r=>r.uid==='1').source,'Live');
+assert.equal(records.find(r=>r.uid==='1').cpr,80);
+assert.equal(records.find(r=>r.uid==='23').source,'History');
+assert.equal(records.find(r=>r.uid==='25').cpr,60);
+assert.equal(records.some(r=>r.uid==='24'),false,'TS backfill is not an observed OC');
+assert.equal(make(roster,{}, {},archive,{}).byCrime['Bidding War'].bidder.length,1,'History works without TornStats');
+const edge=make(roster,{}, {'1':{'Bidding War':{bidder:0,invalid:null,bad:'NaN',tooHigh:101}}},{},{});
+assert.equal(edge.byCrime['Bidding War'].bidder[0].cpr,0,'Zero CPR remains valid');
+assert.deepEqual(Object.keys(edge.byCrime['Bidding War']),['bidder']);
+console.log('CPR coverage: 49-member roster, 22 imports, historical-only data, exact role normalization and source precedence passed.');
+module.exports={fn};

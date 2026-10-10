@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OC Suite — UI prototype</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   OC SUITE — UI PROTOTYPE
+   Standalone. Fake data. No Torn, no Tampermonkey. Open it in a browser.
+
+   WHY THIS FILE EXISTS
+   The real script has 1,038 inline style="..." declarations against 61 uses of
+   the shared component classes. That is the actual defect — not the file's age.
+   Every pane hand-rolls its own look, so a UI change means editing 29 renderers.
+
+   This builds the design system FIRST, with nothing else in the way. When it
+   looks right, porting is mechanical: the CSS variable names match the real
+   script's, and every component here is a function returning an HTML string —
+   the same shape the real renderers already use.
+
+   RULES THIS FILE HOLDS ITSELF TO (and the real script currently doesn't):
+   1. No inline styles for LAYOUT. Only for a value that carries meaning
+      (a CPR colour, a progress width).
+   2. Colour is a signal, never decoration. Green/amber/red mean status.
+      Everything else is greyscale + one accent.
+   3. Three type sizes. Not eight.
+   4. Every number that can be scanned down a column gets tabular figures.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+:root {
+  /* ── Surfaces. Three depths, not five: sunk < page < raised. ───────────── */
+  --ocm-bg:          #14161a;   /* the page */
+  --ocm-bg-card:     #1b1e24;   /* raised — cards, panels */
+  --ocm-bg-sunk:     #101216;   /* inset — table stripes, wells */
+  --ocm-bg-hover:    #22262e;
+
+  --ocm-border:      #2a2f38;
+  --ocm-border-soft: #22262d;
+
+  /* ── Text. Four steps, each with a job. ────────────────────────────────── */
+  --ocm-text:        #e8eaed;   /* the value you came to read */
+  --ocm-text-card:   #c3c8d0;   /* body */
+  --ocm-text-dim:    #9aa2ae;   /* secondary */
+  --ocm-text-muted:  #767e8b;   /* labels, chrome */
+  --ocm-text-faint:  #5d646f;   /* absent / disabled — never carries meaning */
+
+  /* ── ONE accent. If it's blue, it's interactive. ───────────────────────── */
+  --ocm-link:        #5b9fe0;
+  --ocm-link-soft:   #16202c;
+
+  /* ── Semantic. These three are the ONLY colours allowed to mean something. */
+  --ocm-good:        #5cba7d;
+  --ocm-warn:        #d9a441;
+  --ocm-crit:        #d96a6a;
+  --ocm-good-soft:   #142219;
+  --ocm-warn-soft:   #241d10;
+  --ocm-crit-soft:   #241314;
+
+  /* ── Spacing scale. Everything is a multiple. ──────────────────────────── */
+  --s1: 4px;  --s2: 8px;  --s3: 12px;  --s4: 16px;  --s5: 24px;  --s6: 32px;
+
+  --radius:    10px;
+  --radius-sm: 6px;
+
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.25);
+}
+
+/* ═══ BASE ═══════════════════════════════════════════════════════════════ */
+body {
+  margin: 0; padding: var(--s5);
+  background: #0c0d10;
+  font: 13px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--ocm-text-card);
+  font-variant-numeric: tabular-nums;
+}
+.wrap { max-width: 990px; margin: 0 auto; }   /* Torn's real content width */
+
+#ocm-root {
+  background: var(--ocm-bg);
+  border: 1px solid var(--ocm-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* ═══ HEADER ═════════════════════════════════════════════════════════════ */
+#ocm-header {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--ocm-border);
+  background: linear-gradient(180deg, #1a1d23, var(--ocm-bg));
+}
+#ocm-header h1 {
+  margin: 0; font-size: 15px; font-weight: 650; color: var(--ocm-text);
+  letter-spacing: -.01em;
+}
+.hdr-ver {
+  font-size: 10px; color: var(--ocm-text-muted);
+  background: var(--ocm-bg-sunk); border: 1px solid var(--ocm-border-soft);
+  padding: 1px 6px; border-radius: 4px;
+}
+.hdr-gap { flex: 1; }
+.hdr-time { font-size: 11px; color: var(--ocm-text-muted); }
+.btn {
+  background: var(--ocm-bg-card); border: 1px solid var(--ocm-border);
+  color: var(--ocm-text-dim); font: inherit; font-size: 11px;
+  padding: 5px 11px; border-radius: var(--radius-sm); cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.btn:hover { color: var(--ocm-text); border-color: #3a404a; background: var(--ocm-bg-hover); }
+.btn-primary { background: var(--ocm-link-soft); border-color: #2f4a68; color: var(--ocm-link); }
+.btn-primary:hover { background: #1b2a3a; color: #7fb8ee; }
+
+/* ═══ BODY GRID — rail + content ══════════════════════════════════════════ */
+#ocm-body {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: var(--s4);
+  padding: var(--s4);
+  align-items: start;
+}
+#ocm-body > *:not(.rail) { grid-column: 2; min-width: 0; }
+
+/* ═══ NAV RAIL ═══════════════════════════════════════════════════════════
+   52px collapsed. Hover/pin expands to 184px by OVERFLOWING the fixed grid
+   track — the content column never resizes, so no table reflows because the
+   mouse moved. That constraint is why this isn't a 290px sidebar: the suite
+   lives in Torn's ~990px column and .ocm-war-deep alone needs 830px.        */
+.rail {
+  grid-column: 1; grid-row: 1 / -1;
+  position: sticky; top: var(--s4);
+  display: flex; flex-direction: column; gap: 2px;
+  width: 52px; padding: var(--s1);
+  background: var(--ocm-bg-card);
+  border: 1px solid var(--ocm-border);
+  border-radius: var(--radius);
+  overflow: visible; z-index: 20;
+  transition: width .15s cubic-bezier(.4,0,.2,1), box-shadow .15s;
+}
+.rail:hover, .rail.pinned { width: 184px; box-shadow: var(--shadow); }
+
+.rail-item {
+  position: relative;
+  display: flex; align-items: center; gap: var(--s2);
+  height: 38px; padding: 0 9px;
+  border-radius: var(--radius-sm);
+  color: var(--ocm-text-muted); cursor: pointer;
+  font-size: 12px; font-weight: 550; white-space: nowrap; overflow: hidden;
+  transition: background .12s, color .12s;
+}
+.rail-item:hover { background: var(--ocm-bg-hover); color: var(--ocm-text-dim); }
+.rail-item.active { background: var(--ocm-link-soft); color: var(--ocm-text); }
+.rail-item.active::before {
+  content: ''; position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 2px; border-radius: 0 2px 2px 0; background: var(--ocm-link);
+}
+.rail-ico { flex: 0 0 22px; font-size: 15px; line-height: 1; text-align: center; }
+.rail-lbl { flex: 1; opacity: 0; transition: opacity .12s; }
+.rail:hover .rail-lbl, .rail.pinned .rail-lbl { opacity: 1; }
+
+/* Collapsed, the badge is a corner dot ON the icon — a count you can't see is
+   not a badge. Expanded, it moves to the row's right edge. */
+.rail-badge {
+  position: absolute; top: 4px; left: 24px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px; background: #343a45; color: var(--ocm-text-dim);
+  font-size: 9px; font-weight: 700; line-height: 16px; text-align: center;
+}
+.rail-badge.attn { background: var(--ocm-crit); color: #fff; }
+.rail:hover .rail-badge, .rail.pinned .rail-badge { position: static; margin-left: auto; }
+.rail-badge:empty { display: none; }
+
+.rail-pin {
+  display: flex; align-items: center; gap: var(--s2);
+  height: 34px; padding: 0 9px; margin-top: var(--s1);
+  border-top: 1px solid var(--ocm-border-soft);
+  color: var(--ocm-text-faint); cursor: pointer;
+  font-size: 11px; white-space: nowrap; overflow: hidden;
+}
+.rail-pin:hover { color: var(--ocm-link); }
+.rail.pinned .rail-pin { color: var(--ocm-warn); }
+
+/* ═══ SUB-TABS ═══════════════════════════════════════════════════════════ */
+.subtabs { display: flex; gap: var(--s1); flex-wrap: wrap; margin-bottom: var(--s4); }
+.subtab {
+  padding: 5px 11px; border-radius: var(--radius-sm);
+  border: 1px solid transparent; background: none;
+  color: var(--ocm-text-muted); font: inherit; font-size: 11px; font-weight: 550;
+  cursor: pointer; transition: color .12s, background .12s, border-color .12s;
+}
+.subtab:hover { color: var(--ocm-text-dim); background: var(--ocm-bg-card); }
+.subtab.active { color: var(--ocm-text); background: var(--ocm-link-soft); border-color: #2f4a68; }
+.subtab-badge {
+  display: inline-block; margin-left: 5px; padding: 0 5px;
+  border-radius: 7px; background: #343a45; color: var(--ocm-text-dim);
+  font-size: 9px; font-weight: 700;
+}
+.subtab-badge.attn { background: var(--ocm-crit); color: #fff; }
+.subtab-badge:empty { display: none; }
+
+/* ═══ CARD — the one container. Everything sits in one of these. ══════════ */
+.card {
+  background: var(--ocm-bg-card);
+  border: 1px solid var(--ocm-border);
+  border-radius: var(--radius);
+  padding: var(--s4);
+  margin-bottom: var(--s3);
+}
+.card.flush { padding: 0; overflow: hidden; }
+.card.attn { border-color: #4a2d2d; }
+.card.warn { border-color: #4a3d22; }
+
+.card-head {
+  display: flex; align-items: center; gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+.card-title {
+  font-size: 11px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--ocm-link);
+}
+.card.attn .card-title { color: var(--ocm-crit); }
+.card.warn .card-title { color: var(--ocm-warn); }
+.card-sub { margin-left: auto; font-size: 11px; color: var(--ocm-text-muted); font-weight: 400; }
+.card-n {
+  margin-left: auto; font-size: 18px; font-weight: 700;
+  color: var(--ocm-text); line-height: 1;
+}
+.card.attn .card-n { color: var(--ocm-crit); }
+.card.warn .card-n { color: var(--ocm-warn); }
+
+/* The explainer under a table. Every block says what it is before you read it. */
+.note {
+  font-size: 11px; line-height: 1.6; color: var(--ocm-text-muted);
+  margin: var(--s2) 0 0;
+}
+.note b { color: var(--ocm-text-dim); }
+.note:first-child { margin-top: 0; margin-bottom: var(--s3); }
+
+/* ═══ KPI TILE ═══════════════════════════════════════════════════════════ */
+.kpis {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: var(--s2); margin-bottom: var(--s3);
+}
+.kpi {
+  background: var(--ocm-bg-card); border: 1px solid var(--ocm-border);
+  border-radius: var(--radius); padding: var(--s3);
+}
+.kpi-l {
+  font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ocm-text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.kpi-v {
+  font-size: 21px; font-weight: 700; line-height: 1.15; margin-top: 3px;
+  color: var(--ocm-text); letter-spacing: -.02em;
+}
+.kpi-s { font-size: 10px; color: var(--ocm-text-muted); margin-top: 1px; }
+.kpi-v.good { color: var(--ocm-good); }
+.kpi-v.warn { color: var(--ocm-warn); }
+.kpi-v.crit { color: var(--ocm-crit); }
+.kpi-v.link { color: var(--ocm-link); }
+
+/* ═══ TABLE ══════════════════════════════════════════════════════════════ */
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--ocm-bg-card);
+  padding: var(--s2) var(--s2);
+  font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ocm-text-muted); text-align: left; white-space: nowrap;
+  border-bottom: 1px solid var(--ocm-border);
+}
+thead th.num { text-align: right; }
+thead th.sortable { cursor: pointer; user-select: none; }
+thead th.sortable:hover { color: var(--ocm-link); }
+thead th[aria-sort]::after { content: ' ▾'; color: var(--ocm-link); }
+thead th[aria-sort="asc"]::after { content: ' ▴'; }
+
+tbody td {
+  padding: 7px var(--s2);
+  border-bottom: 1px solid var(--ocm-border-soft);
+  color: var(--ocm-text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+tbody td.num { text-align: right; }
+tbody td.wrap { white-space: normal; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) td { background: rgba(255,255,255,.012); }
+tbody tr:hover td { background: var(--ocm-bg-hover); }
+tbody tr.clickable { cursor: pointer; }
+td.strong { color: var(--ocm-text); font-weight: 600; }
+a { color: var(--ocm-link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ═══ SEMANTIC TEXT ══════════════════════════════════════════════════════ */
+.good { color: var(--ocm-good); }
+.warn { color: var(--ocm-warn); }
+.crit { color: var(--ocm-crit); }
+.dim  { color: var(--ocm-text-muted); }
+.faint{ color: var(--ocm-text-faint); }
+.b    { font-weight: 700; }
+
+/* ═══ CHIP / PILL ════════════════════════════════════════════════════════ */
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; border-radius: 4px;
+  background: #2a2f38; color: var(--ocm-text-dim);
+  font-size: 10px; font-weight: 600; white-space: nowrap;
+}
+.chip.good { background: var(--ocm-good-soft); color: var(--ocm-good); }
+.chip.warn { background: var(--ocm-warn-soft); color: var(--ocm-warn); }
+.chip.crit { background: var(--ocm-crit-soft); color: var(--ocm-crit); }
+.chip.link { background: var(--ocm-link-soft); color: var(--ocm-link); }
+
+/* Filter chips are buttons, so they get a border to read as pressable. */
+.fchip {
+  padding: 4px 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--ocm-border); background: none;
+  color: var(--ocm-text-muted); font: inherit; font-size: 11px; cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.fchip:hover { color: var(--ocm-text-dim); border-color: #3a404a; }
+.fchip.active { color: var(--ocm-text); border-color: #2f4a68; background: var(--ocm-link-soft); }
+
+.seg { display: inline-flex; border: 1px solid var(--ocm-border); border-radius: var(--radius-sm); overflow: hidden; }
+.seg button {
+  padding: 5px 12px; border: none; border-right: 1px solid var(--ocm-border);
+  background: none; color: var(--ocm-text-muted); font: inherit; font-size: 11px; cursor: pointer;
+}
+.seg button:last-child { border-right: none; }
+.seg button:hover { color: var(--ocm-text-dim); }
+.seg button.active { background: var(--ocm-link-soft); color: var(--ocm-text); font-weight: 600; }
+
+.row { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.row-mb { margin-bottom: var(--s3); }
+.push { margin-left: auto; }
+
+/* ═══ AVATAR — monogram underneath, picture fades in over it ══════════════
+   A real avatar in this faction is a 3.3 MB animated GIF. The initials paint
+   instantly; the <img> only reveals once it has decoded. A failed or slow
+   image degrades to exactly the monogram — never to a hole in the layout.   */
+.av {
+  position: relative; flex: 0 0 auto;
+  width: 28px; height: 28px; border-radius: var(--radius-sm); overflow: hidden;
+}
+.av-mono {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; font-weight: 700; color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.45);
+}
+.av img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.av.lg { width: 60px; height: 60px; border-radius: var(--radius); }
+.av.lg .av-mono { font-size: 22px; }
+
+.namecell { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.namecell .n { overflow: hidden; text-overflow: ellipsis; }
+/* Table cells align on the BASELINE, and a flex container takes its baseline
+   from its first item — an avatar, which has no text baseline, contributes its
+   bottom edge. That dropped every rank number ~12px below its own row in v5.3.
+   Centring the cells is the fix. */
+table.has-avatars td, table.has-avatars th { vertical-align: middle; }
+td.rank { width: 30px; color: var(--ocm-text-faint); font-weight: 400; }
+td.rank.top { color: var(--ocm-warn); font-weight: 700; }
+
+/* ═══ LIST ROW — for card contents that aren't tabular ═══════════════════ */
+.lrow {
+  display: flex; align-items: center; gap: var(--s2);
+  padding: 6px 0; font-size: 12px;
+  border-bottom: 1px solid var(--ocm-border-soft);
+}
+.lrow:last-of-type { border-bottom: none; }
+.lrow .main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lrow .r { color: var(--ocm-text-muted); white-space: nowrap; font-size: 11px; }
+.lrow.clickable { cursor: pointer; margin: 0 calc(var(--s2) * -1); padding-left: var(--s2); padding-right: var(--s2); border-radius: var(--radius-sm); }
+.lrow.clickable:hover { background: var(--ocm-bg-hover); }
+
+.golink {
+  display: inline-block; margin-top: var(--s2);
+  background: none; border: none; padding: 0;
+  color: var(--ocm-link); font: inherit; font-size: 11px; font-weight: 600; cursor: pointer;
+}
+.golink:hover { text-decoration: underline; }
+
+/* ═══ PROGRESS + SPARK ═══════════════════════════════════════════════════ */
+.bar { height: 4px; background: var(--ocm-bg-sunk); border-radius: 2px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--ocm-link); border-radius: 2px; }
+.bar > span.good { background: var(--ocm-good); }
+.bar > span.warn { background: var(--ocm-warn); }
+
+.spark { display: inline-flex; gap: 2px; align-items: center; }
+.spark i {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--ocm-border); display: inline-block;
+}
+.spark i.s { background: var(--ocm-good); }
+.spark i.f { background: var(--ocm-crit); }
+.spark i.e { background: var(--ocm-text-faint); }
+
+/* Observed fact vs third-party estimate — provenance, at a glance. */
+.prov { display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-left: 5px; vertical-align: middle; }
+.prov.obs { background: var(--ocm-good); }
+.prov.est { box-shadow: inset 0 0 0 1px var(--ocm-text-muted); }
+
+/* ═══ OC CARD ════════════════════════════════════════════════════════════ */
+.ocgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--s3); align-items: start; }
+.oc {
+  position: relative;
+  background: var(--ocm-bg-card); border: 1px solid var(--ocm-border);
+  border-radius: var(--radius); padding: var(--s3) var(--s3) var(--s3) var(--s4);
+  overflow: hidden;
+}
+.oc::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--acc, #3a404a); }
+.oc[data-s="ready"]  { --acc: var(--ocm-good); }
+.oc[data-s="recruit"]{ --acc: var(--ocm-link); }
+.oc[data-s="warn"]   { --acc: var(--ocm-warn); }
+.oc[data-s="crit"]   { --acc: var(--ocm-crit); }
+.oc-head { display: flex; align-items: flex-start; gap: var(--s2); margin-bottom: var(--s2); }
+.oc-name { font-size: 14px; font-weight: 600; color: var(--ocm-text); letter-spacing: -.01em; }
+.oc-meta { display: flex; gap: 4px; margin-top: 4px; }
+.oc-time { margin-left: auto; text-align: right; }
+.oc-time b { display: block; font-size: 12px; font-weight: 700; color: var(--ocm-text-dim); }
+.oc-time span { font-size: 9px; color: var(--ocm-text-faint); }
+.oc-fill { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s2); }
+.oc-fill .bar { flex: 1; }
+.oc-fill span { font-size: 10px; color: var(--ocm-text-muted); white-space: nowrap; }
+
+.slot {
+  display: grid; grid-template-columns: 1fr 1.1fr auto 38px 42px;
+  align-items: center; gap: var(--s2);
+  padding: 6px 4px; font-size: 12px;
+  border-bottom: 1px solid var(--ocm-border-soft);
+}
+.slot-head {
+  display: grid; grid-template-columns: 1fr 1.1fr auto 38px 42px; gap: var(--s2);
+  padding: 4px; border-bottom: 1px solid var(--ocm-border);
+  font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ocm-text-muted);
+}
+.slot-head .r, .slot .r { text-align: right; }
+.slot:last-of-type { border-bottom: none; }
+.slot.risk { background: var(--ocm-warn-soft); border-radius: 3px; }
+.slot .role { color: var(--ocm-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .who { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.slot .who span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--ocm-good); }
+.dot.blocked { background: var(--ocm-crit); }
+.dot.open { background: #3a404a; }
+.oc-foot { display: flex; gap: var(--s1); flex-wrap: wrap; margin-top: var(--s2); padding-top: var(--s2); border-top: 1px solid var(--ocm-border-soft); }
+
+/* ═══ EMPTY STATE ════════════════════════════════════════════════════════ */
+.empty { padding: var(--s5); text-align: center; }
+.empty .ico { font-size: 26px; opacity: .5; }
+.empty .msg { margin-top: var(--s2); font-size: 13px; color: var(--ocm-text-dim); }
+.empty .sub { margin-top: var(--s1); font-size: 11px; color: var(--ocm-text-muted); }
+
+/* ═══ PROTOTYPE-ONLY CHROME (never ported) ═══════════════════════════════ */
+.proto-bar {
+  max-width: 990px; margin: 0 auto var(--s3);
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+  background: #191c22; border: 1px dashed #3a404a; border-radius: var(--radius-sm);
+  font-size: 11px; color: var(--ocm-text-muted);
+}
+.proto-bar b { color: var(--ocm-warn); }
+
+@media (max-width: 700px) {
+  body { padding: var(--s2); }
+  #ocm-body { grid-template-columns: minmax(0,1fr); }
+  #ocm-body > *:not(.rail) { grid-column: 1; }
+  .rail { grid-column: 1; grid-row: auto; position: static; flex-direction: row; flex-wrap: wrap; width: auto; }
+  .rail:hover { width: auto; box-shadow: none; }
+  .rail-lbl { opacity: 1; }
+  .rail-badge { position: static; margin-left: 5px; }
+  .rail-pin { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="proto-bar">
+  <b>PROTOTYPE</b>
+  <span>Fake data · standalone · nothing here touches the real script</span>
+  <span class="push"></span>
+  <button class="btn" onclick="document.querySelector('.rail').classList.toggle('pinned')">Toggle rail pin</button>
+</div>
+
+<div class="wrap">
+  <div id="ocm-root">
+    <div id="ocm-header">
+      <h1>⚔ OC Suite</h1>
+      <span class="hdr-ver">v6.0-proto</span>
+      <span class="hdr-time">Updated 4:29:59 AM</span>
+      <span class="hdr-gap"></span>
+      <button class="btn">? Legend</button>
+      <button class="btn">⚙ Config</button>
+      <button class="btn btn-primary">↻ Refresh</button>
+    </div>
+
+    <div id="ocm-body">
+      <nav class="rail" id="rail"></nav>
+      <main id="pane"></main>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOCK DATA
+   Shapes deliberately mirror what the real renderers already receive, so
+   porting is a data-source swap and not a rewrite. Numbers are taken from the
+   user's real screenshot so the layout is stress-tested against real density
+   (67 open slots, 84 unpaid OCs, $2.92b) rather than tidy invented values.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const DATA = {
+  faction: 'Frostbite',
+  openSlots: 67,
+  freeMembers: 3,
+
+  openByOc: [
+    { name: 'Break the Bank',     open: 5, diff: 8 },
+    { name: 'Dish It Out',        open: 5, diff: 6 },
+    { name: 'Stacking the Deck',  open: 4, diff: 7 },
+  ],
+
+  risk: [
+    { name: 'MrCallahan', uid: '1', role: 'Muscle',   cpr: 66, weight: 32, oc: 'Break the Bank' },
+    { name: 'schtefanos', uid: '2', role: 'Imitator', cpr: 62, weight: 43, oc: 'Clinical Precision' },
+    { name: 'iSatomi',    uid: '3', role: 'Techie',   cpr: 67, weight: 34, oc: 'No Reserve' },
+    { name: 'Tunabox',    uid: '4', role: 'Hacker',   cpr: 58, weight: 30, oc: 'Counter Offer' },
+    { name: 'juga',       uid: '5', role: 'Sniper',   cpr: 64, weight: 46, oc: 'Stage Fright' },
+  ],
+
+  loans: [{ name: 'Blight', uid: '6', item: 'Clinical Precision', oc: 'Clinical Precision' }],
+
+  unpaid: { count: 84, cash: 2_920_000_000 },
+
+  idle: [
+    { name: 'Ravager',  uid: '7', days: 23 },
+    { name: 'Nyx',      uid: '8', days: 11 },
+    { name: 'Coldsnap', uid: '9', days: 8 },
+  ],
+
+  war: { opponent: 'Bravo Company', us: 0, them: 0 },
+
+  roster: [
+    { uid:'3',  name:'iSatomi',    runs:412, rate:.94, cpr:88, best:9, role:'Techie',   spark:'ssssfssss s', trend:.06, last:'2h' },
+    { uid:'2',  name:'schtefanos', runs:388, rate:.91, cpr:62, best:8, role:'Imitator', spark:'sssfsssss s', trend:-.04, last:'5h' },
+    { uid:'1',  name:'MrCallahan', runs:301, rate:.88, cpr:66, best:8, role:'Muscle',   spark:'ssfssfsss s', trend:.02, last:'1h' },
+    { uid:'5',  name:'juga',       runs:277, rate:.86, cpr:64, best:7, role:'Sniper',   spark:'sfssssfss s', trend:0,   last:'9h' },
+    { uid:'4',  name:'Tunabox',    runs:198, rate:.72, cpr:58, best:6, role:'Hacker',   spark:'sffsfssff f', trend:-.12, last:'1d' },
+    { uid:'6',  name:'Blight',     runs:156, rate:.90, cpr:81, best:7, role:'Cleaner',  spark:'sssssfsss s', trend:.08, last:'3h' },
+    { uid:'7',  name:'Ravager',    runs:88,  rate:.83, cpr:74, best:6, role:'Robber',   spark:'ssfsssfss s', trend:null, last:'23d', ex:false },
+    { uid:'8',  name:'Nyx',        runs:64,  rate:.77, cpr:69, best:5, role:'Lookout',  spark:'sfsfsssss s', trend:null, last:'11d' },
+    { uid:'9',  name:'Coldsnap',   runs:41,  rate:.68, cpr:null, best:4, role:'Driver', spark:'ffsfssf', trend:null, last:'8d' },
+    { uid:'10', name:'Halfpint',   runs:12,  rate:.58, cpr:null, best:3, role:'Bomber', spark:'fsff', trend:null, last:'2d', ex:true },
+  ],
+
+  crimes: [
+    { name:'Break the Bank',    runs:96, rate:.89, cpr:79, respect:412, money:313_090_000, weak:{role:'Muscle 3', pct:24} },
+    { name:'Clinical Precision',runs:71, rate:.94, cpr:84, respect:298, money:187_400_000, weak:null },
+    { name:'Counter Offer',     runs:64, rate:.81, cpr:71, respect:154, money: 48_300_000, weak:{role:'Hacker', pct:22} },
+    { name:'Stacking the Deck', runs:52, rate:.92, cpr:86, respect:266, money:142_800_000, weak:null },
+    { name:'Stage Fright',      runs:38, rate:.74, cpr:68, respect:121, money: 31_200_000, weak:{role:'Sniper', pct:31} },
+  ],
+
+  activeOcs: [
+    { name:'Break the Bank', diff:8, status:'crit', badge:'PLANNING', time:'2d 04h', sub:'21 Jul 18:00 TCT', filled:4, total:6,
+      slots:[
+        {role:'Muscle 3',  who:'MrCallahan', cpr:66, w:32, risk:true,  item:'ok'},
+        {role:'Thief 2',   who:'iSatomi',    cpr:91, w:29, risk:false, item:'ok'},
+        {role:'Muscle 1',  who:'juga',       cpr:84, w:14, risk:false, item:'missing'},
+        {role:'Robber',    who:'Blight',     cpr:88, w:13, risk:false, item:'ok'},
+        {role:'Muscle 2',  who:null,         cpr:null,w:10, risk:false, item:'open'},
+        {role:'Thief 1',   who:null,         cpr:null,w:3,  risk:false, item:'open'},
+      ],
+      issues:[{c:'crit',t:'2 open slots'},{c:'crit',t:'juga needs Sniper Rifle'},{c:'warn',t:'CPR below 70%'}] },
+    { name:'Clinical Precision', diff:7, status:'ready', badge:'READY', time:'Ready', sub:'no timer', filled:4, total:4,
+      slots:[
+        {role:'Imitator',   who:'schtefanos', cpr:62, w:43, risk:true,  item:'ok'},
+        {role:'Cleaner',    who:'Blight',     cpr:93, w:22, risk:false, item:'ok'},
+        {role:'Cat Burglar',who:'Nyx',        cpr:87, w:19, risk:false, item:'ok'},
+        {role:'Assassin',   who:'juga',       cpr:90, w:16, risk:false, item:'ok'},
+      ],
+      issues:[{c:'warn',t:'schtefanos 62% on a 43% role'}] },
+    { name:'Dish It Out', diff:6, status:'recruit', badge:'RECRUITING', time:'~5d', sub:'est · 5 open', filled:0, total:5,
+      slots:[
+        {role:'Enforcer',  who:null, cpr:null, w:28, risk:false, item:'open'},
+        {role:'Negotiator',who:null, cpr:null, w:24, risk:false, item:'open'},
+        {role:'Lookout',   who:null, cpr:null, w:20, risk:false, item:'open'},
+        {role:'Arsonist',  who:null, cpr:null, w:15, risk:false, item:'open'},
+        {role:'Muscle',    who:null, cpr:null, w:13, risk:false, item:'open'},
+      ],
+      issues:[{c:'warn',t:'5 open slots'}] },
+  ],
+
+  money: {
+    kept: 1_840_000_000, gross: 9_120_000_000, paid: 6_980_000_000, cost: 300_000_000,
+    pending: 2_920_000_000,
+    scenarios: [
+      { name:'Break the Bank',     runs:96, gross:4_180_000_000, members:3_344_000_000, cost:142_000_000, kept:694_000_000 },
+      { name:'Clinical Precision', runs:71, gross:2_240_000_000, members:1_792_000_000, cost: 61_000_000, kept:387_000_000 },
+      { name:'Stacking the Deck',  runs:52, gross:1_490_000_000, members:1_192_000_000, cost: 44_000_000, kept:254_000_000 },
+      { name:'Counter Offer',      runs:64, gross:  820_000_000, members:  656_000_000, cost: 31_000_000, kept:133_000_000 },
+      { name:'Stage Fright',       runs:38, gross:  390_000_000, members:  312_000_000, cost: 22_000_000, kept: 56_000_000 },
+    ],
+  },
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════════════════════ */
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function money(n) {
+  const v = Math.round(Number(n) || 0), sign = v < 0 ? '-' : '', a = Math.abs(v);
+  if (a >= 1e9) return sign + '$' + (a/1e9).toFixed(2) + 'b';
+  if (a >= 1e6) return sign + '$' + (a/1e6).toFixed(2) + 'm';
+  if (a >= 1e3) return sign + '$' + (a/1e3).toFixed(1) + 'k';
+  return sign + '$' + a;
+}
+const pct = v => v == null ? '—' : Math.round(v * 100) + '%';
+
+/** Stable colour from the uid — a member always gets the same tile. Saturation
+ *  and lightness are FIXED so white initials stay legible on every one of them,
+ *  rather than depending on a contrast lottery. */
+function monoColor(uid) {
+  let h = 0; const s = String(uid);
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360},40%,34%)`;
+}
+function initials(name) {
+  const p = String(name || '').trim().split(/[\s_\-.]+/).filter(Boolean);
+  return (p.length >= 2 ? p[0][0] + p[1][0] : String(name).slice(0, 2)).toUpperCase();
+}
+const avatar = (uid, name, cls = '') =>
+  `<span class="av ${cls}"><span class="av-mono" style="background:${monoColor(uid)}">${esc(initials(name))}</span></span>`;
+
+const cprCls  = v => v == null ? 'faint' : v >= 70 ? 'good' : v >= 60 ? 'warn' : 'crit';
+const rateCls = v => v == null ? 'dim'   : v >= .85 ? 'good' : v >= .65 ? 'warn' : 'crit';
+
+/* ═══ COMPONENTS — every one returns an HTML string, same as the real script ═ */
+const card = (body, { title, n, sub, cls = '', ico = '' } = {}) => `
+  <div class="card ${cls}">
+    ${title ? `<div class="card-head">
+      ${ico ? `<span>${ico}</span>` : ''}
+      <span class="card-title">${esc(title)}</span>
+      ${n != null ? `<span class="card-n">${n}</span>` : ''}
+      ${sub ? `<span class="card-sub">${esc(sub)}</span>` : ''}
+    </div>` : ''}
+    ${body}
+  </div>`;
+
+const kpi = (label, value, sub, tone = '') =>
+  `<div class="kpi"><div class="kpi-l">${esc(label)}</div>
+   <div class="kpi-v ${tone}">${value}</div>
+   ${sub ? `<div class="kpi-s">${esc(sub)}</div>` : ''}</div>`;
+
+const lrow = (main, right, clickable) =>
+  `<div class="lrow${clickable ? ' clickable' : ''}"><span class="main">${main}</span>${right ? `<span class="r">${right}</span>` : ''}</div>`;
+
+const empty = (ico, msg, sub) =>
+  `<div class="empty"><div class="ico">${ico}</div><div class="msg">${esc(msg)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>`;
+
+const spark = s => `<span class="spark">${[...s].filter(c => c !== ' ')
+  .map(c => `<i class="${c === 's' ? 's' : c === 'f' ? 'f' : 'e'}"></i>`).join('')}</span>`;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PANES
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── DASHBOARD — one question: what needs me right now. ──────────────────── */
+function paneDashboard() {
+  const d = DATA, cards = [];
+
+  cards.push(card(
+    d.openByOc.map(o => lrow(esc(o.name), `${o.open} open · D${o.diff}`)).join('') +
+    lrow(`<span class="dim">${d.freeMembers} members free to fill them</span>`) +
+    `<button class="golink" onclick="go('crimes','fill')">Fill slots →</button>`,
+    { title: 'Open slots', n: d.openSlots, ico: '🎯', cls: 'warn' }));
+
+  cards.push(card(
+    d.risk.slice(0, 3).map(r =>
+      lrow(`${esc(r.name)} <span class="dim">· ${esc(r.role)}</span>`,
+           `<span class="${cprCls(r.cpr)}">${r.cpr}%</span>`, true)).join('') +
+    `<div class="note">High-weight roles held below 70% — this is what loses OCs.</div>
+     <button class="golink" onclick="go('people','assign')">See assignments →</button>`,
+    { title: 'Risk seats', n: d.risk.length, ico: '🔴', cls: 'attn' }));
+
+  cards.push(card(
+    d.loans.map(l => lrow(esc(l.name), esc(l.oc), true)).join('') +
+    `<button class="golink" onclick="go('armoury','loans')">Hand out loans →</button>`,
+    { title: 'Waiting on an item', n: d.loans.length, ico: '🤝', cls: 'warn' }));
+
+  cards.push(card(
+    lrow('Not yet paid to members', `<span class="b">${money(d.unpaid.cash)}</span>`) +
+    `<div class="note">Still with the faction — pay it out on the OC page.</div>
+     <button class="golink" onclick="go('money','payouts')">Open payouts →</button>`,
+    { title: 'Awaiting payout', n: d.unpaid.count, ico: '💸', cls: 'warn' }));
+
+  cards.push(card(
+    d.idle.map(m => lrow(esc(m.name), `${m.days}d`, true)).join('') +
+    `<button class="golink" onclick="go('people','activity')">See activity →</button>`,
+    { title: 'Inactive 7d+', n: d.idle.length, ico: '💤' }));
+
+  cards.push(card(
+    lrow(`vs ${esc(d.war.opponent)}`, `${d.war.us} : ${d.war.them}`) +
+    `<button class="golink" onclick="go('war','wars')">Open war →</button>`,
+    { title: 'Ranked war live', ico: '⚔️' }));
+
+  return `
+    <div class="row row-mb"><span class="card-title">🏠 What needs you</span></div>
+    <div class="ocgrid">${cards.join('')}</div>
+    <div class="note">Built from data already synced — opening this costs no extra API calls.
+      A card only appears when it has something to say, so an empty board is the good outcome.</div>`;
+}
+
+/* ── CRIMES › FILL SLOTS ─────────────────────────────────────────────────── */
+function paneFill() {
+  const stats = [
+    kpi('Active', 12, 'OCs running'),
+    kpi('Open', DATA.openSlots, 'slots to fill', 'warn'),
+    kpi('Free', DATA.freeMembers, 'members idle', 'link'),
+    kpi('Low CPR', 5, 'below 70%', 'warn'),
+    kpi('Blocked', 2, 'hosp / jail / abroad', 'crit'),
+    kpi('Stuck', 0, 'ready but blocked', 'good'),
+  ].join('');
+
+  const members = DATA.roster.slice(0, 3).map(m => card(`
+    <div class="row">
+      ${avatar(m.uid, m.name)}
+      <div style="flex:1;min-width:0">
+        <div class="strong" style="color:var(--ocm-text);font-weight:600">${esc(m.name)}</div>
+        <div class="note" style="margin:2px 0 0">Last OC ${esc(m.last)} ago · ${m.runs} run</div>
+      </div>
+      <span class="chip link">Best fit</span>
+    </div>
+    <div class="lrow" style="margin-top:var(--s2);border:none;padding-bottom:0">
+      <span class="main"><b class="b" style="color:var(--ocm-text)">${esc(m.role)}</b>
+        <span class="dim">in</span> Break the Bank <span class="faint">D8</span></span>
+      <span class="r ${cprCls(m.cpr)} b">${m.cpr ?? '?'}%</span>
+    </div>`)).join('');
+
+  return `
+    <div class="kpis">${stats}</div>
+    ${card(`<div class="row"><span class="chip warn">⚠️</span>
+      <span><b class="b" style="color:var(--ocm-text)">Next OC: Break the Bank</b>
+      <span class="dim">·</span> 2d 04h <span class="faint">(21 Jul 18:00 TCT)</span></span></div>
+      <div class="note" style="margin-top:var(--s2)">🔴 2 open slots &nbsp; 🔴 juga missing Advanced Sniper Rifle</div>`,
+      { cls: 'warn' })}
+    <div class="row row-mb"><span class="card-title">Members available (${DATA.freeMembers})</span></div>
+    ${members}`;
+}
+
+/* ── CRIMES › ACTIVE OCS ─────────────────────────────────────────────────── */
+function paneActive() {
+  const item = { ok: '<span class="chip good">✓</span>', missing: '<span class="chip crit">✗</span>', open: '<span class="chip">?</span>' };
+  const cards = DATA.activeOcs.map(oc => `
+    <div class="oc" data-s="${oc.status}">
+      <div class="oc-head">
+        <div style="min-width:0;flex:1">
+          <div class="oc-name">${esc(oc.name)}</div>
+          <div class="oc-meta"><span class="chip">D${oc.diff}</span>
+            <span class="chip ${oc.status === 'ready' ? 'good' : oc.status === 'recruit' ? 'link' : 'warn'}">${esc(oc.badge)}</span></div>
+        </div>
+        <div class="oc-time"><b>${esc(oc.time)}</b><span>${esc(oc.sub)}</span></div>
+      </div>
+      <div class="oc-fill">
+        <div class="bar"><span class="${oc.filled === oc.total ? 'good' : ''}" style="width:${oc.filled / oc.total * 100}%"></span></div>
+        <span>${oc.filled}/${oc.total} filled</span>
+      </div>
+      <div class="slot-head"><span>Role</span><span>Member</span><span>Item</span><span class="r">Wgt</span><span class="r">CPR</span></div>
+      ${oc.slots.map(s => `
+        <div class="slot${s.risk ? ' risk' : ''}">
+          <span class="role">${esc(s.role)}</span>
+          <span class="who"><span class="dot ${s.who ? '' : 'open'}"></span>
+            <span>${s.who ? esc(s.who) : '<i class="faint">Open</i>'}</span></span>
+          <span>${item[s.item]}</span>
+          <span class="r ${s.w >= 25 ? 'warn' : 'dim'}">${s.w}%</span>
+          <span class="r b ${cprCls(s.cpr)}">${s.cpr != null ? s.cpr + '%' : '–'}</span>
+        </div>`).join('')}
+      <div class="oc-foot">${oc.issues.map(i => `<span class="chip ${i.c}">${esc(i.t)}</span>`).join('')}</div>
+    </div>`).join('');
+  return `<div class="ocgrid">${cards}</div>`;
+}
+
+/* ── CRIMES › PERFORMANCE (roster + crimes) ──────────────────────────────── */
+let perfView = 'roster';
+function panePerf() {
+  const seg = `<div class="seg">
+    ${[['roster','👥 Roster'],['crimes','🗂 Crimes']].map(([k,l]) =>
+      `<button class="${perfView===k?'active':''}" onclick="perfView='${k}';render()">${l}</button>`).join('')}
+  </div>`;
+
+  const header = `<div class="row row-mb">
+    <div class="seg">${['7d','30d','90d','All'].map((w,i)=>`<button class="${i===3?'active':''}">${w}</button>`).join('')}</div>
+    <span class="push note" style="margin:0"><b>1,737</b> OCs · <b class="good">87%</b> success · 1,210 archived + live window</span>
+  </div>${seg}<div style="height:var(--s3)"></div>`;
+
+  if (perfView === 'roster') {
+    const rows = DATA.roster.map((m, i) => `
+      <tr class="clickable">
+        <td class="rank${i < 3 ? ' top' : ''}">${i + 1}</td>
+        <td class="strong"><span class="namecell">${avatar(m.uid, m.name)}<span class="n">${esc(m.name)}</span>
+          ${m.ex ? '<span class="chip">left</span>' : ''}</span></td>
+        <td class="num">${m.runs}</td>
+        <td class="num b ${rateCls(m.rate)}">${pct(m.rate)}</td>
+        <td class="num ${cprCls(m.cpr)}">${m.cpr != null ? m.cpr + '%' : '—'}${m.cpr != null ? '<span class="prov obs"></span>' : ''}</td>
+        <td class="num">D${m.best}</td>
+        <td class="dim">${esc(m.role)}</td>
+        <td>${spark(m.spark)}</td>
+        <td class="num ${m.trend == null ? 'faint' : m.trend > .05 ? 'good' : m.trend < -.05 ? 'crit' : 'dim'}">
+          ${m.trend == null ? '—' : (m.trend > .05 ? '▲' : m.trend < -.05 ? '▼' : '–') + ' ' + Math.abs(Math.round(m.trend * 100)) + '%'}</td>
+        <td class="num dim">${esc(m.last)}</td>
+      </tr>`).join('');
+
+    return header + card(`
+      <div class="row row-mb">
+        <input class="fchip" style="flex:1;max-width:220px" placeholder="Filter by name…">
+        <button class="fchip">⚠ Low CPR</button>
+        <button class="fchip">· No CPR</button>
+        <button class="fchip">👻 Left faction</button>
+        <button class="fchip">💤 Inactive 14d+</button>
+      </div>
+      <div class="tablewrap"><table class="has-avatars">
+        <thead><tr>
+          <th class="num">#</th><th class="sortable">Player</th>
+          <th class="num sortable" aria-sort="desc">OCs</th><th class="num sortable">Success</th>
+          <th class="num sortable">Avg CPR</th><th class="num sortable">Best</th>
+          <th class="sortable">Top role</th><th>Last 10</th>
+          <th class="num sortable">Trend</th><th class="num sortable">Last run</th>
+        </tr></thead>
+        <tbody>${rows}</tbody></table></div>
+      <div class="note">Click any row for that member's full profile. Expired OCs are excluded from success rate — nobody ran them.
+        <span class="prov obs"></span> observed CPR · <span class="prov est"></span> estimated.</div>`, { cls: 'flush' })
+      .replace('class="card flush"', 'class="card"');
+  }
+
+  const rows = DATA.crimes.map(c => `
+    <tr class="clickable">
+      <td class="strong">${esc(c.name)}</td>
+      <td class="num">${c.runs}</td>
+      <td class="num b ${rateCls(c.rate)}">${pct(c.rate)}</td>
+      <td class="num ${cprCls(c.cpr)}">${c.cpr}%</td>
+      <td class="num">${c.respect}</td>
+      <td class="num">${money(c.money)}</td>
+      <td class="num">${c.weak
+        ? `<span class="warn">${esc(c.weak.role)} ${c.weak.pct}%</span>`
+        : '<span class="dim">—</span>'}</td>
+    </tr>`).join('');
+
+  return header + card(`
+    <div class="tablewrap"><table>
+      <thead><tr><th>Crime</th><th class="num">Runs</th><th class="num">Success</th>
+        <th class="num">Avg CPR</th><th class="num">Respect/run</th><th class="num">Money/run</th>
+        <th class="num">Weak seat</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div class="note">Money and respect are per SUCCESSFUL run — that's what ranks a crime, not gross.
+      Click a crime for its seat breakdown and every run.</div>`);
+}
+
+/* ── MONEY › OVERVIEW ────────────────────────────────────────────────────── */
+function paneMoney() {
+  const m = DATA.money;
+  const rows = m.scenarios.map(s => `
+    <tr>
+      <td class="strong">${esc(s.name)}</td>
+      <td class="num dim">${s.runs}</td>
+      <td class="num dim">${money(s.gross)}</td>
+      <td class="num link">−${money(s.members)}</td>
+      <td class="num warn">−${money(s.cost)}</td>
+      <td class="num b good">${money(s.kept)}</td>
+      <td class="num good">${money(s.kept / s.runs)}</td>
+    </tr>`).join('');
+
+  return `
+    <div class="kpis">
+      ${kpi('Faction kept', money(m.kept), 'after payouts and costs', 'good')}
+      ${kpi('Gross produced', money(m.gross), 'cash + reward items')}
+      ${kpi('Paid out', '−' + money(m.paid), 'to members', 'link')}
+      ${kpi('Item cost', '−' + money(m.cost), 'materials consumed', 'warn')}
+    </div>
+    ${card(`<div class="row"><span class="chip warn">⚠</span>
+      <span><b class="b warn">${money(m.pending)}</b> of members' cut hasn't been paid out yet.
+      It's still with the faction, so "Faction kept" is flattering by that much until you settle it.</span></div>`,
+      { cls: 'warn' })}
+    ${card(`
+      <div class="note"><b>Gross</b> = everything the OC produced. <b>To members</b> = cash × the split.
+        <b>Kept</b> = what's actually left — the number that decides whether a crime is worth running.
+        A huge-gross crime on a 90% split can keep less than a modest one at 50%.</div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Scenario</th><th class="num">Runs</th><th class="num">Gross</th>
+          <th class="num">To members</th><th class="num">Cost</th>
+          <th class="num">Faction kept</th><th class="num">Kept / run</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`,
+      { title: 'What the faction actually keeps', ico: '🏦' })}`;
+}
+
+const paneStub = (name) => card(empty('🚧', name + ' — not built in the prototype yet',
+  'The design system is proven on Dashboard, Crimes and Money first. Say which pane matters next.'));
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ROUTER — same contract as the real initTabs: toggle by tab id, nothing else.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const TABS = [
+  { id:'dashboard', ico:'🏠', label:'Dashboard', badge:6, attn:true },
+  { id:'crimes',    ico:'🎯', label:'Crimes',    badge:3,
+    subs:[['fill','🎯 Fill Slots',3],['active','📋 Active OCs'],['perf','📊 Performance']] },
+  { id:'people',    ico:'👥', label:'People',    badge:16, attn:true,
+    subs:[['assign','🎯 Assignments',5],['blocked','🚫 Blocked'],['activity','🕐 Activity'],['optimize','⚡ Optimize'],['cpr','📈 CPR Data']] },
+  { id:'money',     ico:'💰', label:'Money',     badge:84,
+    subs:[['summary','📊 Overview'],['members','👤 Member Earnings'],['payouts','💸 Payouts',84],['ocsran','📋 OCs Ran'],['costs','📦 Costs'],['funds','🏦 Funds'],['exports','⬇ Exports']] },
+  { id:'war',       ico:'⚔️', label:'War',       badge:1,
+    subs:[['watch','🔗 Live Chain'],['wars','⚔️ Wars'],['chains','📜 Chains'],['warroom','🎯 War Room'],['warpay','💸 War Pay'],['revives','💉 Revives'],['tools','🛠 Tools']] },
+  { id:'armoury',   ico:'🛡️', label:'Armoury',   badge:3,
+    subs:[['loans','🤝 Loans',1],['memitems','🎒 Item Status'],['armusers','👤 Members'],['loanlog','📜 Loan History'],['loadouts','🧰 Loadouts']] },
+];
+
+let tab = 'dashboard';
+const sub = { crimes:'fill', people:'assign', money:'summary', war:'watch', armoury:'loans' };
+
+function go(t, s) { tab = t; if (s) sub[t] = s; render(); window.scrollTo({ top:0, behavior:'smooth' }); }
+
+function render() {
+  document.getElementById('rail').innerHTML =
+    TABS.map(t => `<div class="rail-item ${t.id===tab?'active':''}" onclick="go('${t.id}')" title="${t.label}">
+      <span class="rail-ico">${t.ico}</span><span class="rail-lbl">${t.label}</span>
+      <span class="rail-badge ${t.attn?'attn':''}">${t.badge || ''}</span></div>`).join('')
+    + `<div class="rail-pin" onclick="document.getElementById('rail').classList.toggle('pinned')">
+        <span class="rail-ico">📌</span><span class="rail-lbl">Pin menu</span></div>`;
+
+  const def = TABS.find(t => t.id === tab);
+  const subs = def.subs
+    ? `<div class="subtabs">${def.subs.map(([k,l,b]) =>
+        `<button class="subtab ${sub[tab]===k?'active':''}" onclick="go('${tab}','${k}')">${l}
+          <span class="subtab-badge ${b>0?'attn':''}">${b||''}</span></button>`).join('')}</div>`
+    : '';
+
+  let body;
+  if (tab === 'dashboard') body = paneDashboard();
+  else if (tab === 'crimes') body = { fill: paneFill, active: paneActive, perf: panePerf }[sub.crimes]();
+  else if (tab === 'money' && sub.money === 'summary') body = paneMoney();
+  else body = paneStub(def.label + ' › ' + (def.subs?.find(s => s[0] === sub[tab])?.[1] || ''));
+
+  document.getElementById('pane').innerHTML = subs + body;
+}
+render();
+</script>
+</body>
+</html>

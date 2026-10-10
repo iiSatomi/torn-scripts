@@ -1,0 +1,7 @@
+{
+  "script": "Torn_OC_Suite_PurrfectCrime.user.js",
+  "url": "https://www.torn.com/factions.php?step=your&type=1",
+  "mounted": false,
+  "tabs": {},
+  "errors": []
+}

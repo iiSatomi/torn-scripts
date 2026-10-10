@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Banker Request — Test Harness</title>
+<style>
+  :root { --hb:#14161b; --hb2:#1c1f26; --line:#2b2f38; --txt:#dfe3ea; --dim:#9aa2b1; --acc:#4a9eff; --ok:#3aa655; --bad:#cc4444; --warn:#e6b800; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif; background:#0f1013; color:var(--txt); }
+
+  /* ── Harness chrome ── */
+  #hb { position:sticky; top:0; z-index:99999; display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+        background:var(--hb); border-bottom:1px solid var(--line); padding:10px 12px; }
+  #hb .brand { font-weight:800; letter-spacing:.3px; margin-right:6px; }
+  #hb .env { font-size:12px; font-weight:700; padding:3px 9px; border-radius:20px; }
+  #hb .env.desktop { background:rgba(74,158,255,.16); color:var(--acc); }
+  #hb .env.pda { background:rgba(230,184,0,.16); color:var(--warn); }
+  #hb button, #hb a.btn { font:inherit; font-size:13px; font-weight:600; color:var(--txt); background:var(--hb2);
+        border:1px solid var(--line); border-radius:6px; padding:6px 11px; cursor:pointer; text-decoration:none; }
+  #hb button:hover, #hb a.btn:hover { border-color:var(--acc); }
+  #hb .spacer { flex:1; }
+  #hb .switch a { font-size:12px; color:var(--dim); text-decoration:none; padding:5px 9px; border:1px solid var(--line); border-radius:6px; }
+  #hb .switch a.on { color:#fff; background:var(--acc); border-color:var(--acc); }
+
+  #cols { display:grid; grid-template-columns: 1fr 420px; gap:0; min-height: calc(100vh - 52px); }
+  @media (max-width: 900px){ #cols { grid-template-columns: 1fr; } }
+
+  /* ── Fixture (fake Torn) ── */
+  #stage { padding:16px; border-right:1px solid var(--line); background:#101216; }
+  .fx-note { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim); margin:0 0 8px; }
+  #sidebar { display:flex; gap:14px; align-items:center; background:#15171c; border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-bottom:14px; font-size:13px; }
+  #sidebar a { color:var(--acc); text-decoration:none; }
+  .armoury-donate-wrap { background:#15171c; border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  .donate-wrap { color:var(--dim); font-size:13px; }
+  .money-balance { font-weight:700; color:#cfe6cf; font-size:15px; margin-bottom:6px; }
+  /* chat */
+  #chatwrap { background:#15171c; border:1px solid var(--line); border-radius:8px; padding:10px; }
+  #faction-41234 { position:relative; height:600px; }   /* tall + non-scrolling → watcher auto-arms */
+  .virtualItem__hx { position:absolute; left:0; right:0; padding:5px 8px; border-top:1px solid #23262d; font-size:13px; }
+  .virtualItem__hx .nm { color:#7a9acc; font-weight:700; margin-right:6px; }
+  .message__hx { color:#d5d9e0; }
+
+  /* ── Console ── */
+  #side { display:flex; flex-direction:column; background:#0c0d10; }
+  #ctitle { font-size:11px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim); padding:10px 12px 6px; }
+  #console { flex:1; overflow:auto; padding:0 12px 16px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; line-height:1.5; }
+  .ln { padding:2px 0; border-bottom:1px solid #16181d; white-space:pre-wrap; word-break:break-word; }
+  .ln .t { color:#5f6672; margin-right:6px; }
+  .ln.info .m { color:#cdd3dc; }
+  .ln.net  .m { color:var(--acc); }
+  .ln.ok   .m { color:var(--ok); }
+  .ln.err  .m { color:var(--bad); }
+  .ln.warn .m { color:var(--warn); }
+  .ln.boot .m { color:#c9a6ff; }
+</style>
+</head>
+<body>
+
+<div id="hb">
+  <span class="brand">🏦 Banker Harness</span>
+  <span class="env" id="envtag">…</span>
+  <span class="switch"><a id="sw-d" href="?env=desktop">Desktop (GM)</a> <a id="sw-p" href="?env=pda">PDA (PDA_httpPost)</a></span>
+  <span class="spacer"></span>
+  <button id="b-req">Post “@banker 1m”</button>
+  <button id="b-cancel">Post “@banker cancel”</button>
+  <button id="b-noise">Post normal chat</button>
+  <button id="b-store">Dump storage</button>
+  <button id="b-reset">Reset + reload</button>
+</div>
+
+<div id="cols">
+  <div id="stage">
+    <p class="fx-note">Fake Torn DOM — faithful to the selectors the script reads (from <code>deposit page.html</code>)</p>
+
+    <div id="sidebar">
+      <a id="self" aria-label="Name: iSatomi" href="/profiles.php?XID=3580191">iSatomi</a>
+      <span class="value___c6eCp" id="user-money" data-money="2500000">$2,500,000</span>
+      <span style="color:var(--dim)">← sidebar (detectSelf + readCash)</span>
+    </div>
+
+    <div class="armoury-donate-wrap">
+      <div class="donate-wrap">
+        <div class="money-balance">$5,000,000</div>
+        Armoury ▸ Donate (fixture). The 🏦 Request money panel should mount right below this line.
+      </div>
+    </div>
+
+    <div id="chatwrap">
+      <p class="fx-note" style="margin:0 0 6px">Faction chat (<code>#faction-41234</code>) — watcher attaches &amp; arms within ~2s</p>
+      <div id="faction-41234">
+        <div class="virtualItem__hx" style="top:0px">
+          <a id="rq-seed0000:111" href="/profiles.php?XID=111" aria-label="Name: SomeGuy" class="nm">SomeGuy</a>
+          <span class="message__hx">hey anyone around</span>
+        </div>
+        <div class="virtualItem__hx" style="top:34px">
+          <a id="rq-seed0001:222" href="/profiles.php?XID=222" aria-label="Name: Westend" class="nm">Westend</a>
+          <span class="message__hx">yeah what's up</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="side">
+    <div id="ctitle">Harness console — boot · transport · payloads · errors</div>
+    <div id="console"></div>
+  </div>
+</div>
+
+<!-- ═══════════ MOCK ENVIRONMENT — must run BEFORE the userscript ═══════════ -->
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const ENV = params.get('env') === 'pda' ? 'pda' : 'desktop';
+  const isPDA = ENV === 'pda';
+
+  // ── console overlay ──
+  const cbox = document.getElementById('console');
+  function log(kind, ...parts) {
+    const ln = document.createElement('div'); ln.className = 'ln ' + kind;
+    const t = new Date().toLocaleTimeString([], { hour12:false });
+    ln.innerHTML = '<span class="t">' + t + '</span><span class="m"></span>';
+    ln.querySelector('.m').textContent = parts.map(p => typeof p === 'string' ? p : JSON.stringify(p)).join(' ');
+    cbox.appendChild(ln); cbox.scrollTop = cbox.scrollHeight;
+  }
+  window.__hlog = log;
+
+  // mirror the page console + uncaught errors into the overlay
+  ['log','warn','error'].forEach(fn => {
+    const orig = console[fn].bind(console);
+    console[fn] = (...a) => { orig(...a);
+      const s = a.map(x => typeof x === 'string' ? x : (()=>{try{return JSON.stringify(x)}catch(_){return String(x)}})()).join(' ');
+      if (s.includes('[Banker Request]')) log(fn === 'log' ? 'boot' : fn, s);
+    };
+  });
+  window.addEventListener('error', e => log('err', 'Uncaught: ' + (e.message || e.error)));
+  window.addEventListener('unhandledrejection', e => log('err', 'Unhandled rejection: ' + (e.reason && e.reason.message || e.reason)));
+
+  // ── mock backend ──
+  function backend(payload) {
+    const a = payload && payload.action;
+    log('net', '→ backend  action=' + a + '  ' + JSON.stringify(Object.assign({}, payload, { action: undefined })).replace('{"action":null,','{'));
+    let res;
+    switch (a) {
+      case 'request': res = { ok:true, request_id:'R'+Date.now(), message_id:'msg'+Math.floor(Math.random()*1e4) }; break;
+      case 'cancel':  res = { ok:true, request_id:'R'+Date.now(), amount: payload.amount || 1, edited:true }; break;
+      case 'report':  res = { ok:true, matched:false }; break;
+      case 'claim':   res = { ok:true }; break;
+      case 'open':    res = { ok:true, requests: [] }; break;
+      default:        res = { ok:true, note:'mock default for ' + a };
+    }
+    log('ok', '← backend  ' + JSON.stringify(res));
+    return res;
+  }
+  function respond(payload) { return { status:200, statusText:'OK', responseText: JSON.stringify(backend(payload)), responseHeaders:'' }; }
+
+  // ── unsafeWindow so the __bankReq handle lands somewhere reachable ──
+  window.unsafeWindow = window;
+
+  if (!isPDA) {
+    // Desktop: Tampermonkey-style GM API, localStorage-backed storage.
+    window.GM_info = { script: { version: '3.2.0', name: 'Torn Banker Request' } };
+    window.GM_getValue = (k, d) => { const v = localStorage.getItem('gm_'+k); return v === null ? d : v; };
+    window.GM_setValue = (k, v) => localStorage.setItem('gm_'+k, String(v));
+    window.GM_xmlHttpRequest = (o) => {
+      log('net', 'transport: GM_xmlHttpRequest  ' + (o.method||'GET') + ' ' + o.url);
+      setTimeout(() => { try { o.onload && o.onload(respond(JSON.parse(o.data||'{}'))); }
+                         catch (e) { o.onerror && o.onerror(e); } }, 150);
+    };
+    document.getElementById('envtag').textContent = 'ENV: DESKTOP (GM)';
+    document.getElementById('envtag').className = 'env desktop';
+    document.getElementById('sw-d').classList.add('on');
+  } else {
+    // PDA: NO GM_* at all (forces the fallback paths), native PDA_httpPost/Get.
+    window.flutter_inappwebview = { callHandler: () => Promise.resolve() };
+    window.PDA_httpPost = (url, headers, body) => {
+      log('net', 'transport: PDA_httpPost  ' + url);
+      return new Promise(r => setTimeout(() => r(respond(JSON.parse(body||'{}'))), 150));
+    };
+    window.PDA_httpGet = (url) => { log('net','transport: PDA_httpGet ' + url);
+      return new Promise(r => setTimeout(() => r({ status:200, statusText:'OK', responseText:'{}', responseHeaders:'' }), 150)); };
+    document.getElementById('envtag').textContent = 'ENV: PDA (no GM · PDA_httpPost)';
+    document.getElementById('envtag').className = 'env pda';
+    document.getElementById('sw-p').classList.add('on');
+    log('warn', 'PDA mode: GM_* are undefined on purpose — this exercises the localStorage + PDA_httpPost fallbacks.');
+  }
+
+  log('info', 'Harness ready. Loading the real userscript next…');
+  log('info', 'Tip: DevTools ▸ device toolbar (phone width) to approximate PDA layout.');
+
+  // ── controls ──
+  let topN = 34;
+  function postChat(text, uid, name) {
+    const host = document.getElementById('faction-41234');
+    topN += 34;
+    const row = document.createElement('div');
+    row.className = 'virtualItem__hx'; row.style.top = topN + 'px';
+    const uuid = 's' + Math.random().toString(36).slice(2, 8);
+    row.innerHTML = '<a id="rq-' + uuid + ':' + uid + '" href="/profiles.php?XID=' + uid + '" aria-label="Name: ' + name + '" class="nm">' + name + '</a>'
+                  + '<span class="message__hx"></span>';
+    row.querySelector('.message__hx').textContent = text;
+    host.appendChild(row);
+    log('info', 'chat ← ' + name + ': ' + text);
+  }
+  document.getElementById('b-req').onclick   = () => postChat('@banker 1m', 3580191, 'iSatomi');
+  document.getElementById('b-cancel').onclick= () => postChat('@banker cancel', 3580191, 'iSatomi');
+  document.getElementById('b-noise').onclick = () => postChat('lol nice hit', 999, 'Rando');
+  document.getElementById('b-store').onclick = () => {
+    const ks = Object.keys(localStorage).filter(k => k.includes('bankreq') || k.startsWith('gm_bankreq'));
+    if (!ks.length) return log('info', 'storage: (empty)');
+    ks.forEach(k => log('info', 'storage  ' + k + ' = ' + localStorage.getItem(k)));
+  };
+  document.getElementById('b-reset').onclick = () => {
+    Object.keys(localStorage).filter(k => k.includes('bankreq')).forEach(k => localStorage.removeItem(k));
+    location.reload();
+  };
+})();
+</script>
+
+<!-- ═══════════ THE REAL USERSCRIPT (same folder) ═══════════ -->
+<script src="Torn_Banker_Request.user.js"></script>
+
+<script>
+  // Post-boot sanity probes, after the watcher has had time to attach/arm.
+  setTimeout(() => {
+    const L = window.__hlog;
+    const h = window.__bankReq;
+    if (!h) return L('err', 'PROBE: window.__bankReq missing — script did not boot (check errors above).');
+    L('boot', 'PROBE: __bankReq.version = ' + h.version);
+    const panel = document.getElementById('bank-req-panel');
+    L(panel ? 'ok' : 'err', 'PROBE: armoury panel ' + (panel ? 'MOUNTED ✓' : 'NOT found ✗ (selector mismatch)'));
+    const armed = h.chat && h.chat.armed;
+    L(armed ? 'ok' : 'warn', 'PROBE: chat watcher armed = ' + !!armed + (armed ? '' : ' (post a message; it arms ~1.5s after attach)'));
+  }, 2500);
+</script>
+</body>
+</html>

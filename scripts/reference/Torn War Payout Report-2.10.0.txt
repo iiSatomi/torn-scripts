@@ -1,0 +1,1270 @@
+// ==UserScript==
+// @name         Torn War Payout Report
+// @namespace    https://github.com/iSatomi/torn-war-payout-report
+// @version      2.10.0
+// @description  Per-member ranked war breakdown: hits, losses (all attackers + enemy-only), defends held, stalemates, assists and respect. Loops faction/attacks across the war window (handles the 100-record cap), classifies every hit, and exports as an aligned table, Discord block, TSV or CSV.
+// @author       iSatomi [3580191]
+// @match        https://www.torn.com/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM.getValue
+// @grant        GM.setValue
+// @connect      api.torn.com
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    /* ============================================================
+     * Torn War Payout Report
+     * ------------------------------------------------------------
+     * WHY: The in-game war page only shows score per member, never
+     * a wins / losses / stalemates breakdown. That detail only
+     * exists in faction/attacks, which is capped at 100 rows per
+     * call, so we paginate across the whole war window, dedupe,
+     * classify each hit, and tally per member.
+     *
+     * Uses the stable v1 faction selections (attacks, rankedwars,
+     * basic). If Torn fully retires v1 for you, ping me and I'll
+     * port the request layer to v2 — only fetchJSON / parsing
+     * would change.
+     * ============================================================ */
+
+    const LS_KEY = 'twpr_apikey';
+    const LS_FABPOS = 'twpr_fabpos';
+    const LS_COLORS = 'twpr_colors';
+    const API_BASE = 'https://api.torn.com';
+    const REQ_DELAY_MS = 650;          // stay well under 100 req/min
+    const PAGE_HARD_LIMIT = 250;       // safety: max paginated calls (covers very large wars)
+    const PAGE_SIZE = 100;             // Torn's fixed attacks cap
+
+    // Result strings, bucketed from the ATTACKER's point of view.
+    const WIN_RESULTS = new Set(['Attacked', 'Mugged', 'Hospitalized', 'Arrested', 'Looted', 'Special']);
+    const LOSS_RESULTS = new Set(['Lost']);
+    const STALE_RESULTS = new Set(['Stalemate']);
+    const ESCAPE_RESULTS = new Set(['Escape', 'Timeout']);
+    const ASSIST_RESULTS = new Set(['Assist']);
+
+    // A ranked-war hit carries the war bonus (modifiers.war > 1). This is the
+    // most reliable "is this a war hit" signal — it holds even when the
+    // attacker stealthed and hid their faction, which is how enemy hits slip
+    // through faction-based matching.
+    function hasWarBonus(a) {
+        const m = a && a.modifiers;
+        if (!m) return false;
+        const w = Number(m.war);
+        return Number.isFinite(w) && w > 1;
+    }
+
+    /* ----------------------- tiny utils ----------------------- */
+    const $ = (sel, root = document) => root.querySelector(sel);
+    const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+    const fmtMoney = (n) => '$' + Math.round(Number(n || 0)).toLocaleString('en-US');
+    const fmtMoneyShort = (n) => {
+        n = Number(n || 0);
+        if (!n) return '$0';
+        const abs = Math.abs(n), trim = (x) => String(Math.round(x * 100) / 100);
+        if (abs >= 1e9) return '$' + trim(n / 1e9) + 'b';
+        if (abs >= 1e6) return '$' + trim(n / 1e6) + 'm';
+        if (abs >= 1e3) return '$' + trim(n / 1e3) + 'k';
+        return '$' + n;
+    };
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    function gmGet(key, def) {
+        try {
+            if (typeof GM !== 'undefined' && GM.getValue) return GM.getValue(key, def);
+            if (typeof GM_getValue === 'function') return Promise.resolve(GM_getValue(key, def));
+        } catch (e) {}
+        try { const v = localStorage.getItem(key); return Promise.resolve(v === null ? def : v); }
+        catch (e) { return Promise.resolve(def); }
+    }
+    function gmSet(key, val) {
+        try {
+            if (typeof GM !== 'undefined' && GM.setValue) return GM.setValue(key, val);
+            if (typeof GM_setValue === 'function') { GM_setValue(key, val); return Promise.resolve(); }
+        } catch (e) {}
+        try { localStorage.setItem(key, val); } catch (e) {}
+        return Promise.resolve();
+    }
+
+    /* ------------------- 30-day report cache ------------------ */
+    const CACHE_PREFIX = 'twpr_cache_';
+    const CACHE_INDEX = 'twpr_cache_index';
+    const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // 30 days
+
+    function humanAge(ms) {
+        const s = Math.max(0, Math.floor(ms / 1000));
+        if (s < 60) return `${s}s`;
+        const m = Math.floor(s / 60); if (m < 60) return `${m}m`;
+        const h = Math.floor(m / 60); if (h < 24) return `${h}h`;
+        return `${Math.floor(h / 24)}d`;
+    }
+
+    async function cacheIndexGet() {
+        try { const raw = await gmGet(CACHE_INDEX, ''); return raw ? JSON.parse(raw) : []; }
+        catch (e) { return []; }
+    }
+    async function cacheIndexSet(arr) { try { await gmSet(CACHE_INDEX, JSON.stringify(arr)); } catch (e) {} }
+
+    async function cacheSave(war, report, attacksScanned, partial) {
+        const payload = {
+            v: 1,
+            savedAt: Date.now(),
+            warId: war.warId,
+            oppName: war.oppName,
+            attacksScanned,
+            partial: !!partial,
+            report: {
+                list: report.list,
+                totalHits: report.totalHits,
+                totalRespect: report.totalRespect,
+                totalLosses: report.totalLosses,
+                totalEnemyOn: report.totalEnemyOn,
+                totalStealthOn: report.totalStealthOn,
+                enemyReportHits: report.enemyReportHits != null ? report.enemyReportHits : null,
+            },
+        };
+        try { await gmSet(CACHE_PREFIX + war.warId, JSON.stringify(payload)); } catch (e) { return; }
+        const idx = (await cacheIndexGet()).filter(x => x.warId !== war.warId);
+        idx.push({ warId: war.warId, savedAt: payload.savedAt, oppName: war.oppName });
+        await cacheIndexSet(idx);
+    }
+
+    async function cacheLoad(warId) {
+        try {
+            const raw = await gmGet(CACHE_PREFIX + warId, '');
+            if (!raw) return null;
+            const p = JSON.parse(raw);
+            if (!p || !p.savedAt || !p.report) return null;
+            if (Date.now() - p.savedAt > CACHE_TTL_MS) { await cacheDelete(warId); return null; }
+            return p;
+        } catch (e) { return null; }
+    }
+
+    async function cacheDelete(warId) {
+        try { await gmSet(CACHE_PREFIX + warId, ''); } catch (e) {}
+        const idx = await cacheIndexGet();
+        await cacheIndexSet(idx.filter(x => x.warId !== warId));
+    }
+
+    async function cachePrune() {
+        const idx = await cacheIndexGet();
+        const now = Date.now();
+        const keep = [];
+        for (const x of idx) {
+            if (now - x.savedAt > CACHE_TTL_MS) { try { await gmSet(CACHE_PREFIX + x.warId, ''); } catch (e) {} }
+            else keep.push(x);
+        }
+        await cacheIndexSet(keep);
+    }
+
+    async function cacheClearAll() {
+        const idx = await cacheIndexGet();
+        for (const x of idx) { try { await gmSet(CACHE_PREFIX + x.warId, ''); } catch (e) {} }
+        await cacheIndexSet([]);
+    }
+
+    // Dual-bind tap so buttons fire once on both TornPDA (touch) and desktop (click).
+    function bindTap(el, handler) {
+        let touched = false;
+        el.addEventListener('touchend', (e) => {
+            touched = true;
+            e.preventDefault();
+            handler(e);
+            setTimeout(() => { touched = false; }, 400);
+        }, { passive: false });
+        el.addEventListener('click', (e) => {
+            if (touched) return;
+            handler(e);
+        });
+    }
+
+    /* --------------------- network layer ---------------------- */
+    // GM_xmlhttpRequest with a fetch fallback so it works on both
+    // TornPDA and desktop without GM grant conflicts.
+    function rawRequest(url) {
+        return new Promise((resolve, reject) => {
+            const gmx = (typeof GM !== 'undefined' && GM.xmlHttpRequest) ? GM.xmlHttpRequest
+                      : (typeof GM_xmlhttpRequest === 'function') ? GM_xmlhttpRequest : null;
+            if (gmx) {
+                gmx({
+                    method: 'GET',
+                    url,
+                    timeout: 20000,
+                    onload: (res) => resolve(res.responseText),
+                    onerror: () => reject(new Error('Network error')),
+                    ontimeout: () => reject(new Error('Request timed out')),
+                });
+            } else {
+                fetch(url).then(r => r.text()).then(resolve).catch(reject);
+            }
+        });
+    }
+
+    // Torn error codes that are transient (server/rate-limit side) and worth
+    // retrying rather than aborting the whole pull. 5=too many requests,
+    // 8=IP temporarily blocked, 9=API temporarily disabled, 17=backend error.
+    const RETRYABLE_CODES = new Set([5, 8, 9, 17]);
+    const MAX_RETRIES = 4;
+
+    async function fetchJSON(selectionPath, params, key, attempt = 0) {
+        const qs = new URLSearchParams({ ...params, key }).toString();
+        const url = `${API_BASE}/${selectionPath}?${qs}`;
+
+        let text;
+        try {
+            text = await rawRequest(url);
+        } catch (e) {
+            // Network hiccup — retry a few times before giving up.
+            if (attempt < MAX_RETRIES) {
+                await sleep(700 * (attempt + 1));
+                return fetchJSON(selectionPath, params, key, attempt + 1);
+            }
+            throw e;
+        }
+
+        let data;
+        try { data = JSON.parse(text); }
+        catch (e) {
+            if (attempt < MAX_RETRIES) {
+                await sleep(700 * (attempt + 1));
+                return fetchJSON(selectionPath, params, key, attempt + 1);
+            }
+            throw new Error('Bad response from Torn API');
+        }
+
+        if (data && data.error) {
+            const code = Number(data.error.code);
+            if (RETRYABLE_CODES.has(code) && attempt < MAX_RETRIES) {
+                // Backoff grows each attempt; error 5 (rate limit) waits longer.
+                const base = code === 5 ? 2000 : 900;
+                await sleep(base * (attempt + 1));
+                return fetchJSON(selectionPath, params, key, attempt + 1);
+            }
+            throw new Error(`API error ${code}: ${data.error.error}`);
+        }
+        return data;
+    }
+
+    /* ------------------- war + attack pulls ------------------- */
+    async function getFactionContext(key) {
+        const data = await fetchJSON('faction/', { selections: 'basic,rankedwars' }, key);
+        const members = data.members || {};
+        const wars = data.rankedwars || {};
+        return {
+            factionId: data.ID,
+            factionName: data.name,
+            members,                  // { id: { name, ... } }
+            wars,                     // { warId: { factions:{...}, war:{start,end} } }
+        };
+    }
+
+    // Normalise the rankedwars object into a clean list, newest first.
+    function listWars(ctx) {
+        const out = [];
+        for (const warId of Object.keys(ctx.wars)) {
+            const w = ctx.wars[warId];
+            const factions = w.factions || {};
+            const ids = Object.keys(factions).map(Number);
+            const oppId = ids.find(id => id !== ctx.factionId);
+            const opp = factions[oppId] || {};
+            const me = factions[ctx.factionId] || {};
+            const war = w.war || {};
+            out.push({
+                warId,
+                start: war.start || 0,
+                end: war.end || 0,             // 0 means still running
+                oppId,
+                oppName: opp.name || `Faction ${oppId}`,
+                myScore: me.score || 0,
+                oppScore: opp.score || 0,
+                winner: war.winner,
+            });
+        }
+        out.sort((a, b) => (b.start || 0) - (a.start || 0));
+        return out;
+    }
+
+    // Loop faction/attacks across [from, to], advancing by timestamp.
+    // Returns { list, partial } — partial is true if a page ultimately failed
+    // after retries but some attacks were already collected.
+    async function pullAttacks(key, from, to, onProgress) {
+        const seen = new Map();        // attackId -> attack
+        let cursor = from;
+        let iterations = 0;
+        let emptyStreak = 0;
+        let partial = false;
+
+        // Walk forward by timestamp until we reach the war-end time (`to`) or
+        // the feed is genuinely exhausted. Do NOT stop on a partial (<100) page:
+        // Torn's per-call caching can return a short page mid-stream, and
+        // stopping there silently drops every later attack (incoming hits get
+        // hit hardest by this). We only stop on repeated empty pages, a stalled
+        // cursor, or reaching `to`.
+        while (iterations < PAGE_HARD_LIMIT) {
+            iterations++;
+            let data;
+            try {
+                data = await fetchJSON('faction/', {
+                    selections: 'attacks',
+                    from: cursor,
+                    to: to,
+                }, key);
+            } catch (e) {
+                // Already retried inside fetchJSON. If we've collected data,
+                // keep it and stop gracefully rather than losing everything.
+                if (seen.size > 0) { partial = true; break; }
+                throw e;
+            }
+
+            const batch = data.attacks || {};
+            const ids = Object.keys(batch);
+
+            if (ids.length === 0) {
+                // One empty page might just be the 30s cache; confirm with a
+                // second before giving up.
+                if (++emptyStreak >= 2) break;
+                cursor += 1;
+                await sleep(REQ_DELAY_MS);
+                continue;
+            }
+            emptyStreak = 0;
+
+            let newCount = 0;
+            let maxStarted = cursor;
+            for (const id of ids) {
+                const a = batch[id];
+                if (!seen.has(id)) { seen.set(id, a); newCount++; }
+                const ts = Number(a.timestamp_started || 0);
+                if (ts > maxStarted) maxStarted = ts;
+            }
+
+            if (onProgress) onProgress(seen.size, iterations);
+
+            // Reached (or passed) the end of the war window.
+            if (maxStarted >= to) break;
+
+            // Advance the cursor. If timestamps didn't move forward (a cluster
+            // of same-second attacks, or a stale cached page), nudge by 1s so we
+            // don't loop — the Map dedupes any overlap.
+            cursor = maxStarted > cursor ? maxStarted : cursor + 1;
+
+            // If a short page returned only duplicates AND the clock didn't move,
+            // we're genuinely done.
+            if (newCount === 0 && maxStarted <= cursor - 1) break;
+
+            await sleep(REQ_DELAY_MS);
+        }
+
+        return { list: Array.from(seen.values()), partial };
+    }
+
+    /* --------------------- classification --------------------- */
+    function blankRow(id, name) {
+        return {
+            id, name,
+            wins: 0,          // offensive WAR HITS (successful hits on the enemy)
+            offLost: 0,       // offensive: attacked the enemy and lost
+            stalemates: 0,    // offensive stalemates vs enemy
+            assists: 0,
+            respect: 0,
+            lossAll: 0,       // DEFENSIVE: beaten by ANYONE during the war window
+            lossEnemy: 0,     // DEFENSIVE: beaten specifically by the enemy faction (subset of lossAll)
+            enemyOn: 0,       // DEFENSIVE: incoming attacks confirmed from the enemy faction
+            stealthOn: 0,     // DEFENSIVE: incoming stealthed attacks (attacker hidden — almost always the enemy mid-war)
+            defHeld: 0,       // DEFENSIVE: held / repelled an incoming attack
+            totalOff: 0,      // total offensive attacks vs the enemy
+        };
+    }
+
+    function buildReport(ctx, war, attacks) {
+        const rows = new Map();        // memberId -> row
+        // Seed every current member so 0-hit members still appear.
+        for (const id of Object.keys(ctx.members)) {
+            rows.set(String(id), blankRow(id, ctx.members[id].name || `ID ${id}`));
+        }
+        const ensure = (id, name) => {
+            const k = String(id);
+            if (!rows.has(k)) rows.set(k, blankRow(k, name || `ID ${id}`));
+            return rows.get(k);
+        };
+
+        const oppId = war.oppId;
+        let totalHits = 0, totalRespect = 0, totalLosses = 0, totalEnemyOn = 0, totalStealthOn = 0;
+
+        for (const a of attacks) {
+            const result = a.result;
+            const attackerIn = a.attacker_faction === ctx.factionId;
+            const defenderIsEnemy = a.defender_faction === oppId;
+            const attackerIsEnemy = a.attacker_faction === oppId;
+            const defenderIn = a.defender_faction === ctx.factionId;
+            const isStealthed = Number(a.stealthed) === 1;
+            const warHit = hasWarBonus(a);
+
+            // Offensive: our member hit the enemy faction.
+            if (attackerIn && defenderIsEnemy && a.attacker_id) {
+                const row = ensure(a.attacker_id, a.attacker_name);
+                row.totalOff++;
+                if (WIN_RESULTS.has(result)) { row.wins++; totalHits++; }
+                else if (LOSS_RESULTS.has(result)) row.offLost++;
+                else if (STALE_RESULTS.has(result)) row.stalemates++;
+                else if (ASSIST_RESULTS.has(result)) row.assists++;
+                row.respect += Number(a.respect_gain || 0);
+                totalRespect += Number(a.respect_gain || 0);
+            }
+
+            // Defensive: one of our members got attacked during the war.
+            // An incoming attack is an enemy war hit if it carries the war bonus
+            // (definitive, even when stealthed) OR the attacker's faction is the
+            // opponent. Remaining stealthed hits with no war bonus are tracked
+            // separately as "likely enemy".
+            if (defenderIn && a.defender_id && a.attacker_faction !== ctx.factionId) {
+                const row = ensure(a.defender_id, a.defender_name);
+                const enemyHit = attackerIsEnemy || warHit;
+                if (enemyHit) { row.enemyOn++; totalEnemyOn++; }
+                else if (isStealthed) { row.stealthOn++; totalStealthOn++; }
+                if (WIN_RESULTS.has(result)) {           // attacker won = our member was beaten
+                    row.lossAll++;
+                    totalLosses++;
+                    if (enemyHit) row.lossEnemy++;
+                } else if (LOSS_RESULTS.has(result) || STALE_RESULTS.has(result) || ESCAPE_RESULTS.has(result)) {
+                    row.defHeld++;
+                }
+            }
+        }
+
+        const list = Array.from(rows.values());
+        list.sort((a, b) => b.wins - a.wins || b.lossAll - a.lossAll);
+        return { list, totalHits, totalRespect, totalLosses, totalEnemyOn, totalStealthOn };
+    }
+
+    /* ----------------------- loss scope ----------------------- */
+    // Which loss number drives the table: all attackers, or enemy only.
+    function lossScope() {
+        const el = $('#twpr-lossscope');
+        return el && el.value === 'enemy' ? 'enemy' : 'all';
+    }
+    function scopedLoss(row) {
+        return lossScope() === 'enemy' ? row.lossEnemy : row.lossAll;
+    }
+
+    /* ========================= UI ============================= */
+    const CSS = `
+    #twpr-fab{position:fixed;z-index:2147483646;width:54px;height:54px;border-radius:50%;
+      background:linear-gradient(135deg,#7b2ff7,#2f80ed);color:#fff;border:none;font-size:22px;cursor:grab;
+      box-shadow:0 6px 18px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;
+      touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
+      padding:0;line-height:1;}
+    #twpr-fab:active{cursor:grabbing;}
+    #twpr-overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(8,10,20,.55);backdrop-filter:blur(3px);
+      display:none;align-items:flex-start;justify-content:center;padding:24px 10px;overflow:auto;}
+    #twpr-overlay.open{display:flex;}
+    #twpr-panel{width:min(960px,100%);background:rgba(20,22,34,.92);border:1px solid rgba(255,255,255,.12);
+      border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.5);color:#e9ecf5;font-family:system-ui,Segoe UI,Roboto,sans-serif;
+      backdrop-filter:blur(14px);overflow:hidden;
+      --twpr-name:#f2f4fb;--twpr-id:#7f86a0;--twpr-text:#e9ecf5;--twpr-win:#7fe3a0;
+      --twpr-loss:#ff9a9a;--twpr-stale:#ffd479;--twpr-respect:#cfd3e6;--twpr-pay:#9fc7ff;}
+    #twpr-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
+      background:linear-gradient(135deg,rgba(123,47,247,.35),rgba(47,128,237,.25));border-bottom:1px solid rgba(255,255,255,.1);}
+    #twpr-head h2{margin:0;font-size:16px;font-weight:600;letter-spacing:.3px;}
+    #twpr-close{background:none;border:none;color:#cfd3e6;font-size:22px;cursor:pointer;line-height:1;}
+    .twpr-body{padding:16px 18px;}
+    .twpr-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;}
+    .twpr-row label{font-size:12px;color:#aab0c6;display:block;margin-bottom:3px;}
+    .twpr-field{display:flex;flex-direction:column;}
+    .twpr-input,.twpr-select{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);
+      color:#fff;border-radius:8px;padding:8px 10px;font-size:13px;outline:none;}
+    .twpr-input:focus,.twpr-select:focus{border-color:#7b2ff7;}
+    .twpr-btn{background:linear-gradient(135deg,#7b2ff7,#2f80ed);color:#fff;border:none;border-radius:9px;
+      padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;}
+    .twpr-btn.ghost{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);}
+    .twpr-note{font-size:11px;color:#8b90a6;margin-top:4px;}
+    .twpr-status{font-size:12px;color:#9fe8c0;margin:8px 0;min-height:16px;}
+    .twpr-status.err{color:#ff8b8b;}
+    .twpr-tablewrap{max-height:48vh;overflow:auto;border:1px solid rgba(255,255,255,.1);border-radius:10px;margin-top:10px;}
+    table.twpr{width:100%;border-collapse:collapse;font-size:12.5px;}
+    table.twpr th,table.twpr td{padding:7px 9px;text-align:right;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,.06);}
+    table.twpr th:first-child,table.twpr td:first-child{text-align:left;position:sticky;left:0;background:rgba(20,22,34,.96);}
+    table.twpr thead th{position:sticky;top:0;background:rgba(30,33,50,.98);cursor:pointer;color:#c7cbe0;}
+    table.twpr tbody tr:hover{background:rgba(255,255,255,.04);}
+    #twpr-panel .twpr td{color:var(--twpr-text) !important;}
+    #twpr-panel .twpr-name{color:var(--twpr-name) !important;font-weight:500;}
+    #twpr-panel .twpr-id{color:var(--twpr-id) !important;}
+    #twpr-panel .twpr-win{color:var(--twpr-win) !important;}
+    #twpr-panel .twpr-loss{color:var(--twpr-loss) !important;}
+    #twpr-panel .twpr-stale{color:var(--twpr-stale) !important;}
+    #twpr-panel .twpr-respect{color:var(--twpr-respect) !important;}
+    #twpr-panel .twpr-pay{color:var(--twpr-pay) !important;font-weight:600;}
+    .twpr-colortoggle{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);color:#cfd3e6;
+      border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;}
+    .twpr-colors{display:none;flex-wrap:wrap;gap:12px;margin:8px 0;padding:12px;border:1px solid rgba(255,255,255,.1);
+      border-radius:10px;background:rgba(255,255,255,.03);align-items:flex-end;}
+    .twpr-colors.open{display:flex;}
+    .twpr-cpick{display:flex;flex-direction:column;gap:4px;}
+    .twpr-cpick label{font-size:11px;color:#aab0c6;}
+    .twpr-cpick input[type=color]{width:46px;height:30px;border:1px solid rgba(255,255,255,.2);border-radius:6px;
+      background:none;cursor:pointer;padding:2px;}
+    .twpr-guide{display:none;margin:0 0 10px;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;
+      background:rgba(255,255,255,.04);font-size:12.5px;line-height:1.5;color:#c7cbe0;}
+    .twpr-guide.open{display:block;}
+    .twpr-guide p{margin:0 0 8px;} .twpr-guide p:last-child{margin-bottom:0;}
+    .twpr-guide b{color:#e9ecf5;}
+    .twpr-guide .twpr-gh{margin:10px 0 4px;font-weight:600;color:#c7cbe0;}
+    .twpr-guide .twpr-key{margin:0 0 4px;padding-left:18px;}
+    .twpr-guide .twpr-key li{margin:2px 0;}
+    .twpr-raffle{display:none;margin:0 0 10px;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;
+      background:rgba(255,255,255,.04);}
+    .twpr-raffle.open{display:block;}
+    .twpr-raffle-sum{font-size:12.5px;color:#c7cbe0;}
+    .twpr-raffle-winner{min-height:34px;margin:6px 0;text-align:center;}
+    .twpr-spin{font-size:20px;font-weight:700;color:#ffd479;opacity:.85;}
+    .twpr-winner{font-size:15px;margin:4px 0;color:#7fe3a0;}
+    .twpr-winner b{color:#fff;}
+    .twpr-winner .sub{font-size:11.5px;color:#8b90a6;font-weight:400;}
+    .twpr-raffle-odds{margin-top:6px;font-size:12px;color:#aab0c6;}
+    .twpr-raffle-odds summary{cursor:pointer;color:#9fc7ff;}
+    .twpr-raffle-odds table{width:100%;border-collapse:collapse;margin-top:6px;}
+    .twpr-raffle-odds td{padding:3px 6px;border-bottom:1px solid rgba(255,255,255,.06);}
+    .twpr-raffle-odds td:last-child{text-align:right;color:#c7cbe0;}
+    .twpr-foot{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;margin-top:12px;}
+    .twpr-summary{font-size:12px;color:#aab0c6;}
+    `;
+
+    function injectCSS() {
+        if ($('#twpr-css')) return;
+        const s = document.createElement('style');
+        s.id = 'twpr-css';
+        s.textContent = CSS;
+        document.head.appendChild(s);
+    }
+
+    let state = { ctx: null, wars: [], report: null, war: null };
+
+    /* --------------------- color settings --------------------- */
+    const COLORS = [
+        { key: 'name',    label: 'Member',    cssVar: '--twpr-name',    def: '#f2f4fb' },
+        { key: 'id',      label: 'ID',        cssVar: '--twpr-id',      def: '#7f86a0' },
+        { key: 'win',     label: 'Hits',      cssVar: '--twpr-win',     def: '#7fe3a0' },
+        { key: 'loss',    label: 'Losses',    cssVar: '--twpr-loss',    def: '#ff9a9a' },
+        { key: 'stale',   label: 'Stalemate', cssVar: '--twpr-stale',   def: '#ffd479' },
+        { key: 'respect', label: 'Respect',   cssVar: '--twpr-respect', def: '#cfd3e6' },
+        { key: 'text',    label: 'Numbers',   cssVar: '--twpr-text',    def: '#e9ecf5' },
+    ];
+
+    function buildColorUI() {
+        const wrap = $('#twpr-colors');
+        if (!wrap) return;
+        wrap.innerHTML = COLORS.map(c =>
+            `<div class="twpr-cpick"><label>${c.label}</label>` +
+            `<input type="color" data-key="${c.key}" value="${c.def}"></div>`
+        ).join('') +
+        `<div class="twpr-cpick"><label>&nbsp;</label>` +
+        `<button class="twpr-colortoggle" id="twpr-colorreset" type="button">Reset</button></div>`;
+    }
+
+    function loadColors() {
+        const panel = $('#twpr-panel');
+        gmGet(LS_COLORS, '').then(raw => {
+            let saved = {};
+            try { saved = raw ? JSON.parse(raw) : {}; } catch (e) {}
+            COLORS.forEach(c => {
+                const val = saved[c.key] || c.def;
+                panel.style.setProperty(c.cssVar, val);
+                const inp = $(`#twpr-colors input[data-key="${c.key}"]`);
+                if (inp) inp.value = val;
+            });
+        });
+    }
+
+    function saveColors() {
+        const out = {};
+        COLORS.forEach(c => {
+            const inp = $(`#twpr-colors input[data-key="${c.key}"]`);
+            if (inp) out[c.key] = inp.value;
+        });
+        gmSet(LS_COLORS, JSON.stringify(out));
+    }
+
+    function resetColors() {
+        const panel = $('#twpr-panel');
+        COLORS.forEach(c => {
+            panel.style.setProperty(c.cssVar, c.def);
+            const inp = $(`#twpr-colors input[data-key="${c.key}"]`);
+            if (inp) inp.value = c.def;
+        });
+        gmSet(LS_COLORS, JSON.stringify({}));
+    }
+
+    function setStatus(msg, isErr) {
+        const el = $('#twpr-status');
+        if (!el) return;
+        el.textContent = msg || '';
+        el.classList.toggle('err', !!isErr);
+    }
+
+    function buildPanel() {
+        injectCSS();
+        if ($('#twpr-overlay')) return;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'twpr-overlay';
+        overlay.innerHTML = `
+          <div id="twpr-panel">
+            <div id="twpr-head">
+              <h2>⚔️ War Payout Report</h2>
+              <button id="twpr-close" title="Close">×</button>
+            </div>
+            <div class="twpr-body">
+              <div class="twpr-row">
+                <div class="twpr-field" style="flex:1;min-width:220px;">
+                  <label>Torn API key (faction access)</label>
+                  <input class="twpr-input" id="twpr-key" type="password" placeholder="paste key…" autocomplete="off">
+                  <div class="twpr-note">Leader/AA key. <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" style="color:#9fc7ff;">Create one →</a> (stored locally only)</div>
+                </div>
+                <div class="twpr-field">
+                  <label>&nbsp;</label>
+                  <button class="twpr-btn ghost" id="twpr-load">Load wars</button>
+                </div>
+              </div>
+
+              <div class="twpr-row" id="twpr-war-row" style="display:none;align-items:flex-end;">
+                <div class="twpr-field" style="flex:1;min-width:200px;">
+                  <label>War</label>
+                  <select class="twpr-select" id="twpr-war"></select>
+                </div>
+                <div class="twpr-field">
+                  <label>&nbsp;</label>
+                  <button class="twpr-btn" id="twpr-run">Pull report</button>
+                </div>
+                <div class="twpr-field" style="min-width:auto;">
+                  <label style="white-space:nowrap;"><input type="checkbox" id="twpr-fresh" style="vertical-align:middle;"> Fresh pull</label>
+                  <button class="twpr-colortoggle" id="twpr-cache-clear" type="button" style="padding:4px 8px;font-size:11px;">Clear cache</button>
+                </div>
+              </div>
+
+              <div class="twpr-status" id="twpr-status"></div>
+
+              <div id="twpr-result" style="display:none;">
+
+                <div class="twpr-row" style="margin-bottom:6px;gap:8px;">
+                  <button class="twpr-colortoggle" id="twpr-guidetoggle" type="button">ℹ️ Guide</button>
+                  <button class="twpr-colortoggle" id="twpr-colortoggle" type="button">🎨 Colors</button>
+                  <button class="twpr-colortoggle" id="twpr-raffletoggle" type="button">🎟️ Loss Raffle</button>
+                </div>
+                <div class="twpr-guide" id="twpr-guide">
+                  <p><b>How to use:</b> pick the war, hit <b>Pull report</b>, then read the breakdown or <b>Copy table</b> to export it. The dropdown sets whether "Losses" counts all attackers or only the enemy.</p>
+                  <p class="twpr-gh">⚔️ Offensive — what your member did to the enemy</p>
+                  <ul class="twpr-key">
+                    <li><b>Hits</b> — successful war hits landed on the enemy (your score).</li>
+                    <li><b>Stale</b> — your attacks on the enemy that ended in a stalemate.</li>
+                    <li><b>Assist</b> — assists on enemy targets.</li>
+                    <li><b>Respect</b> — respect earned from your war hits.</li>
+                  </ul>
+                  <p class="twpr-gh">🛡️ Defensive — what was done to your member</p>
+                  <ul class="twpr-key">
+                    <li><b>Enemy Hits</b> — total times the enemy attacked this member (win or not). Includes stealthed hits, caught via the war bonus.</li>
+                    <li><b>Losses</b> — times this member was beaten (per the dropdown: all attackers or enemy only).</li>
+                    <li><b>vs Enemy</b> — of those losses, how many the enemy dealt.</li>
+                    <li><b>Defended</b> — incoming attacks this member survived: the attacker lost, stalemated, or ran out of time. (Low here because the enemy beat your members most times they attacked.)</li>
+                  </ul>
+                  <p class="twpr-gh">In the CSV/TSV export you also get:</p>
+                  <ul class="twpr-key">
+                    <li><b>LossesAll / LossesEnemy</b> — beaten by anyone / beaten by the enemy.</li>
+                    <li><b>EnemyConfirmed / Stealthed</b> — enemy hits with a visible faction or war bonus / hidden-attacker hits counted as enemy.</li>
+                    <li><b>OffLost</b> — your attacks on the enemy that you lost.</li>
+                  </ul>
+                  <p><b>Enemy total:</b> the summary's "Enemy hits on us" uses the official war report when available (the fully accurate faction total); otherwise it's the attack-log estimate. Re-pull after the war ends for the exact number.</p>
+                </div>
+                </div>
+                <div class="twpr-colors" id="twpr-colors"></div>
+
+                <div class="twpr-raffle" id="twpr-raffle">
+                  <div class="twpr-raffle-sum" id="twpr-raffle-sum"></div>
+                  <div class="twpr-row" style="gap:10px;align-items:flex-end;margin:8px 0;">
+                    <div class="twpr-field"><label>Winners to draw</label><input class="twpr-input" id="twpr-raffle-n" type="number" min="1" value="1" style="width:80px;"></div>
+                    <button class="twpr-btn" id="twpr-raffle-draw" type="button">🎲 Draw winner</button>
+                    <button class="twpr-colortoggle" id="twpr-raffle-wheel" type="button">Copy Wheel of Names list</button>
+                  </div>
+                  <div class="twpr-raffle-winner" id="twpr-raffle-winner"></div>
+                  <details class="twpr-raffle-odds"><summary>Show odds (tickets per member)</summary><div id="twpr-raffle-oddsbody"></div></details>
+                  <div class="twpr-note">1 ticket per loss (uses the "count losses as" setting above). The draw uses your browser's cryptographic RNG — truly random, weighted by tickets. For the wheel: copy the list, open <b>wheelofnames.com</b>, and paste it in.</div>
+                </div>
+
+                <div class="twpr-row" style="margin-bottom:8px;gap:14px;">
+                  <div class="twpr-field">
+                    <label>Count "losses" as</label>
+                    <select class="twpr-select" id="twpr-lossscope">
+                      <option value="all">All losses during war (any attacker)</option>
+                      <option value="enemy">Losses to enemy faction only</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="twpr-tablewrap">
+                  <table class="twpr">
+                    <thead><tr>
+                      <th data-k="name" title="Faction member [their Torn ID]">Member</th>
+                      <th data-k="wins" title="Successful war hits landed on the enemy faction">Hits</th>
+                      <th data-k="loss" title="Times this member was beaten during the war (any attacker, per the dropdown)">Losses</th>
+                      <th data-k="lossEnemy" title="Of those losses, how many came from the war opponent">vs Enemy</th>
+                      <th data-k="enemyHits" title="Times the enemy attacked this member — confirmed enemy hits plus stealthed hits (attacker hidden, almost always the enemy during a war)">Enemy Hits</th>
+                      <th data-k="defHeld" title="Incoming attacks this member survived — the attacker lost, stalemated, or ran out of time">Defended</th>
+                      <th data-k="stalemates" title="Stalemates against the enemy">Stale</th>
+                      <th data-k="assists" title="Assists against the enemy">Assist</th>
+                      <th data-k="respect" title="Respect earned from war hits">Respect</th>
+                    </tr></thead>
+                    <tbody id="twpr-tbody"></tbody>
+                  </table>
+                </div>
+
+                <div class="twpr-foot">
+                  <div class="twpr-summary" id="twpr-summary"></div>
+                  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <select class="twpr-select" id="twpr-fmt" style="padding:8px 10px;">
+                      <option value="aligned">Aligned table</option>
+                      <option value="discord">Discord (code block)</option>
+                      <option value="tsv">Spreadsheet (TSV)</option>
+                      <option value="csv">CSV</option>
+                    </select>
+                    <button class="twpr-btn" id="twpr-copy-table">Copy table</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+
+        bindTap($('#twpr-close'), closePanel);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closePanel(); });
+        bindTap($('#twpr-load'), onLoadWars);
+        bindTap($('#twpr-run'), onRun);
+        bindTap($('#twpr-copy-table'), onCopyTable);
+
+        // Color settings: build pickers, restore saved values, wire toggle.
+        buildColorUI();
+        loadColors();
+        bindTap($('#twpr-colortoggle'), () => $('#twpr-colors').classList.toggle('open'));
+        bindTap($('#twpr-colorreset'), resetColors);
+
+        // Guide toggle.
+        bindTap($('#twpr-guidetoggle'), () => $('#twpr-guide').classList.toggle('open'));
+        bindTap($('#twpr-raffletoggle'), () => { $('#twpr-raffle').classList.toggle('open'); renderRaffle(); });
+        bindTap($('#twpr-raffle-draw'), onRaffleDraw);
+        bindTap($('#twpr-raffle-wheel'), onCopyWheel);
+        bindTap($('#twpr-cache-clear'), async () => {
+            await cacheClearAll();
+            // Refresh the 💾 markers if wars are loaded.
+            if (state.wars && state.wars.length) {
+                const sel = $('#twpr-war');
+                const cur = sel.value;
+                sel.innerHTML = state.wars.map((w, i) => {
+                    const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
+                    const live = w.end ? '' : ' [LIVE]';
+                    return `<option value="${i}">${when} vs ${w.oppName} (${w.myScore}–${w.oppScore})${live}</option>`;
+                }).join('');
+                sel.value = cur;
+            }
+            setStatus('Cleared all cached reports.');
+        });
+
+        // Live color updates.
+        overlay.addEventListener('input', (e) => {
+            const t = e.target;
+            if (t.matches && t.matches('#twpr-colors input[type=color]')) {
+                const cfg = COLORS.find(c => c.key === t.dataset.key);
+                if (cfg) $('#twpr-panel').style.setProperty(cfg.cssVar, t.value);
+                saveColors();
+            }
+        });
+        overlay.addEventListener('change', (e) => {
+            if (e.target.id === 'twpr-lossscope') { renderTable(); renderRaffle(); }
+        });
+
+        // Sortable headers.
+        overlay.querySelectorAll('table.twpr thead th').forEach(th => {
+            bindTap(th, () => sortBy(th.dataset.k));
+        });
+
+        // Prefill saved key.
+        gmGet(LS_KEY, '').then(k => { if (k) $('#twpr-key').value = k; });
+    }
+
+    function openPanel() { buildPanel(); $('#twpr-overlay').classList.add('open'); }
+    function closePanel() { const o = $('#twpr-overlay'); if (o) o.classList.remove('open'); }
+
+    async function onLoadWars() {
+        const key = $('#twpr-key').value.trim();
+        if (!key) { setStatus('Enter your API key first.', true); return; }
+        gmSet(LS_KEY, key);
+        setStatus('Loading faction + wars…');
+        try {
+            await cachePrune();
+            state.ctx = await getFactionContext(key);
+            state.wars = listWars(state.ctx);
+            if (!state.wars.length) { setStatus('No ranked wars found for this faction.', true); return; }
+            const cachedIds = new Set((await cacheIndexGet()).map(x => x.warId));
+            const sel = $('#twpr-war');
+            sel.innerHTML = state.wars.map((w, i) => {
+                const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
+                const live = w.end ? '' : ' [LIVE]';
+                const cached = cachedIds.has(w.warId) ? ' 💾' : '';
+                return `<option value="${i}">${when} vs ${w.oppName} (${w.myScore}–${w.oppScore})${live}${cached}</option>`;
+            }).join('');
+            $('#twpr-war-row').style.display = 'flex';
+            setStatus(`Found ${state.wars.length} war(s) for ${state.ctx.factionName}. 💾 = cached. Pick one and pull.`);
+        } catch (e) {
+            setStatus(e.message || 'Failed to load.', true);
+        }
+    }
+
+    async function onRun() {
+        const key = $('#twpr-key').value.trim();
+        const idx = Number($('#twpr-war').value);
+        const war = state.wars[idx];
+        if (!war) { setStatus('Select a war.', true); return; }
+        state.war = war;
+
+        const from = war.start;
+        const to = war.end && war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
+        if (!from) { setStatus('That war has no start timestamp.', true); return; }
+
+        // Serve from the 30-day cache unless "Fresh pull" is ticked.
+        const forceFresh = !!($('#twpr-fresh') && $('#twpr-fresh').checked);
+        if (!forceFresh) {
+            const cached = await cacheLoad(war.warId);
+            if (cached) {
+                state.report = cached.report;
+                $('#twpr-result').style.display = 'block';
+                renderTable();
+                renderRaffle();
+                const age = humanAge(Date.now() - cached.savedAt);
+                setStatus(`Loaded from cache (saved ${age} ago, ${fmt(cached.attacksScanned || 0)} attacks). Tick "Fresh pull" for live data.`);
+                return;
+            }
+        }
+
+        $('#twpr-run').disabled = true;
+        setStatus('Pulling attacks… (this can take a moment for big wars)');
+        try {
+            const pulled = await pullAttacks(key, from, to, (count, page) => {
+                setStatus(`Pulling attacks… ${fmt(count)} loaded (page ${page})`);
+            });
+            const attacks = pulled.list;
+            state.report = buildReport(state.ctx, war, attacks);
+            $('#twpr-result').style.display = 'block';
+            renderTable();
+            renderRaffle();
+            const partialNote = pulled.partial ? ' (partial — Torn had a backend hiccup; re-pull to fill in the rest)' : '';
+            setStatus(`Scanned ${fmt(attacks.length)} attacks${partialNote}. Checking the war report for the enemy's hit total…`);
+            // Authoritative enemy hit count comes from the ranked war report,
+            // since the attack log doesn't capture every incoming hit.
+            state.report.enemyReportHits = await fetchEnemyHits(key, war.warId, war.oppId);
+            renderTable();
+            // Cache the finished report for 30 days (skip caching partial pulls).
+            if (!pulled.partial) await cacheSave(war, state.report, attacks.length, pulled.partial);
+            const source = state.report.enemyReportHits != null
+                ? 'Enemy hit total taken from the war report.'
+                : 'War report not available yet (live war) — enemy count is the attack-log estimate; re-pull after the war ends for the exact total.';
+            const cacheNote = pulled.partial ? ' Not cached (partial).' : ' Cached for 30 days.';
+            setStatus(`Done. ${source}${partialNote}${cacheNote}`, pulled.partial);
+        } catch (e) {
+            setStatus(e.message || 'Pull failed.', true);
+        } finally {
+            $('#twpr-run').disabled = false;
+        }
+    }
+
+    // Pull the enemy faction's total hits from the ranked war report. Returns
+    // a number, or null if the report isn't available (e.g. war still live).
+    async function fetchEnemyHits(key, warId, oppId) {
+        try {
+            const data = await fetchJSON(`torn/${warId}`, { selections: 'rankedwarreport' }, key);
+            const rep = data.rankedwarreport;
+            if (!rep || !rep.factions) return null;
+            const enemy = rep.factions[oppId] || rep.factions[String(oppId)];
+            if (!enemy) return null;
+            // Prefer a faction-level attacks count; otherwise sum each member's.
+            let total = Number(enemy.attacks || 0);
+            if (!total && enemy.members) {
+                for (const mid of Object.keys(enemy.members)) {
+                    const m = enemy.members[mid] || {};
+                    total += Number(m.attacks || m.hits || 0);
+                }
+            }
+            return Number.isFinite(total) ? total : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    let sortKey = 'wins', sortDir = -1;
+    function sortBy(k) {
+        if (!state.report) return;
+        if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = (k === 'name') ? 1 : -1; }
+        renderTable();
+    }
+
+    function sortedRows() {
+        const list = state.report.list.slice();
+        list.sort((a, b) => {
+            let av, bv;
+            if (sortKey === 'loss') { av = scopedLoss(a); bv = scopedLoss(b); }
+            else if (sortKey === 'enemyHits') { av = a.enemyOn + a.stealthOn; bv = b.enemyOn + b.stealthOn; }
+            else if (sortKey === 'name') { return a.name.localeCompare(b.name) * sortDir; }
+            else { av = a[sortKey]; bv = b[sortKey]; }
+            return (av - bv) * sortDir;
+        });
+        return list;
+    }
+
+    function renderTable() {
+        if (!state.report) return;
+        const list = sortedRows();
+        const tbody = $('#twpr-tbody');
+        tbody.innerHTML = list.map(row => {
+            return `<tr>
+              <td><span class="twpr-name">${row.name}</span> <span class="twpr-id">[${row.id}]</span></td>
+              <td class="twpr-win">${fmt(row.wins)}</td>
+              <td class="twpr-loss">${fmt(scopedLoss(row))}</td>
+              <td>${fmt(row.lossEnemy)}</td>
+              <td>${fmt(row.enemyOn + row.stealthOn)}</td>
+              <td>${fmt(row.defHeld)}</td>
+              <td class="twpr-stale">${fmt(row.stalemates)}</td>
+              <td>${fmt(row.assists)}</td>
+              <td class="twpr-respect">${fmt(row.respect.toFixed ? row.respect.toFixed(2) : row.respect)}</td>
+            </tr>`;
+        }).join('');
+
+        const rep = state.report;
+        const logEnemy = rep.totalEnemyOn + rep.totalStealthOn;
+        let enemyStr;
+        if (rep.enemyReportHits != null) {
+            enemyStr = `Enemy hits on us: <b>${fmt(rep.enemyReportHits)}</b> <span style="color:#8b90a6;">(war report · log saw ${fmt(logEnemy)})</span>`;
+        } else {
+            enemyStr = `Enemy hits on us: <b>~${fmt(logEnemy)}</b> <span style="color:#8b90a6;">(attack-log estimate — undercounts incoming)</span>`;
+        }
+        $('#twpr-summary').innerHTML =
+            `War hits: <b>${fmt(rep.totalHits)}</b> · Our losses: <b class="twpr-loss">${fmt(rep.totalLosses)}</b> · ` +
+            enemyStr + ` · Respect: <b>${fmt(rep.totalRespect.toFixed(2))}</b>`;
+    }
+
+    // Shared row set: drop members who did nothing at all.
+    function reportRows() {
+        return sortedRows()
+            .filter(row => row.wins || row.lossAll || row.defHeld || row.assists || row.stalemates)
+            .map(row => ({
+                name: row.name,
+                id: row.id,
+                player: `${row.name} [${row.id}]`,
+                hits: row.wins,
+                loss: scopedLoss(row),
+                lossAll: row.lossAll,
+                enemy: row.lossEnemy,
+                enemyHits: row.enemyOn + row.stealthOn,
+                enemyConfirmed: row.enemyOn,
+                stealth: row.stealthOn,
+                held: row.defHeld,
+                stale: row.stalemates,
+                assist: row.assists,
+                offlost: row.offLost,
+                respect: (row.respect.toFixed ? row.respect.toFixed(2) : row.respect),
+            }));
+    }
+
+    // Full column spec for the data formats (CSV / TSV).
+    const COPY_COLS = [
+        ['Member',      r => r.name],
+        ['ID',          r => r.id],
+        ['Hits',        r => r.hits],
+        ['Losses',      r => r.loss],
+        ['LossesAll',   r => r.lossAll],
+        ['LossesEnemy', r => r.enemy],
+        ['EnemyHits',   r => r.enemyHits],
+        ['EnemyConfirmed', r => r.enemyConfirmed],
+        ['Stealthed',   r => r.stealth],
+        ['Defended',    r => r.held],
+        ['Stalemates',  r => r.stale],
+        ['Assists',     r => r.assist],
+        ['OffLost',     r => r.offlost],
+        ['Respect',     r => r.respect],
+    ];
+
+    // Compact, human-readable monospace table.
+    function buildAligned(rows) {
+        const headers = ['Player', 'Hits', 'Loss', 'Enmy', 'EnHits', 'Def', 'Stl', 'Ast', 'Respect'];
+        const body = rows.map(r => [
+            r.player, String(r.hits), String(r.loss), String(r.enemy), String(r.enemyHits),
+            String(r.held), String(r.stale), String(r.assist), String(r.respect),
+        ]);
+        const all = [headers, ...body];
+        const w = headers.map((_, i) => Math.max(...all.map(row => row[i].length)));
+        const line = (row) => row.map((c, i) => i === 0 ? c.padEnd(w[i]) : c.padStart(w[i])).join('  ');
+        const sep = w.map(x => '-'.repeat(x)).join('  ');
+        return [line(headers), sep, ...body.map(line)].join('\n');
+    }
+
+    function buildDelimited(rows, delim, quoteNames) {
+        const head = COPY_COLS.map(c => c[0]).join(delim);
+        const lines = [head];
+        for (const r of rows) {
+            lines.push(COPY_COLS.map(c => {
+                const v = c[1](r);
+                return (quoteNames && c[0] === 'Member') ? `"${v}"` : v;
+            }).join(delim));
+        }
+        return lines.join('\n');
+    }
+
+    // One-line war summary used at the top of the human-readable exports.
+    function summaryLine() {
+        const rep = state.report;
+        if (!rep) return '';
+        const logEnemy = rep.totalEnemyOn + rep.totalStealthOn;
+        const enemy = rep.enemyReportHits != null
+            ? `${fmt(rep.enemyReportHits)} (war report)`
+            : `~${fmt(logEnemy)} (attack-log estimate)`;
+        const when = state.war ? (state.war.oppName || 'enemy') : 'enemy';
+        return `War vs ${when} — our hits: ${fmt(rep.totalHits)} · our losses: ${fmt(rep.totalLosses)} · enemy hits on us: ${enemy}`;
+    }
+
+    function onCopyTable() {
+        if (!state.report) return;
+        const rows = reportRows();
+        if (!rows.length) { setStatus('No active members to copy.', true); return; }
+        const mode = $('#twpr-fmt') ? $('#twpr-fmt').value : 'aligned';
+        const summary = summaryLine();
+        let text, label;
+        if (mode === 'aligned')      { text = summary + '\n\n' + buildAligned(rows);                 label = 'Aligned table copied.'; }
+        else if (mode === 'discord') { text = '```\n' + summary + '\n\n' + buildAligned(rows) + '\n```'; label = 'Discord block copied.'; }
+        else if (mode === 'tsv')     { text = buildDelimited(rows, '\t', false);  label = 'TSV copied — paste into a spreadsheet.'; }
+        else                         { text = buildDelimited(rows, ',', true);    label = 'CSV copied.'; }
+        copy(text, label);
+    }
+
+    /* --------------------- loss raffle ------------------------ */
+    // Cryptographically strong uniform [0,1). Falls back to Math.random only
+    // if the crypto API is somehow unavailable.
+    function cryptoFloat() {
+        const c = (typeof crypto !== 'undefined' && crypto) || (typeof window !== 'undefined' && window.crypto);
+        if (c && c.getRandomValues) {
+            const buf = new Uint32Array(1);
+            c.getRandomValues(buf);
+            return buf[0] / 4294967296;
+        }
+        return Math.random();
+    }
+
+    // One ticket per loss, using the current "count losses as" setting.
+    function raffleEntrants() {
+        if (!state.report) return [];
+        return state.report.list
+            .map(row => ({ name: row.name, id: row.id, tickets: scopedLoss(row) }))
+            .filter(e => e.tickets > 0)
+            .sort((a, b) => b.tickets - a.tickets);
+    }
+
+    function pickWeighted(pool) {
+        const total = pool.reduce((s, e) => s + e.tickets, 0);
+        if (total <= 0) return null;
+        let r = cryptoFloat() * total;
+        for (const e of pool) { r -= e.tickets; if (r < 0) return e; }
+        return pool[pool.length - 1];
+    }
+
+    function renderRaffle() {
+        const sum = $('#twpr-raffle-sum');
+        if (!sum) return;
+        const entrants = raffleEntrants();
+        const total = entrants.reduce((s, e) => s + e.tickets, 0);
+        sum.innerHTML = `<b>${fmt(entrants.length)}</b> members hold <b>${fmt(total)}</b> tickets (1 per loss).`;
+        const odds = $('#twpr-raffle-oddsbody');
+        if (odds) {
+            odds.innerHTML = total
+                ? `<table>${entrants.map(e =>
+                    `<tr><td>${e.name} <span style="color:#666;">[${e.id}]</span></td><td>${fmt(e.tickets)} · ${((e.tickets / total) * 100).toFixed(1)}%</td></tr>`
+                  ).join('')}</table>`
+                : '<div style="color:#8b90a6;">No losses = no tickets.</div>';
+        }
+    }
+
+    function showRaffleWinners(winners, total) {
+        const el = $('#twpr-raffle-winner');
+        if (!el) return;
+        el.innerHTML = winners.map((w, i) => {
+            const odds = total ? ((w.tickets / total) * 100).toFixed(1) : '0';
+            return `<div class="twpr-winner">🏆 ${winners.length > 1 ? `#${i + 1} ` : ''}<b>${w.name}</b> [${w.id}] <span class="sub">${fmt(w.tickets)} tickets · ${odds}% odds</span></div>`;
+        }).join('');
+    }
+
+    function onRaffleDraw() {
+        const entrants = raffleEntrants();
+        if (!entrants.length) { setStatus('No losses means no tickets to draw.', true); return; }
+        const total = entrants.reduce((s, e) => s + e.tickets, 0);
+        const n = Math.max(1, Math.min(Number($('#twpr-raffle-n').value || 1), entrants.length));
+
+        // Pre-compute unique winners (weighted, without replacement).
+        const pool = entrants.slice();
+        const winners = [];
+        for (let i = 0; i < n; i++) {
+            const w = pickWeighted(pool);
+            if (!w) break;
+            winners.push(w);
+            pool.splice(pool.indexOf(w), 1);
+        }
+
+        // Spin animation: cycle random names, decelerating, then reveal.
+        const el = $('#twpr-raffle-winner');
+        const btn = $('#twpr-raffle-draw');
+        if (btn) btn.disabled = true;
+        const start = Date.now();
+        (function step() {
+            const rnd = entrants[Math.floor(cryptoFloat() * entrants.length)];
+            el.innerHTML = `<div class="twpr-spin">${rnd.name}</div>`;
+            const elapsed = Date.now() - start;
+            if (elapsed < 2200) {
+                setTimeout(step, 50 + elapsed / 22);
+            } else {
+                showRaffleWinners(winners, total);
+                if (btn) btn.disabled = false;
+            }
+        })();
+    }
+
+    // Each name repeated by its ticket count — paste into wheelofnames.com.
+    function onCopyWheel() {
+        const entrants = raffleEntrants();
+        if (!entrants.length) { setStatus('No tickets to export.', true); return; }
+        const lines = [];
+        for (const e of entrants) for (let i = 0; i < e.tickets; i++) lines.push(e.name);
+        copy(lines.join('\n'), `Copied ${fmt(lines.length)} entries — paste into wheelofnames.com.`);
+    }
+
+    function copy(text, okMsg) {
+        const done = () => setStatus(okMsg);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+        } else { fallbackCopy(text, done); }
+    }
+    function fallbackCopy(text, done) {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) { setStatus('Copy failed — select manually.', true); }
+        document.body.removeChild(ta);
+    }
+
+    /* ----------------------- bootstrap ------------------------ */
+    let fabPos = null;
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+    async function loadFabPos() {
+        try { const raw = await gmGet(LS_FABPOS, ''); if (raw) fabPos = JSON.parse(raw); }
+        catch (e) { fabPos = null; }
+    }
+
+    function placeFab(fab) {
+        const size = fab.offsetWidth || 54;
+        let left, top;
+        if (fabPos && Number.isFinite(fabPos.left) && Number.isFinite(fabPos.top)) {
+            left = fabPos.left; top = fabPos.top;
+        } else {
+            // Default: right edge, ~40% down — clear of TornPDA's top + bottom bars.
+            left = window.innerWidth - size - 14;
+            top = Math.round(window.innerHeight * 0.40);
+        }
+        fab.style.left = clamp(left, 4, window.innerWidth - size - 4) + 'px';
+        fab.style.top = clamp(top, 4, window.innerHeight - size - 4) + 'px';
+    }
+
+    // Drag-or-tap: a small movement counts as a tap (opens panel); a larger
+    // drag repositions the button and saves it. Pointer Events cover both
+    // touch (TornPDA) and mouse (desktop) with one code path.
+    function attachDrag(fab) {
+        let active = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+        const THRESH = 6;
+
+        const down = (e) => {
+            const p = e.touches ? e.touches[0] : e;
+            active = true; moved = false;
+            sx = p.clientX; sy = p.clientY;
+            const r = fab.getBoundingClientRect();
+            ox = r.left; oy = r.top;
+            if (fab.setPointerCapture && e.pointerId != null) {
+                try { fab.setPointerCapture(e.pointerId); } catch (_) {}
+            }
+        };
+        const move = (e) => {
+            if (!active) return;
+            const p = e.touches ? e.touches[0] : e;
+            const dx = p.clientX - sx, dy = p.clientY - sy;
+            if (Math.abs(dx) > THRESH || Math.abs(dy) > THRESH) moved = true;
+            if (moved) {
+                if (e.cancelable) e.preventDefault();
+                const size = fab.offsetWidth || 54;
+                fab.style.left = clamp(ox + dx, 4, window.innerWidth - size - 4) + 'px';
+                fab.style.top = clamp(oy + dy, 4, window.innerHeight - size - 4) + 'px';
+            }
+        };
+        const up = () => {
+            if (!active) return;
+            active = false;
+            if (moved) {
+                fabPos = { left: parseInt(fab.style.left, 10), top: parseInt(fab.style.top, 10) };
+                gmSet(LS_FABPOS, JSON.stringify(fabPos));
+            } else {
+                openPanel();
+            }
+        };
+
+        if (window.PointerEvent) {
+            fab.addEventListener('pointerdown', down);
+            fab.addEventListener('pointermove', move);
+            fab.addEventListener('pointerup', up);
+            fab.addEventListener('pointercancel', () => { active = false; });
+        } else {
+            fab.addEventListener('touchstart', down, { passive: false });
+            fab.addEventListener('touchmove', move, { passive: false });
+            fab.addEventListener('touchend', up);
+            fab.addEventListener('mousedown', down);
+            window.addEventListener('mousemove', move);
+            window.addEventListener('mouseup', up);
+        }
+    }
+
+    function addFab() {
+        if (document.getElementById('twpr-fab')) return;
+        injectCSS();
+        const fab = document.createElement('button');
+        fab.id = 'twpr-fab';
+        fab.type = 'button';
+        fab.title = 'War Payout Report (tap to open · drag to move)';
+        fab.textContent = '⚔️';
+        document.body.appendChild(fab);
+        placeFab(fab);
+        attachDrag(fab);
+    }
+
+    function init() {
+        if (!document.body) { setTimeout(init, 300); return; }
+        loadFabPos().then(() => {
+            addFab();
+            // Torn's SPA re-renders the body on navigation and can strip the
+            // button out — re-add it whenever it goes missing.
+            setInterval(() => { if (!document.getElementById('twpr-fab')) addFab(); }, 1500);
+            window.addEventListener('resize', () => {
+                const f = document.getElementById('twpr-fab');
+                if (f) placeFab(f);
+            });
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();

@@ -1,0 +1,2345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OC Suite — Central Command</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════════
+   OC SUITE — "CENTRAL COMMAND" UI
+   Standalone prototype. Fake data. Open it in a browser — no Torn, no
+   Tampermonkey. Built to match the Frostbite Central Command reference.
+
+   THE ONE THING TO DECIDE (see the width toggle at the top of the page):
+   this layout is drawn at ~1490px with a 290px sidebar. Torn's content column
+   is ~990px, which leaves ~700px of content — and the war report table alone
+   needs 830px. So the suite either breaks OUT of Torn's column to full width,
+   or the sidebar collapses on narrow screens. The toggle shows both.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+#app {
+  /* ── Surfaces ──────────────────────────────────────────────────────────── */
+  --side:        #0d1117;   /* sidebar — deepest */
+  --bg:          #121821;   /* page */
+  --card:        #171d28;   /* card body */
+  --card-head:   #1a212d;   /* card header strip */
+  --sunk:        #0f141c;   /* wells, inset panels */
+  --line:        #222b39;   /* borders */
+  --line-soft:   #1b2330;
+
+  /* ── Text ──────────────────────────────────────────────────────────────────
+     Five tiers, but only the top FOUR may carry information. The mockup's
+     greys were pretty and unreadable — muted came in at 3.5:1 while styling
+     every table header in the app. These values are the measured minimum that
+     clears AA against each theme's LIGHTEST surface (--card-head), which is
+     the worst case for light-on-dark.
+
+     --tx-faint is deliberately BELOW AA and is therefore decoration only:
+     placeholders, inert icons, the layout-preview bars. Never put a number,
+     a label, or anything a user has to read into it. (This tier has failed
+     AA twice in the real script for exactly that reason.) */
+  --tx:          #e8eef7;   /* the value you came to read        — 12.4:1 */
+  --tx-body:     #c2cbd8;   /* prose                             —  8.6:1 */
+  --tx-dim:      #8996a8;   /* de-emphasised but still read      —  5.4:1 */
+  --tx-muted:    #818d9f;   /* LOWEST informational tier         —  4.8:1 */
+  --tx-faint:    #6a7484;   /* decoration ONLY, not information  —  3.4:1 */
+
+  /* ── One accent ────────────────────────────────────────────────────────── */
+  --accent:        #2f8fed;
+  --accent-bright: #4da3f5;
+  --accent-soft:   #14273d;
+
+  /* ── Semantic — the only colours allowed to carry meaning ──────────────── */
+  --green:       #3fb950;
+  --yellow:      #d4a017;
+  --red:         #e05252;
+  --purple:      #a371f7;
+
+  --r:   10px;   /* card radius */
+  --r-s: 7px;
+
+  --sidebar-w: 268px;
+
+  /* ── The shell itself ──────────────────────────────────────────────────────
+     Layout lives in the same rule as the tokens on purpose: #app is the port
+     boundary, and splitting it across two `#app { }` blocks would mean the
+     same selector defined twice — the exact source-order hazard that let new
+     rules get silently overridden by older ones in the real script. */
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  background: var(--bg);
+  /* Inside Torn we sit in a column someone else sized. `max-width` alone lets
+     the panel exceed a narrower parent — which is what made it spill out of
+     the content column and appear to grow on zoom-out, since zooming enlarges
+     the viewport in CSS pixels while Torn's column stays put. `width:100%`
+     with `box-sizing:border-box` keeps the parent authoritative. */
+  width: 100%;
+  max-width: 1490px;                 /* the reference width */
+  margin: 0 auto;
+  /* A minimum in px, not vh. `100vh` measures the WINDOW, not our column, so
+     it stretched the panel past the page on short viewports and left a tall
+     empty well on tall ones. */
+  min-height: 560px;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  /* Typography is set HERE, not on body — inside Torn we cannot rely on
+     inheriting anything from the host page. */
+  font: 14px/1.5 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--tx-body);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ═══ THEMES ══════════════════════════════════════════════════════════════
+   Every theme overrides the SAME small set of slots — surfaces, one accent,
+   and four semantic colours. Nothing else in the stylesheet knows a theme
+   exists, which is the whole point: a new theme is a block of variables, not
+   a fork of the CSS.
+
+   NOTE on naming: --green/--yellow/--red are SEMANTIC SLOTS (good / warn /
+   crit), not literal hues. The colourblind-safe theme deliberately puts blue
+   in --green and orange in --red. They should be renamed --good/--warn/--crit
+   when this ports into the userscript; the matching `.green`/`.red` markup
+   classes are why that didn't happen here.
+
+   Contrast discipline from the design system applies to all of them: the
+   faint text tier carries real information and has failed AA twice before. */
+
+/* Midnight — deeper, cooler, navy. Lower contrast surfaces for long sessions. */
+#app[data-theme="midnight"] {
+  --side: #0a0e1a; --bg: #0e1424; --card: #141b2e; --card-head: #171f34;
+  --sunk: #0b1120; --line: #232c45; --line-soft: #1b2338;
+  --accent: #6a8fe8; --accent-bright: #8aa9f0; --accent-soft: #1a2444;
+  --purple: #b48ef7;
+}
+
+/* Slate — neutral grey, no colour cast. This is close to what the suite
+   ships today, so it doubles as the "don't change anything" option. */
+#app[data-theme="slate"] {
+  --side: #121212; --bg: #181818; --card: #1e1e1e; --card-head: #232323;
+  --sunk: #141414; --line: #2e2e2e; --line-soft: #262626;
+  --accent: #59a5d8; --accent-bright: #7cbde8; --accent-soft: #16242e;
+  --green: #7cba5c; --yellow: #c9a227; --red: #d75f5f;
+  --tx-faint: #848494;   /* neutral cast to match the greys, still over 3:1 */
+}
+
+/* Ember — warm. The accent is amber, which is exactly why --blue got renamed. */
+#app[data-theme="ember"] {
+  --side: #14100d; --bg: #1a1512; --card: #211a16; --card-head: #261e19;
+  --sunk: #150f0c; --line: #35291f; --line-soft: #2a2019;
+  --accent: #e08b3c; --accent-bright: #f0a55c; --accent-soft: #2e2013;
+  --green: #86b34a; --yellow: #e0b93c; --red: #e0603c; --purple: #c98ae0;
+}
+
+/* Contrast — pure black, heavier borders, brighter text throughout.
+   For sunlight, poor screens, and anyone the default is simply too dim for. */
+#app[data-theme="contrast"] {
+  --side: #000; --bg: #000; --card: #0d0d0d; --card-head: #161616;
+  --sunk: #000; --line: #555; --line-soft: #444;
+  --accent: #4db8ff; --accent-bright: #85d0ff; --accent-soft: #002238;
+  --tx: #fff; --tx-body: #f0f0f0; --tx-dim: #d4d4d4;
+  --tx-muted: #b8b8b8; --tx-faint: #9c9c9c;
+  --green: #4ae08a; --yellow: #ffd633; --red: #ff6b6b; --purple: #c9a3ff;
+}
+
+/* Colour-safe — red/green deuteranopia & protanopia.
+   Good becomes BLUE and crit becomes ORANGE, which stay distinct under both.
+   The accent must then move off blue entirely or it collides with "good" —
+   hence purple. This is the one theme where the slot names actively lie. */
+#app[data-theme="colorsafe"] {
+  --accent: #b088ff; --accent-bright: #c9a8ff; --accent-soft: #241a3a;
+  --green: #4d9bff;   /* good  → blue   */
+  --yellow: #ffc233;  /* warn  → yellow, already safe */
+  --red: #ff7733;     /* crit  → orange */
+  --purple: #ff5fa2;  /* must not read as the accent — pushed to pink */
+}
+
+/* Page backdrop only. Everything that is part of the PRODUCT lives on #app —
+   inside Torn we own a div, not the document, so nothing may depend on body. */
+body { margin: 0; padding: 0; background: #080b10; }
+
+/* ═══ PROTOTYPE CHROME — never ported ════════════════════════════════════
+   Hardcoded colours on purpose. This bar sits OUTSIDE #app, so the design
+   tokens are deliberately out of reach — and a dev toolbar that restyled
+   itself with the theme would make it harder to tell chrome from product. */
+.proto {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 14px; background: #10151d;
+  border-bottom: 1px dashed #2c3545;
+  font: 11px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #818d9f;
+}
+.proto b { color: #d4a017; }
+.proto .push { margin-left: auto; }
+.proto button {
+  background: #1a212d; border: 1px solid #222b39; color: #8996a8;
+  font: inherit; padding: 4px 10px; border-radius: 5px; cursor: pointer;
+}
+.proto button:hover { color: #e8eef7; border-color: #35404f; }
+.proto button.on { background: #14273d; border-color: #2b5680; color: #4da3f5; }
+
+/* ═══ APP SHELL — width modes ═════════════════════════════════════════════
+   The #app rule itself is at the top of the file, alongside the tokens it
+   shares an element with. What follows is only the per-mode overrides. */
+/* ── COMPACT: Torn's real 990px column, sidebar KEEPS its labels ──────────
+   The middle option, and probably the right one. A 208px sidebar still fits
+   "Organized Crimes" comfortably and leaves ~745px of content.
+   The 830px war-report table was NOT a reason to rule this out — it already
+   ships wrapped in its own `overflow-x:auto` container, so it scrolls inside
+   itself and never constrained the page layout. One self-handling table is
+   not a floor on the whole app.                                             */
+#app.compact { max-width: 990px; --sidebar-w: 208px; }
+#app.compact .nav-item { height: 40px; padding: 0 11px; gap: 11px; font-size: 13px; }
+#app.compact .brand { padding: 16px 14px 14px; gap: 10px; }
+#app.compact .brand-mark { width: 32px; flex-basis: 32px; font-size: 24px; }
+#app.compact .brand-name { font-size: 17px; }
+#app.compact .brand-sub { font-size: 9px; letter-spacing: .11em; }
+#app.compact .nav { padding: 0 9px; }
+#app.compact .side-foot { padding: 13px 15px 15px; font-size: 11px; }
+#app.compact .content, #app.compact .topbar { padding-left: 18px; padding-right: 18px; }
+#app.compact .stat-v { font-size: 27px; }
+#app.compact .page-title { font-size: 22px; }
+
+/* Tables are the whole reason a width mode is hard. At 16px each side, ten
+   columns spend 320px on padding alone — more than a third of the available
+   width, buying nothing. 8px still separates columns cleanly. */
+#app.compact thead th,
+#app.compact tbody td { padding: 9px 8px; font-size: 12.5px; }
+#app.compact thead th { font-size: 10px; letter-spacing: .04em; }
+#app.compact .card-b { padding: 14px; }
+#app.compact .spark { gap: 2px; }
+#app.compact .spark i { width: 5px; height: 5px; }
+#app.compact .av { width: 26px; height: 26px; flex-basis: 26px; }
+#app.compact .namecell { gap: 8px; }
+/* Only the free-text column may truncate — never a number. */
+#app.compact td.ellipsis { max-width: 90px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ══ ICONS: 60px rail, label flies out for the ONE item under the cursor ══
+   Not "expand the whole sidebar on hover" — that shoves a 200px panel over
+   the content every time the mouse crosses the rail. A per-item flyout keeps
+   the rail 60px at all times and answers exactly the question you asked
+   ("what is this icon?") without disturbing anything else.                  */
+#app.icons { max-width: 990px; --sidebar-w: 60px; }
+#app.icons .brand-text { display: none; }
+#app.icons .brand { justify-content: center; padding: 18px 0; }
+#app.icons .nav { padding: 0 8px; overflow: visible; }
+/* ↑ overflow MUST be visible or the scroll container clips the flyout.
+   The nav only scrolled because of `overflow-y:auto`; at 60px wide with ten
+   44px items it is ~460px tall and never needed to. */
+#app.icons .nav-item { justify-content: center; padding: 0; position: relative; }
+
+/* The flyout. Same .nav-label element — re-purposed, not duplicated, so there
+   is one source of truth for the text and nothing to keep in sync. */
+#app.icons .nav-label {
+  display: block; opacity: 0; pointer-events: none;
+  /* The item is 44px wide inside an 8px-padded 60px rail, so 100% lands only
+     ~4px past the sidebar border. 16px gives the caret room to sit clear. */
+  position: absolute; left: calc(100% + 16px); top: 50%; z-index: 200;
+  overflow: visible;   /* base rule clips; the caret hangs outside at -5px */
+  transform: translateY(-50%) translateX(-5px);
+  padding: 7px 12px; border-radius: var(--r-s);
+  background: #232c3a; border: 1px solid #313d4e;
+  color: var(--tx); font-size: 13px; font-weight: 600; white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0,0,0,.55);
+  transition: opacity .13s ease, transform .13s ease;
+}
+#app.icons .nav-item:hover .nav-label { opacity: 1; transform: translateY(-50%) translateX(0); }
+/* Caret. Inherits the panel's background so the two can't drift apart. */
+#app.icons .nav-label::before {
+  content: ''; position: absolute; left: -5px; top: 50%;
+  width: 8px; height: 8px; background: inherit;
+  border-left: 1px solid #313d4e; border-bottom: 1px solid #313d4e;
+  transform: translateY(-50%) rotate(45deg);
+}
+
+/* Badge becomes a corner marker on the icon — in the middle of a 60px rail it
+   would otherwise push the icon off-centre. */
+#app.icons .nav-badge {
+  position: absolute; top: 3px; right: 4px;
+  min-width: 17px; padding: 0 4px;
+  font-size: 9px; line-height: 17px; text-align: center;
+  border: 2px solid var(--side);   /* punches it out of the icon behind it */
+}
+#app.icons .nav-sec { margin: 12px 14px; }
+
+#app.icons .side-foot { align-items: center; padding: 14px 6px; gap: 11px; }
+#app.icons .side-foot > div { flex-direction: column; gap: 5px; position: relative; }
+#app.icons .side-foot span:not(.dot) { display: none; }
+#app.icons .side-foot b { margin: 0; font-size: 10px; }
+
+/* ═══ SIDEBAR ════════════════════════════════════════════════════════════ */
+.side {
+  background: var(--side);
+  border-right: 1px solid var(--line);
+  display: flex; flex-direction: column;
+  /* `height: 100vh` pinned the rail to the WINDOW, so inside Torn it ran past
+     the bottom of our own panel and grew the page on every zoom step.
+     `align-self: stretch` makes it exactly as tall as the grid row it lives
+     in — our panel — which is what it always meant.
+     Deliberately NO overflow here: the icons-mode hover flyout escapes the
+     rail, and any overflow value other than visible silently eats it. */
+  position: sticky; top: 0; align-self: stretch;
+  /* MUST outrank .main (and .topbar's z-index:10). `position: sticky` makes
+     this element its own stacking context, so the icon-mode flyout's z-index
+     is only meaningful INSIDE the sidebar — without a z-index here, .main
+     paints over the entire sidebar simply because it comes later in the DOM,
+     and the flyout renders behind the page content. */
+  z-index: 40;
+}
+
+.brand {
+  display: flex; align-items: center; gap: 12px;
+  padding: 20px 18px 18px;
+}
+.brand-mark {
+  width: 40px; height: 40px; flex: 0 0 40px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 30px; line-height: 1; color: var(--accent);
+  filter: drop-shadow(0 0 10px rgba(47,143,237,.35));
+}
+.brand-text { min-width: 0; }
+.brand-name {
+  font-size: 20px; font-weight: 800; letter-spacing: .02em; color: #fff;
+  line-height: 1.1;
+}
+.brand-sub {
+  font-size: 10px; font-weight: 700; letter-spacing: .14em;
+  color: var(--accent); margin-top: 2px;
+}
+
+.nav { padding: 0 12px; flex: 1; overflow-y: auto; }
+.nav::-webkit-scrollbar { width: 6px; }
+.nav::-webkit-scrollbar-thumb { background: #232b38; border-radius: 3px; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 14px;
+  height: 46px; padding: 0 14px; margin-bottom: 2px;
+  border-radius: var(--r-s);
+  color: var(--tx-dim); cursor: pointer;
+  font-size: 14px; font-weight: 500; white-space: nowrap;
+  border: 1px solid transparent;
+  transition: background .13s, color .13s, border-color .13s;
+}
+.nav-item:hover { background: #141b25; color: var(--tx-body); }
+.nav-item.active {
+  background: var(--accent-soft); border-color: #2a4d73;
+  color: #fff; font-weight: 600;
+}
+.nav-ico { flex: 0 0 20px; font-size: 17px; line-height: 1; text-align: center; color: var(--tx-muted); }
+.nav-item:hover .nav-ico { color: var(--tx-dim); }
+.nav-item.active .nav-ico { color: var(--accent-bright); }
+.nav-label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.nav-badge {
+  padding: 1px 7px; border-radius: 9px;
+  background: #263041; color: var(--tx-dim);
+  font-size: 10px; font-weight: 700;
+}
+.nav-badge.attn { background: var(--red); color: #fff; }
+.nav-badge:empty { display: none; }
+
+.nav-sec { height: 1px; background: var(--line); margin: 12px 14px; }
+
+.side-foot {
+  display: flex; flex-direction: column; gap: 9px;
+  padding: 16px 20px 18px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--tx-dim);
+}
+.side-foot > div { display: flex; align-items: center; gap: 9px; }
+.side-foot b { color: var(--tx-body); font-weight: 600; margin-left: auto; }
+
+/* ═══ MAIN COLUMN ════════════════════════════════════════════════════════ */
+.main { display: flex; flex-direction: column; min-width: 0; }
+
+.topbar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 22px; border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  position: sticky; top: 0; z-index: 10;
+}
+.search {
+  flex: 1; max-width: 560px; position: relative;
+}
+.search input {
+  width: 100%; height: 40px; padding: 0 14px 0 40px;
+  background: var(--sunk); border: 1px solid var(--line);
+  border-radius: var(--r-s); color: var(--tx); font: inherit; font-size: 13px;
+  transition: border-color .13s, background .13s;
+}
+.search input::placeholder { color: var(--tx-faint); }
+.search input:focus { outline: none; border-color: #2f4d70; background: #10161f; }
+.search-ico {
+  position: absolute; left: 13px; top: 50%; transform: translateY(-50%);
+  color: var(--tx-faint); font-size: 14px; pointer-events: none;
+}
+.topbar .push { margin-left: auto; }
+.icobtn {
+  width: 34px; height: 34px; display: flex; align-items: center; justify-content: center;
+  border: none; background: none; color: var(--tx-muted);
+  font-size: 15px; border-radius: var(--r-s); cursor: pointer;
+  transition: color .13s, background .13s;
+}
+.icobtn:hover { color: var(--tx); background: #1a212d; }
+.icobtn.on { color: var(--accent-bright); }
+
+.content { padding: 22px; flex: 1; }
+
+.page-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 22px; }
+.page-ico {
+  font-size: 26px; line-height: 1; color: var(--accent); margin-top: 3px;
+  filter: drop-shadow(0 0 8px rgba(47,143,237,.3));
+}
+.page-title { font-size: 26px; font-weight: 700; color: #fff; letter-spacing: -.02em; line-height: 1.2; }
+.page-sub { font-size: 13px; color: var(--tx-muted); margin-top: 3px; }
+.page-head .push { margin-left: auto; }
+
+.foot {
+  display: flex; align-items: center; padding: 14px 22px;
+  /* muted, not faint — the footer states the version and the sync time, and
+     both are things someone actually needs to read. */
+  border-top: 1px solid var(--line); font-size: 12px; color: var(--tx-muted);
+}
+.foot .push { margin-left: auto; }
+
+/* ═══ GRID ═══════════════════════════════════════════════════════════════ */
+.grid { display: grid; gap: 16px; margin-bottom: 16px; }
+.g-2   { grid-template-columns: 1.9fr 1.1fr; }
+.g-3   { grid-template-columns: repeat(3, 1fr); }
+.g-2e  { grid-template-columns: 1.25fr 1fr; }
+@media (max-width: 1100px) { .g-2, .g-3, .g-2e { grid-template-columns: 1fr; } }
+/* At 990px the 3-across row is too tight for a donut beside two stat columns,
+   so it drops to 2 and the 2-across rows stay. Stacking everything to 1fr
+   wastes the width that IS there. */
+#app.compact .g-3 { grid-template-columns: repeat(2, 1fr); }
+#app.icons .g-2, #app.icons .g-3, #app.icons .g-2e { grid-template-columns: 1fr; }
+
+/* ═══ CARD ═══════════════════════════════════════════════════════════════
+   Header strip, hairline, body. One shape for everything on the page.       */
+.card {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: var(--r); overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.card-h {
+  display: flex; align-items: center; gap: 10px;
+  padding: 15px 18px; background: var(--card-head);
+  border-bottom: 1px solid var(--line);
+}
+.card-h h3 { margin: 0; font-size: 15px; font-weight: 600; color: var(--tx); }
+.card-h .small { font-size: 12px; color: var(--tx-muted); font-weight: 400; }
+.card-h .push { margin-left: auto; }
+.card-h a { color: var(--accent); font-size: 12px; font-weight: 500; text-decoration: none; }
+.card-h a:hover { text-decoration: underline; }
+.card-b { padding: 18px; flex: 1; }
+.card-b.tight { padding: 8px 18px; }
+.card-b.flush { padding: 0; }
+
+/* ═══ STAT STRIP — the "Faction Overview" row ════════════════════════════ */
+.stats { display: flex; align-items: stretch; }
+.stat { flex: 1; text-align: center; padding: 6px 10px; position: relative; }
+.stat + .stat::before {
+  content: ''; position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 1px; background: var(--line);
+}
+.stat-l { font-size: 13px; color: var(--tx-dim); font-weight: 500; }
+.stat-v {
+  font-size: 34px; font-weight: 700; color: #fff;
+  line-height: 1.15; margin: 6px 0 8px; letter-spacing: -.02em;
+}
+.stat-v.green { color: var(--green); }
+.stat-v.red   { color: var(--red); }
+.stat-i { font-size: 17px; color: var(--tx-faint); }
+
+/* ═══ KEY/VALUE ROWS ═════════════════════════════════════════════════════ */
+.kv { display: flex; align-items: center; gap: 10px; padding: 9px 0; font-size: 13px; }
+.kv + .kv { border-top: 1px solid var(--line-soft); }
+.kv .k { color: var(--tx-dim); }
+.kv .v { margin-left: auto; color: var(--tx); font-weight: 600; white-space: nowrap; }
+.kv .v.green { color: var(--green); }
+.kv .v.red { color: var(--red); }
+.kv .v.dim { color: var(--tx-dim); font-weight: 500; }
+.kv-rule { height: 1px; background: var(--line); margin: 8px 0; }
+
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px; }
+.dot.green  { background: var(--green);  box-shadow: 0 0 7px rgba(63,185,80,.5); }
+.dot.yellow { background: var(--yellow); box-shadow: 0 0 7px rgba(212,160,23,.45); }
+.dot.grey   { background: #5b6675; }
+.dot.purple { background: var(--purple); box-shadow: 0 0 7px rgba(163,113,247,.45); }
+.dot.red    { background: var(--red);    box-shadow: 0 0 7px rgba(224,82,82,.45); }
+
+/* ═══ DONUT ══════════════════════════════════════════════════════════════ */
+.donut-row { display: flex; align-items: center; gap: 22px; }
+.donut { position: relative; flex: 0 0 auto; }
+.donut-mid {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+}
+.donut-pct { font-size: 27px; font-weight: 700; color: #fff; line-height: 1; }
+.donut-lbl { font-size: 11px; color: var(--tx-muted); margin-top: 3px; }
+.donut-side { flex: 1; min-width: 0; }
+.donut-side .k { font-size: 12px; color: var(--tx-dim); }
+.donut-side .v { font-size: 21px; font-weight: 700; color: #fff; line-height: 1.2; }
+.donut-side > div + div { margin-top: 13px; }
+
+/* ═══ BANNER — the "FACTION NOT CHAINING" panel ═════════════════════════ */
+.banner {
+  background: var(--sunk); border: 1px solid var(--line);
+  border-radius: var(--r-s); padding: 18px; text-align: center; margin-bottom: 4px;
+}
+.banner .big {
+  font-size: 18px; font-weight: 700; letter-spacing: .01em; color: var(--accent-bright);
+}
+.banner .sub { font-size: 13px; margin-top: 5px; color: var(--green); font-weight: 500; }
+.banner.alert .big { color: var(--red); }
+.banner.alert .sub { color: var(--yellow); }
+
+/* ═══ ACTIVITY FEED ══════════════════════════════════════════════════════ */
+.feed { display: flex; align-items: center; gap: 12px; padding: 10px 0; font-size: 13px; }
+.feed + .feed { border-top: 1px solid var(--line-soft); }
+.feed .fi { flex: 0 0 20px; text-align: center; font-size: 14px; color: var(--tx-muted); }
+.feed .ft { flex: 1; min-width: 0; color: var(--tx-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed .ft b { color: var(--tx); font-weight: 600; }
+.feed .fw { color: var(--tx-muted); font-size: 12px; white-space: nowrap; }
+
+/* ═══ MEMBER COLUMNS ═════════════════════════════════════════════════════ */
+.mcols { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; }
+.mrow { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; color: var(--tx-body); }
+
+/* ═══ TABLE ══════════════════════════════════════════════════════════════ */
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  padding: 11px 16px; background: var(--card-head);
+  font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--tx-muted); text-align: left; white-space: nowrap;
+  border-bottom: 1px solid var(--line);
+}
+thead th.num { text-align: right; }
+tbody td {
+  padding: 11px 16px; border-bottom: 1px solid var(--line-soft);
+  color: var(--tx-dim); white-space: nowrap;
+}
+tbody td.num { text-align: right; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: #1b222e; }
+tbody tr.clickable { cursor: pointer; }
+td.strong { color: var(--tx); font-weight: 600; }
+a.link { color: var(--accent); text-decoration: none; }
+a.link:hover { text-decoration: underline; }
+
+/* ═══ CHIPS + SEMANTIC TEXT ══════════════════════════════════════════════ */
+.chip {
+  display: inline-block; padding: 3px 9px; border-radius: 5px;
+  background: #263041; color: var(--tx-dim); font-size: 11px; font-weight: 600;
+}
+.chip.green  { background: rgba(63,185,80,.13);  color: var(--green); }
+.chip.yellow { background: rgba(212,160,23,.13); color: var(--yellow); }
+.chip.red    { background: rgba(224,82,82,.13);  color: var(--red); }
+.chip.blue   { background: var(--accent-soft);     color: var(--accent-bright); }
+/* Hollow = INFERRED. Same hue as its solid sibling so the meaning still reads
+   at a glance, but visibly not the same claim — used where the suite is
+   guessing (a give-funds match) rather than reporting what Torn recorded. */
+.chip.out { background: none; box-shadow: inset 0 0 0 1px currentColor; opacity: .85; }
+.green { color: var(--green); } .yellow { color: var(--yellow); }
+.red { color: var(--red); }     .dim { color: var(--tx-muted); }
+/* .faint is a CONTENT class, so it resolves to the muted tier, not the faint
+   variable — content is by definition information. --tx-faint is reachable
+   only from decorative rules (placeholders, inert icons). */
+.faint { color: var(--tx-muted); } .b { font-weight: 700; }
+
+.note { font-size: 12px; line-height: 1.65; color: var(--tx-muted); margin: 12px 0 0; }
+.note b { color: var(--tx-dim); }
+
+/* ═══ AVATAR ═════════════════════════════════════════════════════════════ */
+.av { position: relative; width: 30px; height: 30px; flex: 0 0 30px; border-radius: var(--r-s); overflow: hidden; }
+.av-mono {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.5);
+}
+.namecell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+table.avatars td, table.avatars th { vertical-align: middle; }
+
+.spark { display: inline-flex; gap: 3px; }
+.spark i { width: 6px; height: 6px; border-radius: 50%; background: #2a3444; display: inline-block; }
+.spark i.s { background: var(--green); } .spark i.f { background: var(--red); }
+
+.bar { height: 5px; background: var(--sunk); border-radius: 3px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.bar > span.green { background: var(--green); }
+
+.empty { padding: 54px 20px; text-align: center; }
+.empty .i { font-size: 30px; opacity: .45; }
+.empty .m { margin-top: 12px; font-size: 15px; color: var(--tx-dim); }
+.empty .s { margin-top: 5px; font-size: 12px; color: var(--tx-muted); }
+/* ═══ SUB-NAV ═════════════════════════════════════════════════════════════
+   Second-level navigation inside a page. Scrolls horizontally rather than
+   wrapping — a wrapping tab strip changes the page height when you switch
+   tabs, which shifts everything below it for no reason. */
+.subnav {
+  display: flex; gap: 2px; margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto; scrollbar-width: none;
+}
+.subnav::-webkit-scrollbar { display: none; }
+.subnav button {
+  flex: 0 0 auto; background: none; border: 0; cursor: pointer;
+  padding: 9px 13px; font: 600 12.5px/1 inherit; color: var(--tx-dim);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+  white-space: nowrap; transition: color .12s ease;
+}
+.subnav button:hover { color: var(--tx-body); }
+.subnav button.on { color: var(--accent-bright); border-bottom-color: var(--accent); }
+/* muted, not faint — the count is the whole reason to look at the tab. Size
+   already separates it from the label, so it does not need to be dimmer too. */
+.subnav .n { font-size: 10.5px; color: var(--tx-muted); margin-left: 5px; }
+.subnav button.on .n { color: var(--accent); }
+#app.compact .subnav button { padding: 8px 10px; font-size: 12px; }
+
+/* ═══ ASYNC STATES ════════════════════════════════════════════════════════
+   Three ways a pane can have nothing to show, and all three must look
+   DIFFERENT — "loading", "this failed", and "there is genuinely none" are
+   different messages, and collapsing them into one blank box is how the old
+   suite made a permissions error look like an empty faction. */
+.skel { display: grid; gap: 8px; }
+.skel i {
+  display: block; height: 13px; border-radius: 4px;
+  background: linear-gradient(90deg, var(--sunk) 25%, var(--line-soft) 37%, var(--sunk) 63%);
+  background-size: 400% 100%; animation: shimmer 1.4s ease infinite;
+}
+@keyframes shimmer { from { background-position: 100% 0 } to { background-position: -100% 0 } }
+/* Respect the OS setting — a shimmer is decoration, not information. */
+@media (prefers-reduced-motion: reduce) { .skel i { animation: none } }
+
+.errnote {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 13px 15px; border-radius: var(--r-s);
+  background: color-mix(in srgb, var(--red) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--red) 32%, transparent);
+}
+.errnote .ei { font-size: 15px; line-height: 1.3; }
+.errnote .em { font-size: 12.5px; color: var(--tx); font-weight: 600; }
+.errnote .es { font-size: 12px; color: var(--tx-muted); margin-top: 3px; line-height: 1.5; }
+.errnote button {
+  margin-top: 7px; background: none; cursor: pointer;
+  border: 1px solid var(--line); color: var(--tx-body);
+  border-radius: 5px; padding: 4px 10px; font: 600 11.5px inherit;
+}
+.errnote button:hover { border-color: #35404f; color: var(--tx); }
+
+/* ═══ PROVENANCE ══════════════════════════════════════════════════════════
+   Where a number came from, shown next to the number itself. The suite mixes
+   official war-report figures, ledger-computed observations and third-party
+   estimates in the same table; presenting an estimate as if it were measured
+   is the one dishonesty this UI must never commit. */
+.prov {
+  display: inline-flex; align-items: center; gap: 3px; margin-left: 5px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; vertical-align: middle;
+}
+.prov::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.prov.exact { color: var(--green); }
+.prov.obs   { color: var(--accent); }
+.prov.est   { color: var(--tx-muted); }
+.prov.est::before { background: none; box-shadow: inset 0 0 0 1px currentColor; }
+
+/* ═══ BAR ═════════════════════════════════════════════════════════════════ */
+.bar { height: 6px; border-radius: 3px; background: var(--sunk); overflow: hidden; }
+.bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); }
+.bar.green i { background: var(--green); } .bar.yellow i { background: var(--yellow); }
+.bar.red i { background: var(--red); }
+.barrow { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; align-items: center; margin-bottom: 11px; }
+.barrow .bl { font-size: 12.5px; color: var(--tx-body); }
+.barrow .bv { font-size: 12.5px; font-weight: 700; color: var(--tx); font-variant-numeric: tabular-nums; }
+.barrow .bar { grid-column: 1 / -1; }
+
+/* ═══ MEMBER PROFILE DRILL-DOWN ═══════════════════════════════════════════
+   A drill-down, NOT a modal: it replaces the page body and keeps the shell,
+   so browser back and the nav both still mean something. */
+.backbar {
+  display: flex; align-items: center; gap: 9px; margin-bottom: 15px;
+  background: none; border: 0; cursor: pointer; padding: 0;
+  font: 600 12.5px inherit; color: var(--tx-muted);
+}
+.backbar:hover { color: var(--tx); }
+.prof-head { display: flex; gap: 16px; align-items: center; margin-bottom: 18px; }
+.prof-head .av { width: 64px; height: 64px; flex-basis: 64px; }
+.prof-head .av-mono { font-size: 22px; }
+.prof-name { font-size: 21px; font-weight: 700; color: var(--tx); }
+.prof-sub  { font-size: 12.5px; color: var(--tx-muted); margin-top: 3px; }
+[data-act="profile"] { cursor: pointer; }
+[data-act="profile"]:hover .nm { color: var(--accent-bright); text-decoration: underline; }
+
+/* ═══ EXPORT TILES ════════════════════════════════════════════════════════ */
+.exp { display: flex; gap: 12px; align-items: flex-start; padding: 13px 0; border-bottom: 1px solid var(--line-soft); }
+.exp:last-child { border-bottom: 0; }
+.exp .xi { font-size: 17px; flex: 0 0 22px; text-align: center; }
+.exp .xn { font-size: 13px; font-weight: 600; color: var(--tx); }
+.exp .xs { font-size: 12px; color: var(--tx-muted); margin-top: 2px; line-height: 1.5; }
+.exp .xf { display: flex; gap: 5px; margin-left: auto; flex: 0 0 auto; }
+.exp .xf button {
+  background: var(--sunk); border: 1px solid var(--line); color: var(--tx-dim);
+  border-radius: 5px; padding: 5px 9px; font: 600 11px inherit; cursor: pointer;
+}
+.exp .xf button:hover { border-color: var(--accent); color: var(--accent-bright); }
+
+/* ═══ DEFINITION LIST — the Legend page ═══════════════════════════════════ */
+.def { display: grid; grid-template-columns: 130px 1fr; gap: 9px 16px; font-size: 12.5px; }
+.def dt { font-weight: 700; color: var(--tx); }
+.def dd { margin: 0; color: var(--tx-muted); line-height: 1.6; }
+#app.compact .def { grid-template-columns: 104px 1fr; }
+
+/* ═══ SETTINGS PICKERS ════════════════════════════════════════════════════
+   Both pickers show the thing itself rather than describing it — a theme is
+   its swatches, a layout is its shape. Reading "Compact · 990px" tells you
+   nothing you can act on; seeing the rail width does. */
+.opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.opt {
+  background: var(--sunk); border: 1px solid var(--line);
+  border-radius: var(--r-s); padding: 11px; cursor: pointer; text-align: left;
+  font: inherit; color: var(--tx-body);
+  transition: border-color .12s ease, background .12s ease;
+}
+.opt:hover { border-color: #35404f; background: var(--card-head); }
+.opt.on { border-color: var(--accent); background: var(--accent-soft); }
+.opt-name { font-size: 12.5px; font-weight: 600; color: var(--tx); margin-bottom: 2px; }
+.opt.on .opt-name::after { content: ' ✓'; color: var(--accent-bright); }
+.opt-sub  { font-size: 11px; color: var(--tx-muted); line-height: 1.35; }
+
+/* Theme swatch: the surface ramp, then the accent, then the semantic trio.
+   The trio is what actually matters for the colour-safe theme — you can see
+   at a glance whether good/warn/crit stay apart. */
+.sw { display: flex; gap: 3px; margin-bottom: 9px; }
+.sw i { height: 22px; flex: 1; border-radius: 3px; border: 1px solid rgba(255,255,255,.07); }
+.sw i.gap { flex: 0 0 5px; border: 0; background: none; }
+
+/* Miniature of the real layout — sidebar rail plus content lines, to scale. */
+.lay { display: flex; gap: 3px; height: 40px; margin-bottom: 9px;
+       background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 3px; }
+.lay .lay-side { background: var(--side); border-radius: 2px; flex: 0 0 auto;
+                 display: flex; flex-direction: column; gap: 2px; padding: 3px; }
+.lay .lay-side u { display: block; height: 3px; background: var(--tx-faint);
+                   border-radius: 1px; text-decoration: none; }
+.lay .lay-main { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.lay .lay-main u { display: block; height: 3px; background: var(--line);
+                   border-radius: 1px; text-decoration: none; }
+.lay .lay-main u:first-child { background: var(--accent); width: 40%; }
+</style>
+</head>
+<body>
+
+<div class="proto">
+  <b>PROTOTYPE</b><span>Fake data · standalone · nothing here touches the real script</span>
+  <span class="push"></span>
+  <span>Data state:</span>
+  <button id="s-ok" class="on" data-proto="s" data-arg="ok">Loaded</button>
+  <button id="s-loading" data-proto="s" data-arg="loading">Loading</button>
+  <button id="s-error" data-proto="s" data-arg="error">Failed</button>
+  <button id="s-empty" data-proto="s" data-arg="empty">Empty</button>
+  <span>· width:</span>
+  <button id="w-compact" class="on" data-proto="w" data-arg="compact">Compact</button>
+  <button id="w-full" data-proto="w" data-arg="full">Full</button>
+  <button id="w-icons" data-proto="w" data-arg="icons">Icons</button>
+  <span>· themes in <button data-proto="go" data-arg="settings">⚙ Settings</button></span>
+</div>
+
+<div class="app" id="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-mark">❄</div>
+      <div class="brand-text">
+        <div class="brand-name">OC SUITE</div>
+        <div class="brand-sub">CENTRAL COMMAND</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <div title="Faction Online — 32 of 48"><span class="dot green"></span><span>Faction Online</span><b>32 / 48</b></div>
+      <div title="Next OC ready in 2d 04h"><span class="dot yellow"></span><span>Next OC</span><b>2d 04h</b></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="search">
+        <span class="search-ico">⌕</span>
+        <input placeholder="Search members, crimes, items…">
+      </div>
+      <span class="push"></span>
+      <button class="icobtn" title="Pin">📌</button>
+      <button class="icobtn" title="Close">✕</button>
+    </div>
+
+    <div class="content" id="content"></div>
+
+    <div class="foot">
+      <span>OC Suite — Central Command v6.0-proto</span>
+      <span class="push"></span>
+      <span>Fake data · prototype</span>
+    </div>
+  </div>
+</div>
+
+<!-- Real logic, shared with the test suites. The prototype runs the SAME
+     derive code the userscript will, over fixtures shaped like real storage. -->
+<script src="derive.js"></script>
+<script src="fixtures.js"></script>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE STORES, AND WHAT WE DERIVE FROM THEM
+
+   `S` is fixture data in v5's real STORAGE shapes — per-OC ledgers, the CPR
+   archive's slots map, `loaned_to` as a comma-separated string. It is not
+   shaped like the screens.
+
+   `V` is what the screens actually show, produced by running the real derive
+   functions over `S`. Those are the same functions the userscript will use
+   and the same ones derive.test.js covers — so if the arithmetic is wrong,
+   this prototype is now visibly wrong too. The old mock was pre-computed
+   into UI shapes and could not catch anything.
+
+   At port time `S` becomes reads from GM storage. `V` does not change at all.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const S = makeFixtures();
+
+/** Everything the screens read. Computed once per render pass, not per card. */
+function computeViews(s) {
+  const rows = ocRows(s.profitLedger, s.ocArchive);
+
+  /* Payout matching needs OCs in its own shape, and needs to know which were
+     paid natively — those must produce no claims at all. */
+  const forMatching = Object.entries(s.ocArchive).map(([id, oc]) => ({
+    id, name: oc.name, money: s.profitLedger[id]?.money || 0,
+    executedAt: oc.executed_at,
+    participants: Object.fromEntries(
+      (oc.slots || []).filter(x => x.user_id != null)
+        .map(x => [String(x.user_id), s.names[String(x.user_id)] || String(x.user_id)])),
+    nativePaid: Boolean(oc.rewards?.payout?.paid_at),
+  }));
+  const match = matchPayouts(forMatching, s.payoutEvents, oc => splitFor(
+    s.ocArchive[oc.id] || {}).pct);
+
+  const roster = rosterRows(s.cprArchive, s.ocArchive, s.names, { now: s.now });
+  const items = itemRows(s.gearCache);
+
+  return {
+    rows,
+    money: moneyByScenario(rows),
+    totals: moneyTotals(rows),
+    roster,
+    earnings: earningsByMember(match.claims, s.names),
+    payouts: payoutRows(s, match),
+    match,
+    warNow: currentWar(s.warArchive, s.myFactionId, { now: s.now }),
+    warPast: warHistory(s.warArchive, s.myFactionId, { now: s.now }),
+    chains: chainRows(s.chainArchive),
+    items,
+    loans: loanRows(s.gearCache, s.loanLedger, s.names, { now: s.now }),
+    usage: itemUsage(s.gearCache, s.loanLedger, { now: s.now }),
+  };
+}
+
+/** Money › Payouts rows: newest OCs, with how we know they were paid. */
+function payoutRows(s, match) {
+  return Object.entries(s.ocArchive)
+    .sort((a, b) => b[1].executed_at - a[1].executed_at)
+    .slice(0, 25)
+    .map(([id, oc]) => {
+      const p = s.profitLedger[id] || {};
+      const native = oc.rewards?.payout;
+      const m = match.byOc[id];
+      return {
+        oc: oc.name, when: s.now - oc.executed_at, cash: p.money || 0,
+        split: splitFor(oc).source === 'exact' ? splitFor(oc).pct : null,
+        paid: Boolean(native?.paid_at) || Boolean(m?.full),
+        by: native?.paid_by ? s.names[native.paid_by] : null,
+        // null = Torn recorded it. A number = we inferred it from a give.
+        confidence: native?.paid_at ? null
+                  : m?.confidence === 'high' ? 0.95
+                  : m?.confidence === 'likely' ? 0.75
+                  : m?.confidence === 'partial' ? 0.4 : null,
+      };
+    });
+}
+
+let V = computeViews(S);
+
+/* ── View helpers ─────────────────────────────────────────────────────────
+   Small reshapes the screens want that are not worth a derive function of
+   their own. Anything with arithmetic worth testing belongs in derive.js,
+   not here — the rule is that this file must never be the only place a
+   number is computed. */
+
+/** Per-crime performance. Success rate is over runs, not over members. */
+function crimeStats() {
+  const by = new Map();
+  for (const oc of Object.values(S.ocArchive)) {
+    const g = by.get(oc.name) || { name: oc.name, runs: 0, passed: 0, cprs: [], money: 0, weak: new Map() };
+    g.runs++;
+    /* Success belongs to the CRIME, not to a seat — Torn reports one status
+       for the whole thing. A per-member pass/fail does not exist. */
+    const outcome = ocOutcome(oc.status);
+    if (outcome === 'successful') g.passed++;
+    for (const seat of oc.slots || []) {
+      const uid = seat.user_id == null ? null : String(seat.user_id);
+      // On a failed crime we cannot know WHICH seat failed, so the weakest-seat
+      // tally counts participation in failures, not blame for them.
+      if (outcome === 'failure' && seat.position) {
+        g.weak.set(seat.position, (g.weak.get(seat.position) || 0) + 1);
+      }
+      const cpr = seat.checkpoint_pass_rate
+        ?? (uid && S.cprArchive[uid]?.slots?.[oc.name + '|' + seat.position]?.cpr);
+      if (cpr) g.cprs.push(cpr);
+    }
+    g.money += S.profitLedger[oc.id]?.money || 0;
+    by.set(oc.name, g);
+  }
+  return [...by.values()].map(g => {
+    const worst = [...g.weak.entries()].sort((a, b) => b[1] - a[1])[0];
+    return {
+      name: g.name, runs: g.runs, rate: g.runs ? g.passed / g.runs : null,
+      cpr: g.cprs.length ? Math.round(g.cprs.reduce((a, b) => a + b, 0) / g.cprs.length) : null,
+      respect: Math.round(g.money / 1e6),
+      money: g.money,
+      weak: worst ? { role: worst[0], pct: Math.round((worst[1] / g.runs) * 100) } : null,
+    };
+  }).sort((a, b) => b.runs - a.runs);
+}
+
+/* Crimes in flight and the enemy roster are LIVE data — they describe right
+   now, so nothing persists them and they arrive on `S.live`. Empty is the
+   normal state outside a live session (and on first load), and the panes render
+   that as an honest empty rather than a fabricated one. */
+const activeOcs = () =>
+  activeCrimes(S.live.crimes, S.cprArchive, S.names, S.live.members, { now: S.now });
+
+const riskRows = () => riskSeats(activeOcs(), S.cprArchive, S.names);
+
+/** Recent faction events, newest first. */
+function activityFeed() {
+  const out = Object.values(S.ocArchive)
+    .sort((a, b) => b.executed_at - a.executed_at).slice(0, 5)
+    .map(oc => {
+      const first = (oc.slots || []).find(x => x.user_id != null);
+      const who = first ? String(first.user_id) : null;
+      return {
+        i: '★', w: ago(S.now - oc.executed_at),
+        t: `<b>${esc(oc.name)}</b> completed by ${
+          esc(who ? (S.names[who] || '#' + who) : 'the crew')}`,
+      };
+    });
+  const give = Object.values(S.payoutEvents).sort((a, b) => b.ts - a.ts)[0];
+  if (give) out.splice(1, 0, {
+    i: '💸', w: ago(S.now - give.ts),
+    t: `Payout sent — <b>${money(give.amount)}</b> to ${esc(give.toName)}`,
+  });
+  return out.slice(0, 5);
+}
+
+/** War room targets — the real enemy roster, with FFScouter estimates attached
+ *  where a key is configured and the batch has landed. */
+const warRoomRows = () =>
+  warRoomTargets(S.live.enemies, S.live.spies, S.live.calls, { now: S.now });
+
+/** Deposits vs gives, per member. */
+function fundsRows() {
+  const by = new Map();
+  const row = uid => by.get(uid) || { uid, name: S.names[uid] || `#${uid}`, deposited: 0, given: 0 };
+  for (const d of Object.values(S.deposits)) {
+    const r = row(d.fromId); r.deposited += d.amount; by.set(d.fromId, r);
+  }
+  for (const g of Object.values(S.payoutEvents)) {
+    const r = row(g.toId); r.given += g.amount; by.set(g.toId, r);
+  }
+  return [...by.values()].sort((a, b) => (b.deposited + b.given) - (a.deposited + a.given));
+}
+
+/** Export catalogue. Row counts are real, so an empty store shows as empty. */
+function exportRows() {
+  const n = o => Object.keys(o || {}).length;
+  return [
+    { i:'🎯', n:'OC history',        s:'Every completed OC with seats, outcome, payout and item cost.', rows:n(S.ocArchive) },
+    { i:'👥', n:'Member performance', s:'Runs, success rate, CPR and role history per member.',          rows:V.roster.length },
+    { i:'💰', n:'Payout ledger',     s:'What was paid, to whom, by whom, and when.',                     rows:n(S.payoutEvents) },
+    { i:'📊', n:'CPR archive',       s:'Observed crime-pass-rate history beyond Torn’s 100-OC window.',   rows:n(S.cprArchive) },
+    { i:'⚔',  n:'War records',       s:'Ranked wars with scores, respect and outcome.',                   rows:n(S.warArchive) },
+    { i:'🔗', n:'Chain reports',     s:'Per-chain hit counts, respect and bonus placements.',             rows:n(S.chainArchive) },
+    { i:'🛡',  n:'Armoury movements', s:'Gives, retrievals and loans over time.',                          rows:n(S.loanLedger) },
+    { i:'🏦', n:'Faction funds',     s:'Deposits and gives per member.',                                  rows:n(S.deposits) },
+  ];
+}
+
+/** Seconds → a short human gap. */
+function ago(sec) {
+  if (sec == null) return '—';
+  const m = Math.round(sec / 60);
+  if (m < 60) return m + 'm ago';
+  const h = Math.round(m / 60);
+  if (h < 48) return h + 'h ago';
+  return Math.round(h / 24) + 'd ago';
+}
+
+/**
+ * Faction-level figures the Dashboard shows.
+ *
+ * Everything here is COUNTED from the stores, not asserted. That is the
+ * difference that matters: the old mock declared `members: 48` and could
+ * never disagree with itself, whereas this will visibly break if the roster
+ * derive breaks.
+ */
+function faction() {
+  const active = activeOcs();
+  const rated = V.roster.filter(m => m.rate != null);
+  /* Presence is LIVE — it comes from Torn's own last_action label on the members
+     payload. It used to be inferred from how recently someone ran an OC, which
+     answers a completely different question and was wrong for everyone who
+     simply had not run one. null here means "no live roster", and the card says
+     that rather than reporting a confident zero. */
+  const seen = presence(S.live.members, { now: S.now });
+
+  return {
+    // The live roster is the truth about who is IN the faction. The archive
+    // roster only knows who has ever run a crime, so it under-counts new members
+    // and over-counts everyone who has left.
+    members: seen ? seen.total : V.roster.length,
+    knownMembers: V.roster.length,
+    ocsRun: Object.keys(S.ocArchive).length,
+    success: rated.length ? rated.reduce((n, m) => n + m.rate, 0) / rated.length : 0,
+    openSlots: active.reduce((n, oc) => n + (oc.total - oc.filled), 0),
+    inProgress: active.length,
+    completed: Object.keys(S.ocArchive).length,
+    unpaidCount: V.totals.unpaidCount,
+    unpaidCash: V.totals.unpaidCash,
+    itemCost: V.totals.cost,
+    potentialRespect: Math.round(V.money.reduce((n, s) => n + s.runs * 25, 0)),
+
+    // null, not 0 — "we don't know yet" and "nobody is online" are different
+    // statements, and the Member Status card renders them differently.
+    seen,
+    freeMembers: (seen ? seen.rows : V.roster).filter(m => !active.some(
+      oc => oc.slots.some(s => s.uid === m.uid))).length,
+
+    // No live chain in fixture data — the Dashboard's "not chaining" panel is
+    // the honest rendering of that, and the one worth exercising anyway.
+    chaining: false,
+    lastChain: ago(S.now - Math.max(...V.chains.map(c => c.end))),
+  };
+}
+let F = faction();
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DATA SEAM — the point of this whole prototype
+
+   No page reads D directly. Every data-bearing block goes through bound(),
+   which hands the renderer a FEED: the data plus how it got here.
+
+       { state, data, synced, prov, need }
+
+   Wiring the real script in means replacing feed() — one function — with
+   reads from GM storage and the *_STATUS keys the syncs already write. Not
+   one renderer below changes.
+
+   The states exist because the real thing is asynchronous and allowed to
+   fail. The suite's rule is that a pane NEVER goes blank: a permissions
+   error must not look like an empty faction, and neither must a pane that
+   simply hasn't loaded yet. bound() makes that structural instead of a thing
+   each renderer has to remember.
+
+     ok       data is here
+     loading  a sync is in flight and nothing is cached
+     error    the sync failed — say why, and what the user can do
+     empty    it worked and there is genuinely nothing
+
+   `need` names the API access a feed requires, so an error can say
+   "needs faction API access (AA)" rather than "something went wrong".
+   ═══════════════════════════════════════════════════════════════════════════ */
+/* THE PORT CONTRACT. Every feed declares, in one place, what the real script
+   must hand it. `store` and `status` are actual GMK keys from the live suite
+   — not invented names — and `shape` is the record the renderer below already
+   expects. Wiring the brains in is: for each row, read `store`, map it to
+   `shape`. Nothing else needs deciding.
+
+   `status` names the GMK key holding `'ok'` or the last error string, which is
+   the convention every sync already writes (see syncWarData, syncAttacks).
+   A null status means the feed cannot fail on its own — it is derived from
+   data another feed already fetched, so it has no sync of its own to break. */
+const FEEDS = {
+  roster: {
+    need:'Faction members', prov:'obs', synced:'2m ago',
+    store:'CPR_ARCHIVE + OC_ARCHIVE + MEMBER_NAMES', status:null, sync:'recordCprHistory',
+    // CPR_ARCHIVE keeps only the MOST RECENT entry per (member, OC, role) —
+    // deliberately, so it does not bloat with repeat runs. That means it cannot
+    // supply `runs`, `rate`, `spark` or `trend`: there is no run history in it.
+    // Those four must come from OC_ARCHIVE. Only `cpr`, `role` and `best` are
+    // answerable from CPR_ARCHIVE alone.
+    derive:'cpr/role/best ← CPR_ARCHIVE · runs/rate/spark/trend ← OC_ARCHIVE',
+    shape:'{ uid, name, runs, rate:0–1, cpr:0–100, best, role, spark:"sf…", trend:±0–1|null, last }',
+    read:() => V.roster },
+  crimes: {
+    need:'Faction crimes', prov:'exact', synced:'2m ago',
+    store:'OC_ARCHIVE', status:null, sync:'backfillOcHistory',
+    shape:'{ name, runs, rate:0–1, cpr, respect, money, weak:{role,pct}|null }',
+    read:() => crimeStats() },
+  ocCards: {
+    need:'Faction crimes', prov:'exact', synced:'2m ago',
+    // NOT cached anywhere — this describes right now. It rides the payload
+    // renderDashboard already fetches, so it costs no extra API call.
+    store:'(live faction.crimes — not persisted)', status:null, sync:'renderDashboard',
+    derive:'activeCrimes — live slots + CPR_ARCHIVE for weight',
+    shape:'{ id, name, diff, status:"crit|ready|recruit", badge, time, filled, total, slots:[{uid,role,who,cpr,w,blocked,needsItem}] }',
+    read:() => activeOcs() },
+  risk: {
+    need:'Faction crimes', prov:'obs', synced:'2m ago',
+    store:'(derived from ocCards + CPR_ARCHIVE)', status:null, sync:'—',
+    shape:'{ uid, name, role, cpr, w, oc }',
+    read:() => riskRows() },
+  money: {
+    need:'Faction crimes', prov:'exact', synced:'2m ago',
+    store:'PROFIT_LEDGER', status:null, sync:'saveProfitLedger',
+    // VERIFIED against the real store. PROFIT_LEDGER is PER-OC:
+    //   { [ocId]: {name, money, itemValue, respect, executedAt, cost, costItems} }
+    // Every column below is an AGGREGATE the UI computes — none of them exist
+    // in storage. Group by `name`, then:
+    //   runs    = count of ocIds in the group
+    //   gross   = Σ (money + itemValue)
+    //   members = Σ (money × split)      split per the money model, NOT a flat %
+    //   kept    = gross − members − Σ cost
+    derive:'group PROFIT_LEDGER by name; see CLAUDE.md “the money model”',
+    shape:'{ name, runs, gross, members, cost, kept }',
+    read:() => V.money },
+  activity: {
+    need:'Faction news', prov:'exact', synced:'1m ago',
+    store:'ACTIVITY_LOG', status:null, sync:'snapshotActivity',
+    shape:'{ i:emoji, t:html, w:"2m ago" }',
+    read:() => activityFeed() },
+  warNow: {
+    need:'Faction wars', prov:'exact', synced:'40s ago',
+    store:'WAR_ARCHIVE', status:'WAR_STATUS', sync:'syncWarData',
+    shape:'{ opponent, oppId, oppMembers, us, them, target, started, starts }',
+    read:() => V.warNow },
+  warPast: {
+    need:'Faction wars', prov:'exact', synced:'40s ago',
+    store:'WAR_ARCHIVE', status:'WAR_STATUS', sync:'syncWarData',
+    shape:'{ id, opp, when, us, them, result:"won|lost|pending", respect, payout }',
+    read:() => V.warPast },
+  chains: {
+    need:'Faction chains', prov:'exact', synced:'40s ago',
+    store:'CHAIN_ARCHIVE', status:'CHAIN_STATUS', sync:'syncWarData',
+    shape:'{ id, len, when, respect, best, bestHits, broke }',
+    read:() => V.chains },
+  warRoom: {
+    need:'FFScouter', prov:'est', synced:'20s ago',
+    store:'ENEMY_CACHE + SPY_CACHE', status:'ENEMY_STATUS', sync:'pollEnemyRoster',
+    derive:'warRoomTargets — roster is exact, ff/est are FFScouter estimates',
+    shape:'{ uid, name, lvl, ff:number|null, status:"ok|hosp|jail", since, readyIn, called:name|null, est }',
+    read:() => warRoomRows() },
+  items: {
+    need:'Faction armoury', prov:'exact', synced:'5m ago',
+    store:'GEAR_CACHE', status:'GEAR_STATUS', sync:'syncGearCache',
+    shape:'{ id, name, type, qty, avail, loaned, used30 }',
+    read:() => V.items },
+  usage: {
+    need:'Faction armoury', prov:'obs', synced:'5m ago',
+    store:'ocs_gear_cache + ocs_loan_ledger', status:'ocs_gear_status', sync:'syncGearCache',
+    derive:'itemUsage — counts ledger movements in the window',
+    shape:'{ id, name, used, share:0-1, tone:"ok|warn|crit" }',
+    read:() => V.usage },
+  loans: {
+    need:'Faction armoury', prov:'exact', synced:'5m ago',
+    store:'LOAN_LEDGER', status:'LOAN_STATUS', sync:'syncArmoryActions',
+    shape:'{ uid, who, item, since, oc, overdue }',
+    read:() => V.loans },
+  earnings: {
+    need:'Faction crimes', prov:'obs', synced:'2m ago',
+    store:'OC_ARCHIVE + PAYOUT_EVENTS', status:'PAYOUT_NEWS_STATUS', sync:'syncPayoutNews',
+    // CORRECTED. PAYOUT_LEDGER is NOT this — it is only { [ocId]: {paid, ts} },
+    // a leader-set flag with no per-member data whatsoever.
+    //   earned = per-participant share from OC_ARCHIVE × split
+    //   paid   = Σ PAYOUT_EVENTS amounts to that uid
+    //   owed   = earned − paid, computed at render, never stored
+    derive:'OC_ARCHIVE participants × split, reconciled against PAYOUT_EVENTS',
+    shape:'{ uid, name, runs, earned, paid }',
+    read:() => V.earnings },
+  payouts: {
+    // prov is 'est', NOT 'exact'. Torn does not record which OC a give-funds
+    // transfer was for; matchGivesToOcs() INFERS it and carries a confidence.
+    // PAYOUT_EVENTS is raw transfers: { [newsId]: {ts, fromId, fromName, toId,
+    // toName, amount} } — there is no `oc` field to read.
+    // The only authoritative signal is Torn's own rewards.payout.paid_at on the
+    // crimes API; that is exact. Everything else here is inference and the UI
+    // must not draw it as fact.
+    need:'Faction crimes', prov:'est', synced:'2m ago',
+    store:'PAYOUT_EVENTS + crimes rewards.payout', status:'PAYOUT_NEWS_STATUS',
+    sync:'syncPayoutNews + matchGivesToOcs',
+    derive:'infer OC↔give matches; carry the confidence into the UI',
+    shape:'{ oc, when, cash, split:0–1|null, paid, by:name|null, confidence:0–1|null }',
+    read:() => V.payouts },
+  funds: {
+    need:'Faction donations', prov:'exact', synced:'8m ago',
+    store:'DEPOSIT_EVENTS', status:'DEPOSIT_STATUS', sync:'syncDepositFunds',
+    shape:'{ uid, name, deposited, given }   // net is computed, never stored',
+    read:() => fundsRows() },
+  exports: {
+    need:null, prov:null, synced:null,
+    store:'(synthesised from the other stores)', status:null, sync:'—',
+    shape:'{ i:emoji, n:name, s:description, rows }',
+    read:() => exportRows() },
+};
+
+/** Prototype-only: forces every feed into one state so all the degraded
+ *  renderings are reachable without breaking anything. This is the reason
+ *  the states are worth building NOW rather than discovering them later. */
+let forced = 'ok';
+
+/* ─────────────────────────────────────────────────────────────────────────
+   THE SWAP POINT — the only function that changes when the brains go in.
+
+   Prototype: returns mock data, always 'ok'.
+   Real script: replace the body with the commented version below. That is
+   the entire port for the data layer; feed() and bound() stay as they are.
+
+     function readFeed(f) {
+       // A sync that failed wrote its reason here. 'ok' or absent means fine.
+       const status = f.status ? String(GM_getValue(GMK[f.status], 'ok')) : 'ok';
+       if (status !== 'ok') return { status: 'error', why: status };
+       return { status: 'ok', data: f.read() };   // f.read() replaces f.mock
+     }
+
+   Note it returns `why` on failure. The renderer shows the AA hint from
+   `need`, but the raw message is what makes a bug report useful, so it must
+   survive this far even though nothing displays it yet.
+   ───────────────────────────────────────────────────────────────────────── */
+function readFeed(f) {
+  return { status: 'ok', data: f.read() };
+}
+
+function feed(key) {
+  const f = FEEDS[key];
+  if (!f) return { state:'error', need:null, why:`No feed registered for "${key}"` };
+  if (forced !== 'ok') return { ...f, state: forced, data: forced === 'empty' ? [] : null };
+
+  const r = readFeed(f);
+  if (r.status !== 'ok') return { ...f, state:'error', why:r.why, data:null };
+  /* An empty result is a legitimate answer, not a failure — say so distinctly.
+     "Empty" includes null, and that is not a nicety: currentWar() returns null
+     when no war is running, this only tested `Array.isArray`, so the pane was
+     handed null as if it were good data and the renderer died on `w.started`.
+     A single-object feed with nothing to show is exactly as empty as [].  */
+  const nothing = r.data == null || (Array.isArray(r.data) && !r.data.length);
+  return { ...f, state: nothing ? 'empty' : 'ok', data: r.data };
+}
+
+/** Render a data-backed block. A pane physically cannot come out blank. */
+function bound(key, render, opts = {}) {
+  const f = feed(key);
+  if (f.state === 'loading') return skeleton(opts.rows || 4);
+  if (f.state === 'error')   return errnote(f, key);
+  if (f.state === 'empty')   return empty(opts.icon || '📭',
+    opts.emptyMsg || 'Nothing here yet',
+    opts.emptySub || 'This synced fine — there is genuinely nothing to show.');
+  return render(f.data, f);
+}
+
+/* ═══ HELPERS ════════════════════════════════════════════════════════════ */
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/** Compact money. Precision SCALES with magnitude instead of being a flat 2dp:
+ *  $694.00m was three characters of false precision — those trailing zeros are
+ *  not information, and across a 7-column table they were a big part of why it
+ *  needed a horizontal scrollbar. 100+ → 0dp, 10+ → 1dp, under 10 → 2dp. */
+function money(n) {
+  const v = Math.round(+n || 0), a = Math.abs(v), sg = v < 0 ? '-' : '';
+  const fmt = (x, unit) =>
+    sg + '$' + x.toFixed(x >= 100 ? 0 : x >= 10 ? 1 : 2).replace(/\.0+$/, '') + unit;
+  if (a >= 1e9) return fmt(a / 1e9, 'b');
+  if (a >= 1e6) return fmt(a / 1e6, 'm');
+  if (a >= 1e3) return fmt(a / 1e3, 'k');
+  return sg + '$' + a;
+}
+const pct = v => v == null ? '—' : Math.round(v * 100) + '%';
+const num = n => (+n).toLocaleString();
+
+/** Stable tile colour per uid. Saturation/lightness FIXED so white initials
+ *  stay legible on every one, rather than depending on a contrast lottery. */
+function monoColor(uid) {
+  let h = 0; const s = String(uid);
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360},38%,33%)`;
+}
+const initials = n => { const p = String(n||'').trim().split(/[\s_\-.]+/).filter(Boolean);
+  return (p.length >= 2 ? p[0][0]+p[1][0] : String(n).slice(0,2)).toUpperCase(); };
+const avatar = (uid, name) =>
+  `<span class="av"><span class="av-mono" style="background:${monoColor(uid)}">${esc(initials(name))}</span></span>`;
+
+/** Presence rows as dotted names. Offline is GREY, not red — being asleep is
+ *  not a fault, and red is reserved for things that need acting on. */
+const PRESENCE_DOT = { Online: 'green', Idle: 'yellow', Offline: 'grey' };
+const presenceList = rows => rows.map(r =>
+  `<div class="mrow" data-act="profile" data-arg="${esc(r.uid)}"
+     title="${esc(r.state)}${r.abroad ? ' · abroad' : ''}">
+     <span class="dot ${PRESENCE_DOT[r.state] || 'grey'}"></span>${esc(r.name)}
+   </div>`).join('');
+
+const cprCls  = v => v == null ? 'faint' : v >= 70 ? 'green' : v >= 60 ? 'yellow' : 'red';
+const rateCls = v => v == null ? 'dim'   : v >= .85 ? 'green' : v >= .65 ? 'yellow' : 'red';
+const spark = s => `<span class="spark">${[...s].map(c => `<i class="${c}"></i>`).join('')}</span>`;
+
+/* ═══ COMPONENTS ═════════════════════════════════════════════════════════ */
+const card = (title, body, opts = {}) => `
+  <div class="card">
+    ${title ? `<div class="card-h">
+      <h3>${esc(title)}</h3>
+      ${opts.small ? `<span class="small">${esc(opts.small)}</span>` : ''}
+      ${opts.action ? `<span class="push"></span><a href="#" data-act="noop">${esc(opts.action)}</a>` : ''}
+    </div>` : ''}
+    <div class="card-b ${opts.pad || ''}">${body}</div>
+  </div>`;
+
+const stat = (label, value, ico, tone = '') =>
+  `<div class="stat"><div class="stat-l">${esc(label)}</div>
+   <div class="stat-v ${tone}">${value}</div><div class="stat-i">${ico}</div></div>`;
+
+const kv = (k, v, cls = '') => `<div class="kv"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+
+/** Donut. Pure SVG — no library, so it works offline and forever. */
+function donut(percent, size = 150, stroke = 15) {
+  const r = (size - stroke) / 2, c = 2 * Math.PI * r;
+  return `<div class="donut" style="width:${size}px;height:${size}px">
+    <svg width="${size}" height="${size}">
+      <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="#232c3a" stroke-width="${stroke}"/>
+      <circle cx="${size/2}" cy="${size/2}" r="${r}" fill="none" stroke="var(--accent)" stroke-width="${stroke}"
+        stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${c * (1 - percent)}"
+        transform="rotate(-90 ${size/2} ${size/2})"/>
+    </svg>
+    <div class="donut-mid"><div class="donut-pct">${Math.round(percent*100)}%</div>
+      <div class="donut-lbl">Participation</div></div>
+  </div>`;
+}
+
+const empty = (i, m, s) => `<div class="empty"><div class="i">${i}</div><div class="m">${esc(m)}</div>${s?`<div class="s">${esc(s)}</div>`:''}</div>`;
+
+/** Loading placeholder shaped like the content it stands in for, so the pane
+ *  doesn't jump when the real rows arrive. */
+const skeleton = (rows = 4) =>
+  `<div class="skel">${Array.from({ length: rows },
+    (_, i) => `<i style="width:${[100, 82, 91, 68, 95, 74][i % 6]}%"></i>`).join('')}</div>`;
+
+/** A failed sync explains itself and offers the one action that helps.
+ *  "needs faction API access (AA)" is a fixable problem; "error" is not. */
+const errnote = (f, key) => `
+  <div class="errnote">
+    <span class="ei">⚠</span>
+    <div>
+      <div class="em">Couldn’t load this</div>
+      <div class="es">${f.need
+        ? `<b>${esc(f.need)}</b> needs faction API access (AA). Everything else on this page is unaffected.`
+        : esc(f.why || 'The last sync failed.')}</div>
+      <button data-act="retry" data-arg="${esc(key)}">Retry now</button>
+    </div>
+  </div>`;
+
+/** Where a number came from. exact = Torn told us · obs = we measured it ·
+ *  est = a third party guessed. Never dress an estimate as a measurement. */
+const PROV_TITLE = {
+  exact: 'Reported by Torn — authoritative',
+  obs:   'Computed from our own recorded history',
+  est:   'Third-party estimate, not measured',
+};
+const prov = t => t ? `<span class="prov ${t}" title="${esc(PROV_TITLE[t] || '')}">${t}</span>` : '';
+
+const bar = (v, cls = '') =>
+  `<div class="bar ${cls}"><i style="width:${Math.max(0, Math.min(1, v)) * 100}%"></i></div>`;
+const barrow = (label, value, v, cls = '') =>
+  `<div class="barrow"><span class="bl">${label}</span><span class="bv">${value}</span>${bar(v, cls)}</div>`;
+
+/** Sub-navigation. `counts` is optional and only shown when non-zero — a
+ *  bare "0" next to a tab name reads as broken rather than as information. */
+const subnav = (page, items, current) => `
+  <div class="subnav">${items.map(t => `
+    <button class="${t.id === current ? 'on' : ''}" data-act="sub" data-arg="${page}" data-arg2="${t.id}">
+      ${esc(t.label)}${t.n ? `<span class="n">${num(t.n)}</span>` : ''}
+    </button>`).join('')}</div>`;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PAGES
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+function pageDashboard() {
+  const overview = card('Faction Overview', `<div class="stats">
+    ${stat('Members', F.members, '👥')}
+    ${stat('OCs Run', num(F.ocsRun), '🎯')}
+    ${stat('Failed', num(Math.round(F.ocsRun * (1 - F.success))), '🛡')}
+    ${stat('Success Rate', pct(F.success), '📈', 'green')}
+  </div>`, { pad: 'tight' });
+
+  /* Presence is live-only. With no members payload yet the card SAYS so —
+     four confident zeroes would read as a dead faction. */
+  const status = card('Member Status', F.seen
+    ? `${kv('<span class="dot green"></span> Online', F.seen.online)}
+       ${kv('<span class="dot yellow"></span> Idle', F.seen.idle)}
+       ${kv('<span class="dot grey"></span> Offline', F.seen.offline)}
+       ${kv('<span class="dot purple"></span> Abroad', F.seen.abroad)}`
+    : empty('🕐', 'No live roster yet',
+        'Presence comes from the members payload, which lands on the next refresh.'),
+    F.seen ? {} : { pad: 'flush' });
+
+  const exposure = card('Pending Exposure', `
+    ${kv('Open slots', F.openSlots)}
+    ${kv('Awaiting payout', F.unpaidCount)}
+    ${kv('Owed to members', money(F.unpaidCash), 'green')}
+    ${kv('Item cost to cover', money(F.itemCost), 'red')}
+    <div class="kv-rule"></div>
+    ${kv('Members free', F.freeMembers)}
+    ${kv('Respect in flight', num(F.potentialRespect), 'green')}`);
+
+  const activity = card('OC Activity', `
+    <div class="donut-row">
+      ${donut(.76)}
+      <div class="donut-side">
+        <div><div class="k">Completed</div><div class="v">${F.completed}</div></div>
+        <div><div class="k">In Progress</div><div class="v">${F.inProgress}</div></div>
+        <div><div class="k">Available</div><div class="v">${F.openSlots - 34}</div></div>
+      </div>
+    </div>`, { small: '(This Cycle)' });
+
+  const war = card('War / Chaining', `
+    <div class="banner${F.chaining ? '' : ''}">
+      <div class="big">${F.chaining ? 'CHAIN LIVE' : 'FACTION NOT CHAINING'}</div>
+      <div class="sub">Ready for Retals</div>
+    </div>
+    ${kv('Last Chain', F.lastChain, 'dim')}
+    ${kv('Ranked War', `vs ${esc((V.warNow?.opponent || 'nobody'))}`)}
+    ${kv('Score', `${(V.warNow?.us || 0)} : ${(V.warNow?.them || 0)}`, 'dim')}`);
+
+  const feed = card('Recent Activity', bound('activity', rows =>
+    rows.map(a => `<div class="feed"><span class="fi">${a.i}</span>
+      <span class="ft">${a.t}</span><span class="fw">${esc(a.w)}</span></div>`).join(''), {
+    icon: '📭', emptyMsg: 'Nothing has happened yet',
+    emptySub: 'Completed crimes and payouts appear here as they are recorded.',
+  }));
+
+  const online = card('Members Online', F.seen
+    ? `<div class="mcols">${presenceList(F.seen.rows.slice(0, 12))}</div>`
+    : empty('🕐', 'No live roster yet', 'It arrives with the next data refresh.'),
+    F.seen ? { action: 'View All' } : { pad: 'flush' });
+
+  return `
+    <div class="page-head">
+      <span class="page-ico">🏠</span>
+      <div><div class="page-title">Dashboard</div>
+        <div class="page-sub">Faction overview and key statistics.</div></div>
+    </div>
+    <div class="grid g-2">${overview}${status}</div>
+    <div class="grid g-3">${exposure}${activity}${war}</div>
+    <div class="grid g-2e">${feed}${online}</div>`;
+}
+
+function activeCrimesPane() {
+  /* Went straight to activeOcs() and joined the result, so an empty archive
+     produced an empty string and the pane rendered as blank space — which reads
+     as "the script is broken", not as "there is nothing to show". */
+  return bound('ocCards', list => `<div class="grid g-3">${crimeCards(list)}</div>`, {
+    icon: '🎯', emptyMsg: 'No crimes on record',
+    emptySub: 'The OC archive is empty. It fills itself on the next background '
+            + 'history pass, or immediately from Crimes ▸ Performance in the v5 UI.',
+  });
+}
+
+function crimeCards(list) {
+  return list.map(oc => {
+    const acc = { crit:'var(--red)', ready:'var(--green)', recruit:'var(--accent)' }[oc.status];
+    const chip = { crit:'yellow', ready:'green', recruit:'blue' }[oc.status];
+    return card(oc.name, `
+      <div class="kv" style="padding-top:0;border:none">
+        <span class="chip">D${oc.diff}</span> <span class="chip ${chip}">${oc.badge}</span>
+        <span class="v dim">${esc(oc.time)}</span>
+      </div>
+      <div class="kv" style="border:none;padding-bottom:14px">
+        <div class="bar" style="flex:1"><span class="${oc.filled===oc.total?'green':''}" style="width:${oc.filled/oc.total*100}%"></span></div>
+        <span class="v dim">${oc.filled}/${oc.total}</span>
+      </div>
+      <table><thead><tr><th>Role</th><th>Member</th><th class="num">Wgt</th><th class="num">CPR</th></tr></thead>
+      <tbody>${oc.slots.map(s => `<tr>
+        <td class="dim">${esc(s.role)}</td>
+        <td class="strong">${s.who ? esc(s.who) : '<i class="faint">Open</i>'}</td>
+        <td class="num ${s.w >= 25 ? 'yellow' : 'dim'}">${s.w}%</td>
+        <td class="num b ${cprCls(s.cpr)}">${s.cpr != null ? s.cpr + '%' : '–'}</td>
+      </tr>`).join('')}</tbody></table>`, { pad: 'tight' })
+      .replace('class="card"', `class="card" style="border-top:2px solid ${acc}"`);
+  }).join('');
+}
+
+function riskPane() {
+  return card('Risk seats', bound('risk', rows => `
+    <div class="note" style="margin:0 0 14px">A high-weight role held below the 70% CPR threshold.
+      This is what loses OCs — fix these before filling anything else.</div>
+    <div class="tablewrap"><table class="avatars">
+      <thead><tr><th>Member</th><th>Crime</th><th>Role</th>
+        <th class="num">Weight</th><th class="num">CPR</th></tr></thead>
+      <tbody>${rows.map(r => `<tr class="clickable" data-act="profile" data-arg="${r.uid}">
+        <td class="strong"><span class="namecell">${avatar(r.uid, r.name)}<span class="nm">${esc(r.name)}</span></span></td>
+        <td class="dim">${esc(r.oc)}</td><td class="dim">${esc(r.role)}</td>
+        <td class="num yellow b">${r.w}%</td>
+        <td class="num b ${cprCls(r.cpr)}">${r.cpr}%</td></tr>`).join('')}</tbody>
+    </table></div>`), {
+    icon: '✅', emptyMsg: 'No risk seats',
+    emptySub: 'Every high-weight role is held by someone above the threshold.',
+  });
+}
+
+function crimePerfPane() {
+  return card('Performance by crime', bound('crimes', rows => `
+    <div class="tablewrap"><table>
+      <thead><tr><th>Crime</th><th class="num">Runs</th><th class="num">Success</th>
+        <th class="num">Avg CPR</th><th class="num">Respect</th><th class="num">Money</th>
+        <th>Weakest seat</th></tr></thead>
+      <tbody>${rows.map(c => `<tr>
+        <td class="strong">${esc(c.name)}</td>
+        <td class="num dim">${c.runs}</td>
+        <td class="num b ${rateCls(c.rate)}">${pct(c.rate)}</td>
+        <td class="num ${cprCls(c.cpr)}">${c.cpr}%</td>
+        <td class="num dim">${num(c.respect)}</td>
+        <td class="num green">${money(c.money)}</td>
+        <td class="${c.weak ? 'red' : 'faint'}">${c.weak
+          ? `${esc(c.weak.role)} · ${c.weak.pct}%` : 'none'}</td>
+      </tr>`).join('')}</tbody></table></div>
+    <div class="note">Weakest seat is the role that failed most often in this crime — the
+      single thing most worth fixing before running it again.</div>`), { small: 'obs' });
+}
+
+function pageCrimes() {
+  const sub = curSub('crimes');
+  const panes = { active: activeCrimesPane, risk: riskPane, perf: crimePerfPane };
+  return pageHead('🎯', 'Organized Crimes', 'Active crews, open seats, and who is at risk.',
+      `<span class="chip yellow">${F.openSlots} open slots</span>`)
+    + subnav('crimes', subTabs().crimes, sub)
+    + (panes[sub] || activeCrimesPane)();
+}
+
+function rosterPane() {
+  return card('Roster', bound('roster', rows => `
+    <div class="tablewrap"><table class="avatars">
+      <thead><tr><th class="num">#</th><th>Player</th><th class="num">OCs</th>
+        <th class="num">Success</th><th class="num">Avg CPR</th><th class="num">Best</th>
+        <th>Top role</th><th>Last 10</th><th class="num">Trend</th><th class="num">Last run</th></tr></thead>
+      <tbody>${rows.map((m, i) => `<tr class="clickable" data-act="profile" data-arg="${m.uid}">
+        <td class="num ${i < 3 ? 'yellow b' : 'faint'}">${i + 1}</td>
+        <td class="strong"><span class="namecell">${avatar(m.uid, m.name)}<span class="nm">${esc(m.name)}</span></span></td>
+        <td class="num">${m.runs}</td>
+        <td class="num b ${rateCls(m.rate)}">${pct(m.rate)}</td>
+        <td class="num ${cprCls(m.cpr)}">${m.cpr}%</td>
+        <td class="num">D${m.best}</td>
+        <td class="dim ellipsis">${esc(m.role)}</td>
+        <td>${spark(m.spark)}</td>
+        <td class="num ${m.trend == null ? 'faint' : m.trend > .05 ? 'green' : m.trend < -.05 ? 'red' : 'dim'}">
+          ${m.trend == null ? '—' : (m.trend > .05 ? '▲' : m.trend < -.05 ? '▼' : '–') + ' ' + Math.abs(Math.round(m.trend*100)) + '%'}</td>
+        <td class="num dim">${esc(m.last)}</td></tr>`).join('')}</tbody>
+    </table></div>
+    <div class="note">Click any row for that member's full profile. Expired OCs are excluded from
+      success rate — nobody ran them.</div>`), { small: 'obs' });
+}
+
+function activityPane() {
+  return `<div class="grid g-2">
+    ${card('Who is on', F.seen
+      ? `<div class="mcols">${presenceList(F.seen.rows)}</div>
+         <div class="note">Green is online, amber is idle, grey is offline — read straight
+           from Torn's own last-action label, not inferred from OC activity. Only current
+           faction members appear; Torn does not report this for anyone who has left.</div>`
+      : empty('🕐', 'No live roster yet',
+          'This needs the members payload, which arrives on the next data refresh.'),
+      F.seen ? { small: `${F.seen.online} online` } : { pad: 'flush' })}
+    ${card('Recent activity', bound('activity', rows =>
+      rows.map(a => `<div class="feed"><span class="fi">${a.i}</span>
+        <span class="ft">${a.t}</span><span class="fw">${esc(a.w)}</span></div>`).join('')),
+      { small: 'exact' })}
+  </div>`;
+}
+
+function pagePeople() {
+  const sub = curSub('people');
+  const panes = { roster: rosterPane, activity: activityPane };
+  return pageHead('👥', 'People', 'Every player who has run an OC, ranked.',
+      `<span class="chip">${V.roster.length} tracked</span>`)
+    + subnav('people', subTabs().people, sub)
+    + (panes[sub] || rosterPane)();
+}
+
+function moneyOverviewPane() {
+  const m = V.totals;
+  return `
+    <div class="grid g-2">
+      ${card('The split', `<div class="stats">
+        ${stat('Faction kept', money(m.kept), '🏦', 'green')}
+        ${stat('Gross', money(m.gross), '📊')}
+        <!-- m.members, NOT m.paid — moneyTotals has no "paid" field, so this
+             read undefined and money() turned it into a confident $0. -->
+        ${stat('Paid out', money(m.members), '👤')}
+        ${stat('Item cost', money(m.cost), '📦', 'red')}
+      </div>`, { pad: 'tight' })}
+      ${card('Awaiting payout', `
+        <div class="banner alert">
+          <div class="big">${money(F.unpaidCash)}</div>
+          <div class="sub">${F.unpaidCount} OCs not yet paid</div>
+        </div>
+        <div class="note" style="margin-top:14px">Still with the faction, so "kept" is
+          flattering by that much until you settle it.</div>`)}
+    </div>
+    ${card('What the faction actually keeps', bound('money', rows => `
+      <div class="note" style="margin:0 0 14px"><b>Gross</b> = everything the OC produced.
+        <b>To members</b> = cash × the split. <b>Kept</b> = what's actually left — the number that
+        decides whether a crime is worth running. A huge-gross crime on a 90% split can keep less
+        than a modest one at 50%.</div>
+      <div class="tablewrap"><table>
+        <thead><tr><th>Scenario</th><th class="num">Runs</th><th class="num">Gross</th>
+          <th class="num">To members</th><th class="num">Cost</th>
+          <th class="num">Kept</th><th class="num">Per run</th></tr></thead>
+        <tbody>${rows.map(s => `<tr>
+          <td class="strong">${esc(s.name)}</td>
+          <td class="num dim">${s.runs}</td>
+          <td class="num dim">${money(s.gross)}</td>
+          <td class="num" style="color:var(--accent)">−${money(s.members)}</td>
+          <td class="num yellow">−${money(s.cost)}</td>
+          <td class="num b green">${money(s.kept)}</td>
+          <td class="num green">${money(s.perRun)}</td></tr>`).join('')}</tbody>
+      </table></div>`, {
+      icon: '💰', emptyMsg: 'No money recorded',
+      emptySub: 'The profit ledger is empty — it fills as completed OCs are seen.',
+    }), { small: 'exact' })}`;
+}
+
+function earningsPane() {
+  return card('Member earnings', bound('earnings', rows => `
+    <div class="tablewrap"><table class="avatars">
+      <thead><tr><th>Member</th><th class="num">Runs</th><th class="num">Earned</th>
+        <th class="num">Paid</th><th class="num">Owed</th></tr></thead>
+      <tbody>${rows.map(e => {
+        const owed = e.earned - e.paid;
+        return `<tr class="clickable" data-act="profile" data-arg="${e.uid}">
+          <td class="strong"><span class="namecell">${avatar(e.uid, e.name)}<span class="nm">${esc(e.name)}</span></span></td>
+          <td class="num dim">${e.runs}</td>
+          <td class="num">${money(e.earned)}</td>
+          <td class="num green">${money(e.paid)}</td>
+          <td class="num ${owed ? 'red b' : 'faint'}">${owed ? money(owed) : '—'}</td></tr>`;
+      }).join('')}</tbody></table></div>
+    <div class="note"><b>Owed</b> is what a member has earned but not yet been paid. It is
+      the same money as "awaiting payout" on Overview, split by person.</div>`), { small: 'exact' });
+}
+
+/** Paid status, honest about how it was arrived at. Torn's own record is the
+ *  only exact signal; a give-funds match is inference and renders as such —
+ *  same green, but hollow and captioned, so it can never be mistaken for a
+ *  confirmed payout at a glance. */
+function paidChip(p) {
+  if (!p.paid) return '<span class="chip red">Unpaid</span>';
+  if (p.confidence == null) return `<span class="chip green">Paid${prov('exact')}</span>`;
+  return `<span class="chip green out" title="Inferred from a give-funds match — ${
+    Math.round(p.confidence * 100)}% confidence. Torn did not record this payout.">Likely paid ${
+    Math.round(p.confidence * 100)}%</span>`;
+}
+
+function payoutsPane() {
+  return card('Which OCs have been paid', bound('payouts', rows => `
+    <div class="tablewrap"><table>
+      <thead><tr><th>Crime</th><th>Finished</th><th class="num">Cash</th>
+        <th class="num">Split</th><th>Paid</th><th>By</th></tr></thead>
+      <tbody>${rows.map(p => `<tr>
+        <td class="strong">${esc(p.oc)}</td>
+        <td class="dim">${esc(p.when)}</td>
+        <td class="num">${money(p.cash)}</td>
+        <td class="num ${p.split == null ? 'faint' : ''}">${
+          p.split == null ? '~80%' : pct(p.split)}${p.split == null ? prov('est') : ''}</td>
+        <td>${paidChip(p)}</td>
+        <td class="${p.by ? 'dim' : 'faint'}">${p.by ? esc(p.by) : '—'}</td>
+      </tr>`).join('')}</tbody></table></div>
+    <div class="note"><b>Paid</b> is only certain when Torn itself recorded the payout${prov('exact')}.
+      Otherwise it is <b>inferred</b>${prov('est')} by matching faction give-funds transfers to
+      completed OCs — Torn does not record which OC a give was for, so a match is a best guess
+      with a confidence, never a fact. A tilde on the split means the same thing: Torn recorded
+      no percentage, so the figure is your configured fallback.</div>`), { small: 'mixed' });
+}
+
+function costsPane() {
+  return card('What crimes cost to run', bound('money', rows => {
+    const max = Math.max(...rows.map(x => x.cost), 1);
+    return rows.slice().sort((a, b) => b.cost - a.cost).map(x =>
+        barrow(esc(x.name), `${money(x.cost)} · ${money(x.cost / x.runs)}/run`,
+          x.cost / max, 'yellow')).join('')
+      + `<div class="note">Item cost is subtracted before "kept", so an expensive crime with a
+         big gross can still be the worse one to run. Per-run is the figure to compare.</div>`;
+  }, { icon: '📦', emptyMsg: 'No costs recorded',
+       emptySub: 'The profit ledger is empty, so there is nothing to price.' }),
+    { small: 'exact' });
+}
+
+function fundsPane() {
+  return card('Deposits vs gives', bound('funds', rows => `
+    <div class="tablewrap"><table class="avatars">
+      <thead><tr><th>Member</th><th class="num">Deposited</th>
+        <th class="num">Given out</th><th class="num">Net</th></tr></thead>
+      <tbody>${rows.map(f => {
+        const net = f.deposited - f.given;
+        return `<tr class="clickable" data-act="profile" data-arg="${f.uid}">
+          <td class="strong"><span class="namecell">${avatar(f.uid, f.name)}<span class="nm">${esc(f.name)}</span></span></td>
+          <td class="num green">${money(f.deposited)}</td>
+          <td class="num" style="color:var(--accent)">${money(f.given)}</td>
+          <td class="num b ${net >= 0 ? 'green' : 'red'}">${net >= 0 ? '+' : ''}${money(net)}</td></tr>`;
+      }).join('')}</tbody></table></div>
+    <div class="note">This is faction-bank movement only. A negative net is not a debt — most
+      of it is OC payouts flowing back out, which is exactly what should happen.</div>`),
+    { small: 'exact' });
+}
+
+function pageMoney() {
+  const sub = curSub('money');
+  const panes = { overview: moneyOverviewPane, earnings: earningsPane,
+                  payouts: payoutsPane, costs: costsPane, funds: fundsPane };
+  return pageHead('💰', 'Money', 'What the faction produced, paid out, and actually kept.')
+    + subnav('money', subTabs().money, sub)
+    + (panes[sub] || moneyOverviewPane)();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WAR CENTRE
+   ═══════════════════════════════════════════════════════════════════════════ */
+const pageHead = (ico, title, sub, right = '') => `
+  <div class="page-head"><span class="page-ico">${ico}</span>
+    <div><div class="page-title">${esc(title)}</div><div class="page-sub">${esc(sub)}</div></div>
+    ${right ? `<span class="push"></span>${right}` : ''}</div>`;
+
+function warOverviewPane() {
+  /* Only the war CARD depends on there being a war. Wrapping the whole pane in
+     bound('warNow') meant a quiet week blanked the chain card too, which has
+     nothing to do with the war. Each card owns its own empty state. */
+  const warCard = bound('warNow', w => card('Ranked war', `
+      <div class="banner ${w.started ? 'alert' : ''}">
+        <div class="big">${esc(w.opponent)}</div>
+        <div class="sub">${w.started
+          ? `${num(w.us)} — ${num(w.them)}`
+          : `Starts ${esc(ago(S.now - w.startsAt))}`}</div>
+      </div>
+      <div style="margin-top:15px">
+        ${kv('Target score', num(w.target))}
+        <!-- No "their members" row: the war archive records scores and
+             names, not roster sizes. A blank or a 0 there would look like
+             an empty enemy faction rather than a figure we do not hold. -->
+        ${kv('Status', w.started ? 'Live' : 'Scheduled', w.started ? 'green' : 'yellow')}
+      </div>`, { small: 'exact' }), {
+    icon: '🕊', emptyMsg: 'No ranked war',
+    emptySub: 'Nothing scheduled or running. Past wars are under History.',
+  });
+
+  const chainCard = card('Chain', F.chaining
+    ? `<div class="banner"><div class="big">Live</div></div>`
+    : `<div class="banner alert"><div class="big">NOT CHAINING</div>
+         <div class="sub">Last chain ${esc(F.lastChain)}</div></div>
+       <div class="note" style="margin-top:14px">The watcher polls every 30s while this
+         pane is open, and only then — Torn caches identical calls for about that long
+         anyway, so polling harder buys nothing.</div>`);
+
+  /* This card once held three bars reading 31/48, 39/48, 4/48 — literals, from
+     a mock, labelled "obs". It was removed rather than dressed up, on the note
+     that it could come back once the member list was really wired in. It is now,
+     so these are counted from the live members payload. */
+  const readiness = card('Readiness', F.seen
+    ? barrow('Able to fight now', `${F.seen.ready} / ${F.seen.total}`,
+             F.seen.ready / F.seen.total, 'green')
+      + barrow('At the keyboard', `${F.seen.online + F.seen.idle} / ${F.seen.total}`,
+               (F.seen.online + F.seen.idle) / F.seen.total)
+      + barrow('In hospital or jail', `${F.seen.hospital} / ${F.seen.total}`,
+               F.seen.hospital / F.seen.total, 'red')
+      + `<div class="note">"Able to fight" means okay <b>and</b> online — someone asleep and
+         someone hospitalised are both unavailable, for different reasons.</div>`
+    : empty('🕐', 'No live roster yet', 'It arrives with the next data refresh.'),
+    F.seen ? { small: 'exact' } : { pad: 'flush' });
+
+  return `<div class="grid g-3">${warCard}${chainCard}${readiness}</div>`;
+}
+
+/** Past wars. Deliberately NOT repeated on the Overview pane — Overview is
+ *  about the war you are in, this is about the ones you finished. */
+function warHistoryPane() {
+  return card('War history', bound('warPast', rows => `
+    <div class="tablewrap"><table>
+      <thead><tr><th>Opponent</th><th>When</th><th class="num">Us</th><th class="num">Them</th>
+        <th class="num">Respect</th><th class="num">Payout</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td class="strong">${esc(r.opp)}</td>
+        <td class="dim">${esc(r.when)}</td>
+        <td class="num ${r.result === 'won' ? 'green b' : 'dim'}">${r.us == null ? '—' : num(r.us)}</td>
+        <td class="num ${r.result === 'lost' ? 'red b' : 'dim'}">${r.them == null ? '—' : num(r.them)}</td>
+        <td class="num ${r.respect > 0 ? 'green' : r.respect < 0 ? 'red' : 'dim'}">${
+          r.respect == null ? '—' : (r.respect > 0 ? '+' : '') + num(r.respect)}</td>
+        <td class="num ${r.payout ? 'green' : 'dim'}">${r.payout == null ? '—' : money(r.payout)}</td>
+      </tr>`).join('')}</tbody></table></div>`), { small: 'exact', pad: 'flush' });
+}
+
+function warRoomPane() {
+  return card('War room', bound('warRoom', rows => `
+    <div class="note" style="margin:0 0 14px">Fair-fight and value figures are
+      <b>estimates</b> from FFScouter${prov('est')} — they are not measured, and the UI
+      never pretends otherwise. Calling a target is a message to your faction; the
+      script never attacks for you.</div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Target</th><th class="num">Lvl</th><th class="num">FF</th>
+        <th>Status</th><th>Called by</th><th class="num">Est. value</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td><div class="mem" data-act="profile" data-arg="${r.uid}">
+          ${avatar(r.uid, r.name)}<span class="nm">${esc(r.name)}</span></div></td>
+        <td class="num dim">${r.lvl ?? '—'}</td>
+        <!-- FF and value are absent without an FFScouter key, or before the batch
+             lands. A dash says so; a number would be an invention. -->
+        <td class="num ${r.ff == null ? 'faint' : r.ff >= 2.5 ? 'green' : r.ff >= 1.5 ? 'yellow' : 'dim'}">${
+          r.ff == null ? '—' : r.ff.toFixed(1) + '×'}</td>
+        <td>${r.status === 'ok'
+          ? '<span class="chip green">Attackable</span>'
+          : `<span class="chip ${r.status === 'hosp' ? 'red' : 'yellow'}">${
+              r.status === 'hosp' ? 'Hospital' : r.status === 'jail' ? 'Jail' : esc(r.status)}${
+              r.since === '—' ? '' : ' ' + esc(r.since)}</span>`}</td>
+        <td class="${r.called ? '' : 'faint'}">${r.called ? `🔒 ${esc(r.called)}` : '—'}</td>
+        <td class="num ${r.est == null ? 'faint' : 'dim'}">${r.est == null ? '—' : esc(String(r.est))}</td>
+      </tr>`).join('')}</tbody></table></div>`), { small: 'est', pad: 'flush' });
+}
+
+function chainsPane() {
+  return card('Chain history', bound('chains', rows => `
+    <div class="tablewrap"><table>
+      <!-- Top hitter and how the chain ended are NOT in the chain archive —
+           they would need the attack ledger cross-referenced per chain. The
+           columns are gone rather than empty. -->
+      <thead><tr><th>Chain</th><th>When</th><th class="num">Respect</th>
+        <th class="num">Per hit</th><th>Lasted</th></tr></thead>
+      <tbody>${rows.map(c => `<tr>
+        <td class="strong">${num(c.len)}</td>
+        <td class="dim">${esc(ago(S.now - c.end))}</td>
+        <td class="num green">${num(c.respect)}</td>
+        <td class="num dim">${c.len ? (c.respect / c.len).toFixed(2) : '—'}</td>
+        <td class="dim">${c.end > c.start ? Math.round((c.end - c.start) / 60) + 'm' : '—'}</td>
+      </tr>`).join('')}</tbody></table></div>`), { small: 'exact', pad: 'flush' });
+}
+
+function pageWar() {
+  const sub = curSub('war');
+  const panes = {
+    overview: warOverviewPane, room: warRoomPane,
+    chains:   chainsPane,      history: warHistoryPane,
+  };
+  return pageHead('⚔', 'War Centre', 'Ranked wars, chains, the war room and payout calculation.')
+    + subnav('war', subTabs().war, sub)
+    + (panes[sub] || panes.overview)();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ARMOURY — owns loans and item status
+   ═══════════════════════════════════════════════════════════════════════════ */
+function itemsPane() {
+  return card('Item status', bound('items', rows => `
+    <div class="note" style="margin:0 0 14px"><b>Available</b> is what you can actually
+      give out right now. Total minus available is not always "on loan" — items get used
+      up too, which is why both columns are shown.</div>
+    <div class="tablewrap"><table>
+      <!-- No usage column here. Consumption is counted from the armoury
+           ledger, not carried on the item, and it has its own pane — putting
+           it here too would be the same number in two places. -->
+      <thead><tr><th>Item</th><th>Type</th><th class="num">Total</th>
+        <th class="num">Available</th><th class="num">On loan</th></tr></thead>
+      <tbody>${rows.map(i => `<tr>
+        <td class="strong">${esc(i.name)}</td>
+        <td class="dim">${esc(i.type)}</td>
+        <td class="num ${i.qty ? '' : 'red b'}">${i.qty}</td>
+        <td class="num ${i.avail ? 'green' : 'red'}">${i.avail}</td>
+        <td class="num ${i.loaned ? 'yellow' : 'faint'}">${i.loaned || '—'}</td>
+      </tr>`).join('')}</tbody></table></div>`), { small: 'exact', pad: 'flush' });
+}
+
+function loansPane() {
+  return card('Out on loan', bound('loans', rows => `
+    <div class="tablewrap"><table>
+      <thead><tr><th>Member</th><th>Item</th><th>Out for</th><th>For</th><th></th></tr></thead>
+      <tbody>${rows.map(l => `<tr>
+        <td><div class="mem" data-act="profile" data-arg="${l.uid}">
+          ${avatar(l.uid, l.who)}<span class="nm">${esc(l.who)}</span></div></td>
+        <td class="strong">${esc(l.item)}</td>
+        <td class="${l.overdue ? 'red b' : 'dim'}">${esc(l.since)}</td>
+        <td class="dim">${esc(l.oc)}</td>
+        <td>${l.overdue ? '<span class="chip red">Overdue</span>' : ''}</td>
+      </tr>`).join('')}</tbody></table></div>`), {
+    small: 'exact', pad: 'flush',
+  });
+}
+
+function usagePane() {
+  /* Ordering, scaling and the warning tone all come from itemUsage() — the
+     pane only chooses colours. Recomputing any of it here would put the same
+     rule in two places, which is how the old suite's numbers drifted. */
+  return card('Consumption, last 30 days', bound('usage', rows =>
+    rows.map(i => barrow(
+      esc(i.name), `${i.used} movement${i.used === 1 ? '' : 's'}`, i.share,
+      i.tone === 'crit' ? 'red' : i.tone === 'warn' ? 'yellow' : '')).join('')
+    + `<div class="note">Bars are scaled to the busiest item, not to stock. Red means
+       none left; amber means under about a week at this rate.
+       <b>Movements, not consumption</b> — separating a used-up material from a tool that
+       went out and came back needs the armoury log parser, which is not written yet, so
+       reusable tools read high here.</div>`), { small: 'obs' });
+}
+
+function pageArmoury() {
+  const sub = curSub('armoury');
+  const panes = { items: itemsPane, loans: loansPane, usage: usagePane };
+  return pageHead('🛡', 'Armoury', 'What you own, who has it, and how fast it is going.')
+    + subnav('armoury', subTabs().armoury, sub)
+    + (panes[sub] || itemsPane)();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   EXPORTS
+   ═══════════════════════════════════════════════════════════════════════════ */
+function pageExports() {
+  return pageHead('⬇', 'Exports', 'Every dataset the suite holds, in whichever format you need.')
+    + card('Datasets', bound('exports', rows => rows.map(x => `
+        <div class="exp">
+          <span class="xi">${x.i}</span>
+          <div><div class="xn">${esc(x.n)}</div><div class="xs">${esc(x.s)}</div></div>
+          <span class="xf">
+            <button data-act="noop">CSV</button>
+            <button data-act="noop">JSON</button>
+            <button data-act="noop">HTML</button>
+          </span>
+        </div>`).join('')))
+    + card('Why these formats', `
+        <dl class="def">
+          <dt>CSV</dt><dd>For a spreadsheet. One row per record, no nesting — the nested
+            fields are flattened rather than dropped.</dd>
+          <dt>JSON</dt><dd>The full structure, nothing flattened. Use this if you are
+            feeding another tool.</dd>
+          <dt>HTML</dt><dd>A styled, self-contained report you can send to someone who
+            does not run the script.</dd>
+        </dl>`);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LEGEND & ABOUT — the page that makes every other page legible
+   ═══════════════════════════════════════════════════════════════════════════ */
+function pageAbout() {
+  return pageHead('ⓘ', 'Legend & About', 'What every number, colour and marker on these screens means.')
+    + card('Where numbers come from', `
+        <div class="note" style="margin:0 0 14px">This marker sits next to figures whose
+          origin matters. It is the difference between a fact and a guess, and the suite
+          will not blur it.</div>
+        <dl class="def">
+          <dt>${prov('exact')}</dt><dd>Reported by Torn itself. Authoritative — a payout
+            percentage Torn recorded always beats whatever the local setting says.</dd>
+          <dt>${prov('obs')}</dt><dd>Computed from history this script recorded itself.
+            Real measurement, but only covers what it was running for.</dd>
+          <dt>${prov('est')}</dt><dd>A third-party estimate, such as FFScouter. Useful for
+            ranking targets, never treated as truth.</dd>
+        </dl>`)
+    + `<div class="grid g-2">
+      ${card('Crime metrics', `<dl class="def">
+        <dt>CPR</dt><dd>Crime Pass Rate — how likely this member is to pass this role.
+          Shown as <span class="green">green ≥70</span>,
+          <span class="yellow">amber 60–69</span>, <span class="red">red under 60</span>.</dd>
+        <dt>Weight</dt><dd>How much that seat influences the whole crime. A weak member in a
+          high-weight seat is the thing worth fixing.</dd>
+        <dt>Success rate</dt><dd>Completed ÷ attempted, over the window you selected.</dd>
+        <dt>Sparkline</dt><dd>The last nine runs, newest last.
+          <span class="spark"><i class="s"></i><i class="s"></i><i class="f"></i><i class="s"></i></span>
+          Filled is a pass, hollow is a fail.</dd>
+      </dl>`)}
+      ${card('Money', `<dl class="def">
+        <dt>Gross</dt><dd>Everything the crime produced — cash plus the value of reward items.</dd>
+        <dt>To members</dt><dd>Cash × the split percentage, counted only once Torn marks
+          the OC paid.</dd>
+        <dt>Kept</dt><dd>Gross − to members − item cost. The only figure that answers
+          "was this worth running".</dd>
+        <dt>Why not "net"</dt><dd>The old Net column was gross minus item cost — before
+          anyone was paid. A "$313m net" crime on an 80% split really left about $62m.</dd>
+      </dl>`)}
+    </div>`
+    + card('About', `
+        <dl class="def">
+          <dt>Version</dt><dd>UI prototype for v6.0 — standalone, fake data, no network.</dd>
+          <dt>Scope</dt><dd>Everything here is advisory. The suite links to Torn's own
+            pages and never performs a game action for you.</dd>
+          <dt>Your data</dt><dd>Stored in your browser. There is no backend and nothing is
+            sent anywhere.</dd>
+        </dl>`);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MEMBER PROFILE — the drill-down every roster row opens
+   ═══════════════════════════════════════════════════════════════════════════ */
+function pageProfile(uid) {
+  const m = V.roster.find(r => r.uid === uid);
+  if (!m) return pageHead('👤', 'Unknown member', `No record for id ${esc(uid)}.`)
+    + card('', empty('🔍', 'No record for that member',
+      'They may have left the faction before this script started recording.'), { pad: 'flush' });
+
+  const crimesFor = crimeStats().slice(0, 4);
+  return `
+    <button class="backbar" data-act="back">← Back</button>
+    <div class="prof-head">
+      ${avatar(m.uid, m.name)}
+      <div><div class="prof-name">${esc(m.name)}</div>
+        <div class="prof-sub">${esc(m.role)} · ${num(m.runs)} runs · last seen ${esc(m.last)}</div></div>
+    </div>
+    ${card('At a glance', `<div class="stats">
+      ${stat('Runs', num(m.runs), '🎯')}
+      ${stat('Success', pct(m.rate), '✅', rateCls(m.rate))}
+      ${stat('CPR', m.cpr, '📊', cprCls(m.cpr))}
+      ${stat('Best level', m.best, '⭐')}
+    </div>`, { pad: 'tight', small: 'obs' })}
+    <div class="grid g-2">
+      ${card('Recent form', `
+        <div style="font-size:26px;margin-bottom:10px">${spark(m.spark)}</div>
+        ${kv('Last nine runs', `${[...m.spark].filter(c => c === 's').length} passed`)}
+        ${kv('Trend', m.trend == null ? 'Not enough data'
+          : (m.trend > 0 ? '+' : '') + Math.round(m.trend * 100) + '%',
+          m.trend == null ? 'faint' : m.trend > 0 ? 'green' : m.trend < 0 ? 'red' : 'dim')}
+        ${kv('Preferred role', esc(m.role))}`, { small: 'obs' })}
+      ${card('Where they help most', crimesFor.map(c =>
+        barrow(esc(c.name), `CPR ${c.cpr}`, c.cpr / 100,
+          c.cpr >= 70 ? 'green' : c.cpr >= 60 ? 'yellow' : 'red')).join('')
+        + `<div class="note">Ranked by this member's pass rate in each crime, not by
+           what the crime pays.</div>`, { small: 'obs' })}
+    </div>
+    ${card('Not built yet', empty('🚧', 'Loans, payouts and war record',
+      'Each needs its own store wired in — the layout above is the pattern they follow.'),
+      { pad: 'flush' })}`;
+}
+
+/* ═══ APPEARANCE ═════════════════════════════════════════════════════════
+   Theme = colour only. Layout = shape only. Keeping them independent is what
+   makes "icons + colour-safe" possible without writing six more themes. */
+const THEMES = [
+  { id:'frostbite', name:'Frostbite',  sub:'The default. Cool blue on deep navy.',
+    ramp:['#0d1117','#171d28','#222b39'], accent:'#2f8fed', trio:['#3fb950','#d4a017','#e05252'] },
+  { id:'midnight',  name:'Midnight',   sub:'Deeper and softer. Easier for long sessions.',
+    ramp:['#0a0e1a','#141b2e','#232c45'], accent:'#6a8fe8', trio:['#3fb950','#d4a017','#e05252'] },
+  { id:'slate',     name:'Slate',      sub:'Neutral grey, no colour cast. Close to today’s suite.',
+    ramp:['#121212','#1e1e1e','#2e2e2e'], accent:'#59a5d8', trio:['#7cba5c','#c9a227','#d75f5f'] },
+  { id:'ember',     name:'Ember',      sub:'Warm. Amber accent instead of blue.',
+    ramp:['#14100d','#211a16','#35291f'], accent:'#e08b3c', trio:['#86b34a','#e0b93c','#e0603c'] },
+  { id:'contrast',  name:'Contrast',   sub:'Pure black, brighter text, heavier borders.',
+    ramp:['#000000','#0d0d0d','#555555'], accent:'#4db8ff', trio:['#4ae08a','#ffd633','#ff6b6b'] },
+  { id:'colorsafe', name:'Colour-safe', sub:'Red/green safe — good reads blue, critical reads orange.',
+    ramp:['#0d1117','#171d28','#222b39'], accent:'#b088ff', trio:['#4d9bff','#ffc233','#ff7733'] },
+];
+
+const LAYOUTS = [
+  { id:'compact', name:'Compact', sub:'990px with labels. Fits Torn’s own column.', rail:13, rows:5 },
+  { id:'full',    name:'Full',    sub:'1490px. Needs a wide screen — breaks out of Torn’s column.', rail:17, rows:5 },
+  { id:'icons',   name:'Icons only', sub:'990px, 60px rail. Labels appear on hover.', rail:6, rows:5 },
+];
+
+const swatch = t => `<div class="sw">
+  ${t.ramp.map(c => `<i style="background:${c}"></i>`).join('')}
+  <i class="gap"></i><i style="background:${t.accent}"></i>
+  <i class="gap"></i>${t.trio.map(c => `<i style="background:${c}"></i>`).join('')}</div>`;
+
+const layPrev = l => `<div class="lay">
+  <div class="lay-side" style="flex-basis:${l.rail}px">${'<u></u>'.repeat(4)}</div>
+  <div class="lay-main">${'<u></u>'.repeat(l.rows)}</div></div>`;
+
+const optBtn = (o, on, act, prev) =>
+  `<button class="opt ${on ? 'on' : ''}" data-act="${act}" data-arg="${o.id}">
+     ${prev}<div class="opt-name">${esc(o.name)}</div><div class="opt-sub">${esc(o.sub)}</div></button>`;
+
+function pageSettings() {
+  return `
+  <div class="page-head"><span class="page-ico">⚙</span>
+    <div><div class="page-title">Settings</div>
+      <div class="page-sub">Appearance now; API keys, CPR thresholds and payout splits when the data layer lands.</div></div></div>
+  ${card('Theme', `<div class="opt-grid">${
+    THEMES.map(t => optBtn(t, t.id === theme, 'theme', swatch(t))).join('')}</div>`)}
+  ${card('Layout', `<div class="opt-grid">${
+    LAYOUTS.map(l => optBtn(l, l.id === width, 'width', layPrev(l))).join('')}</div>`)}
+  ${card('Data sources', storeReport(), { small: 'diagnostic' })}
+  ${card('Not built yet', empty('🚧', 'Everything below is still the old script',
+    'API key, sync cadence, CPR thresholds, member share by level, export defaults.'), { pad: 'flush' })}`;
+}
+
+/**
+ * What is actually in storage, per store.
+ *
+ * Exists because of a real failure mode: an empty pane is ambiguous. It might
+ * mean the archive has not been backfilled, or it might mean a derive function
+ * is broken — and from the outside those look identical. Every version of this
+ * panel so far has been debugged by guessing between them. This makes the
+ * distinction readable: a store showing 0 records is the suite's data problem,
+ * a store with records behind an empty pane is my bug.
+ */
+function storeReport() {
+  const n = o => Object.keys(o || {}).length;
+  const rows = [
+    ['OC archive',      n(S.ocArchive),    'Crimes, Performance, Money, Dashboard'],
+    ['Profit ledger',   n(S.profitLedger), 'Money — every figure on it'],
+    ['CPR archive',     n(S.cprArchive),   'People roster, risk seats'],
+    ['Member names',    n(S.names),        'Every name shown anywhere'],
+    ['Payout events',   n(S.payoutEvents), 'Payouts, member earnings'],
+    ['Deposits',        n(S.deposits),     'Money ▸ Funds'],
+    ['Gear cache',      (S.gearCache.items || []).length, 'Armoury items and loans'],
+    ['Armoury ledger',  n(S.loanLedger),   'Armoury usage, loan ages'],
+    ['War archive',     n(S.warArchive),   'War overview and history'],
+    ['Chain archive',   n(S.chainArchive), 'War ▸ Chains'],
+  ];
+  const dead = rows.filter(r => !r[1]).length;
+  return `
+    <div class="note" style="margin:0 0 14px">Record counts read straight from storage.
+      A pane that is empty <b>and</b> whose store reads 0 is waiting on a sync, not broken —
+      the OC archive in particular fills on a background history pass that can take a few
+      minutes on first run. A pane that is empty while its store has records is a bug in
+      this UI; that is worth reporting.</div>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Store</th><th class="num">Records</th><th>Feeds</th></tr></thead>
+      <tbody>${rows.map(([name, count, uses]) => `<tr>
+        <td class="strong">${esc(name)}</td>
+        <td class="num b ${count ? 'green' : 'red'}">${num(count)}</td>
+        <td class="dim">${esc(uses)}</td></tr>`).join('')}</tbody>
+    </table></div>
+    ${dead ? `<div class="note"><b>${dead}</b> of ${rows.length} stores are empty. Those panes
+      have nothing to draw yet — the v5 UI writes these, so leaving it running fills them.</div>` : ''}`;
+}
+
+const pageStub = (ico, title, sub) => `
+  <div class="page-head"><span class="page-ico">${ico}</span>
+    <div><div class="page-title">${esc(title)}</div><div class="page-sub">${esc(sub)}</div></div></div>
+  ${card('', empty('🚧', 'Not built in the prototype yet',
+    'Dashboard, Crimes, People and Money prove the design language first. Say which pane matters next.'), { pad: 'flush' })}`;
+
+/* ═══ NAV + ROUTER ═══════════════════════════════════════════════════════
+   There is no "Loans & Items" entry. Loans and item status live under
+   Armoury — they were moved there in v4.0 precisely so one screen owns the
+   question "where is our gear", and a second top-level entry would put the
+   same numbers in two places. */
+/* Badges are COUNTED, not declared. They were literals (67 / 5 / 84 / 1 / 3)
+   carried over from the mock, so the rail confidently advertised 84 payouts
+   next to an empty Money tab. A badge that cannot be wrong is not information.
+   Zero is rendered as nothing at all — `.nav-badge:empty` hides it — because a
+   "0" beside a menu item reads as broken rather than as calm. */
+const navItems = () => [
+  { id:'dashboard', ico:'🏠', label:'Dashboard' },
+  { id:'crimes',    ico:'🎯', label:'Organized Crimes',
+    badge: F.openSlots || '', attn: F.openSlots > 0 },
+  { id:'people',    ico:'👥', label:'People',
+    badge: riskRows().length || '', attn: riskRows().length > 0 },
+  { id:'money',     ico:'💰', label:'Money',
+    badge: F.unpaidCount || '', attn: false },
+  { id:'war',       ico:'⚔',  label:'War Centre',
+    badge: V.warNow ? 1 : '', attn: false },
+  { id:'armoury',   ico:'🛡',  label:'Armoury',
+    badge: V.loans.filter(l => l.overdue).length || '', attn: false },
+  { id:'exports',   ico:'⬇',  label:'Exports' },
+  { sep:true },
+  { id:'settings',  ico:'⚙',  label:'Settings' },
+  { id:'about',     ico:'ⓘ',  label:'Legend & About' },
+];
+
+/* Sub-tabs. Money deliberately has no "Exports" sub-tab — exporting is one
+   screen for the whole suite, not a copy per section.
+
+   Counts are COUNTED, like the rail badges. "Roster 48" sat beside an empty
+   roster table in the first live test, which is worse than no count at all:
+   it looks like the table failed rather than like the archive is empty. */
+const subTabs = () => ({
+  crimes:  [{ id:'active', label:'Active',   n: activeOcs().length },
+            { id:'risk',   label:'Risk seats', n: riskRows().length },
+            { id:'perf',   label:'Performance', n: crimeStats().length }],
+  people:  [{ id:'roster', label:'Roster',   n: V.roster.length },
+            { id:'activity', label:'Activity' }],
+  money:   [{ id:'overview', label:'Overview' },
+            { id:'earnings', label:'Member earnings', n: V.earnings.length },
+            { id:'payouts',  label:'Payouts', n: V.payouts.length },
+            { id:'costs',    label:'Costs' },
+            { id:'funds',    label:'Funds' }],
+  war:     [{ id:'overview', label:'Overview' }, { id:'room', label:'War room' },
+            { id:'chains',   label:'Chains', n: V.chains.length },
+            { id:'history',  label:'History', n: V.warPast.length }],
+  armoury: [{ id:'items', label:'Item status', n: V.items.length },
+            { id:'loans', label:'On loan',     n: V.loans.length },
+            { id:'usage', label:'Usage' }],
+});
+
+const PAGES = {
+  dashboard: pageDashboard,
+  crimes:    pageCrimes,
+  people:    pagePeople,
+  money:     pageMoney,
+  war:       pageWar,
+  armoury:   pageArmoury,
+  exports:   pageExports,
+  settings:  pageSettings,
+  about:     pageAbout,
+};
+
+let page = 'dashboard';
+/** Per-page sub-tab. Keyed by page, so switching away and back returns you to
+ *  the sub-tab you were on rather than resetting to the first one. */
+const subOf = {};
+const subsFor = p => (subTabs()[p] || []);
+const curSub  = p => subOf[p] || subsFor(p)[0]?.id || null;
+
+/** The member drill-down. It is a page-level MODE, not a modal: it replaces
+ *  the body and keeps the shell, so the nav and browser back still work. */
+let profileUid = null;
+
+function go(id) {
+  page = id; profileUid = null; render(); toTop();
+}
+function goSub(p, s) {
+  subOf[p] = s;
+  if (page !== p) { page = p; profileUid = null; }
+  render(); toTop();
+}
+function openProfile(uid) { profileUid = uid; render(); toTop(); }
+function closeProfile()   { profileUid = null; render(); toTop(); }
+
+function toTop() {
+  document.querySelector('.content')?.scrollTo?.({ top: 0 });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+/** Stub. In the real script this re-runs the one sync that failed, not all of
+ *  them — a retry that refetches everything is how you hit the rate limit. */
+function retry(key) {
+  const f = FEEDS[key];
+  alert(`Prototype — no network.\n\nHere this would re-run just the "${f?.need || key}" sync,\n`
+      + `not every sync. Refetching everything on a retry is how you\nburn the 100-call/minute budget.`);
+}
+/* ── Appearance state ─────────────────────────────────────────────────────
+   Persisted, because a look you have to re-pick every page load isn't a
+   preference. localStorage is the stand-in for GM_setValue; in the real
+   script these become ocs_* keys. Both readers fall back to the default on
+   an unknown id, so a renamed theme degrades instead of rendering unstyled. */
+const LS = { theme: 'ocs_ui_theme', width: 'ocs_ui_width' };
+
+/* THE STORAGE SEAM. Swap these two bodies for GM_getValue / GM_setValue and
+   nothing else changes — the keys are already in the suite's `ocs_*` naming.
+   GM storage is what survives in TornPDA, where localStorage is not reliably
+   persistent, so the port is not optional.
+       get: (k, d) => GM_getValue(k, d)
+       set: (k, v) => GM_setValue(k, v)
+   Both wrap in try/catch because storage can throw outright — Firefox private
+   mode and a blocked-cookies TornPDA both do it, and a settings read must
+   never be the thing that stops the UI from drawing. */
+const Store = {
+  get(k, dflt) { try { return localStorage.getItem(k) ?? dflt; } catch { return dflt; } },
+  set(k, v)    { try { localStorage.setItem(k, v); } catch {} },
+};
+
+/** Read a stored choice, falling back if it names something that no longer
+ *  exists — a renamed theme must degrade to the default, not render unstyled. */
+const read  = (k, valid, dflt) => { const v = Store.get(k, dflt); return valid.includes(v) ? v : dflt; };
+const write = (k, v) => Store.set(k, v);
+
+let theme = read(LS.theme, THEMES.map(t => t.id), 'frostbite');
+let width = read(LS.width, LAYOUTS.map(l => l.id), 'compact');
+
+/* Both of these target #app, never document.documentElement or body. Inside
+   Torn we own one div; stamping an attribute or class on <html>/<body> would
+   restyle Torn's own page along with ours. */
+const APP = () => document.getElementById('app');
+
+/** Colour only. Never touches layout. */
+function setTheme(id) {
+  theme = THEMES.some(t => t.id === id) ? id : 'frostbite';
+  // Frostbite IS #app's own values, so it carries no attribute — that keeps
+  // the default reachable even if every theme block were deleted.
+  if (theme === 'frostbite') APP().removeAttribute('data-theme');
+  else APP().setAttribute('data-theme', theme);
+  write(LS.theme, theme);
+  if (page === 'settings') render();   // repaint the ✓
+}
+
+/** Shape only: 'compact' (990px, labelled) | 'full' (1490px) | 'icons' (60px rail). */
+function setW(mode) {
+  width = LAYOUTS.some(l => l.id === mode) ? mode : 'compact';
+  APP().classList.remove('compact', 'full', 'icons');
+  // 'full' is the bare stylesheet, so it is the absence of a class, not a class.
+  if (width !== 'full') APP().classList.add(width);
+  for (const m of ['compact', 'full', 'icons'])
+    document.getElementById('w-' + m)?.classList.toggle('on', m === width);
+  write(LS.width, width);
+  if (page === 'settings') render();
+}
+
+function render() {
+  document.getElementById('nav').innerHTML = navItems().map(n => n.sep
+    ? '<div class="nav-sec"></div>'
+    : `<div class="nav-item ${n.id === page ? 'active' : ''}" data-act="go" data-arg="${n.id}" title="${esc(n.label)}">
+         <span class="nav-ico">${n.ico}</span>
+         <span class="nav-label">${esc(n.label)}</span>
+         <span class="nav-badge ${n.attn ? 'attn' : ''}">${n.badge || ''}</span>
+       </div>`).join('');
+  // The profile REPLACES the page body but keeps the shell, so the nav still
+  // shows where you are and clicking it takes you back out.
+  document.getElementById('content').innerHTML = profileUid
+    ? pageProfile(profileUid)
+    : (PAGES[page] || PAGES.dashboard)();
+}
+
+/** Prototype-only. Forces every feed into one state so the loading, error and
+ *  empty renderings are all reachable — they are the states the real script
+ *  spends most of its life in, and the easiest ones to forget to design. */
+function setState(s) {
+  forced = s;
+  for (const m of ['ok', 'loading', 'error', 'empty'])
+    document.getElementById('s-' + m)?.classList.toggle('on', m === s);
+  render();
+}
+/* ═══════════════════════════════════════════════════════════════════════════
+   EVENT WIRING — one delegated listener on #app
+
+   There is not a single inline onclick in this file, and there must never be
+   one. Inside Torn the script runs SANDBOXED (any @grant does that), so its
+   functions do not exist on the page's own window — an inline handler in
+   injected HTML is evaluated in page scope and silently finds nothing. The
+   buttons would simply be dead, with no error worth noticing.
+
+   Delegation also outlives innerHTML. Every render() replaces the entire
+   content subtree; a listener bound to a button would die with it, whereas
+   this one is bound to #app and keeps working for markup that does not exist
+   yet. That is what lets a new pane become clickable by adding an attribute.
+
+   Ports as-is: bind to #ocm-root instead of #app and nothing else changes.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const ACTIONS = {
+  go:      el => go(el.dataset.arg),
+  sub:     el => goSub(el.dataset.arg, el.dataset.arg2),
+  profile: el => openProfile(el.dataset.arg),
+  back:    () => closeProfile(),
+  retry:   el => retry(el.dataset.arg),
+  theme:   el => setTheme(el.dataset.arg),
+  width:   el => setW(el.dataset.arg),
+  noop:    () => {},
+};
+
+/** Named rather than inline, because the userscript build attaches it at
+ *  mount time (when #ocm-root's contents first exist) rather than at load. */
+function onAppClick(e) {
+  // closest(), not e.target — clicks land on the icon or label INSIDE the row,
+  // and those children must count as clicks on the row itself.
+  const el = e.target.closest('[data-act]');
+  if (!el || !APP().contains(el)) return;
+  const fn = ACTIONS[el.dataset.act];
+  if (!fn) return;
+  e.preventDefault();
+  fn(el);
+}
+APP().addEventListener('click', onAppClick);
+
+/* Prototype chrome only — the toolbar lives outside #app and never ports, so
+   it gets its own listener rather than muddling the product's action table. */
+const PROTO_ACTIONS = { w: setW, s: setState, go };
+document.querySelector('.proto').addEventListener('click', e => {
+  const el = e.target.closest('[data-proto]');
+  if (!el) return;
+  PROTO_ACTIONS[el.dataset.proto]?.(el.dataset.arg);
+});
+
+/* Appearance BEFORE the first paint, so there's no flash of the wrong theme.
+   Both are no-ops on a fresh profile — the defaults are Frostbite + Compact. */
+setTheme(theme);
+setW(width);
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "torn-oc-suite",
+  "version": "5.3.0",
+  "private": true,
+  "description": "Tampermonkey userscript for Torn City organised-crime management",
+  "scripts": {
+    "check": "node --check Torn_OC_Suite.user.js",
+    "test": "npm run check && node tests/run_all.js",
+    "render": "node tests/render_real.js",
+    "ui:build": "node ui/build.js",
+    "ui:test": "node ui/build.js && node ui/core.test.js && node ui/derive.test.js && node ui/check.js && node ui/bundle.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}

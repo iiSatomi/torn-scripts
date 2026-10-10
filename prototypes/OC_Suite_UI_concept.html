@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OC Suite — Frostbite dashboard concept</title>
+<style>
+  :root{
+    --bg:#060a13; --bg2:#080d18;
+    --panel:#0c1322; --panel-2:#0f1728; --raise:#13203a;
+    --line:#1a2740; --line-2:#22314f;
+    --ink:#dce7f7; --dim:#8ba0bd; --faint:#5c6f8c;
+    --cy:#3db8f5; --cy-br:#7cd4ff; --cy-deep:#1e88e0;
+    --glow:rgba(61,184,245,.55);
+    --good:#43c98b; --gold:#e0a83a; --pink:#e06bb0; --purple:#a98bf0; --red:#f2678a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:
+      radial-gradient(1200px 600px at 15% -10%, rgba(30,136,224,.10), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, rgba(61,184,245,.07), transparent 55%),
+      var(--bg);
+    color:var(--ink);font:13px/1.5 "Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;padding:18px;min-height:100vh}
+  .wrap{max-width:1180px;margin:0 auto}
+
+  /* ── header ── */
+  .head{display:flex;align-items:center;gap:16px;margin-bottom:18px}
+  .logo{width:56px;height:56px;border-radius:14px;display:grid;place-items:center;font-size:26px;
+    background:linear-gradient(150deg,#10305a,#0a1730);
+    border:1px solid #1e4a7a;box-shadow:0 0 22px rgba(61,184,245,.28),inset 0 0 14px rgba(61,184,245,.15);color:#8fd6ff}
+  .title h1{margin:0;font-size:27px;font-weight:800;letter-spacing:1.5px;color:var(--cy-br);
+    text-shadow:0 0 14px var(--glow),0 0 30px rgba(61,184,245,.25)}
+  .title .sub{color:var(--dim);font-size:11.5px;letter-spacing:2.5px;font-weight:600;margin-top:3px}
+  .head .hbtns{margin-left:auto;display:flex;gap:8px}
+  .hbtn{width:38px;height:38px;border-radius:10px;background:var(--panel);border:1px solid var(--line-2);
+    color:var(--dim);display:grid;place-items:center;font-size:15px;cursor:pointer}
+  .hbtn:hover{color:var(--cy-br);border-color:var(--cy-deep);box-shadow:0 0 14px rgba(61,184,245,.2)}
+
+  .grid{display:grid;grid-template-columns:262px 1fr;gap:14px;align-items:start}
+
+  /* ── panels ── */
+  .panel{background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--line);
+    border-radius:12px;overflow:hidden;box-shadow:0 1px 0 rgba(255,255,255,.03) inset}
+  .phead{display:flex;align-items:center;gap:8px;padding:12px 15px;border-bottom:1px solid var(--line);
+    color:var(--cy);font-size:12px;font-weight:700;letter-spacing:1.5px}
+  .phead .chev{margin-left:auto;color:var(--faint);font-size:11px}
+  .pbody{padding:14px 15px}
+
+  /* ── sidebar ── */
+  .side{display:flex;flex-direction:column;gap:14px}
+  .fld{margin-bottom:13px}
+  .fld:last-child{margin-bottom:0}
+  .lab{color:var(--dim);font-size:10px;font-weight:700;letter-spacing:1.2px;margin-bottom:6px}
+  .inp,.sel{width:100%;background:var(--bg2);border:1px solid var(--line-2);border-radius:8px;
+    color:var(--ink);padding:8px 10px;font-size:12.5px;font-family:inherit}
+  .inp:focus,.sel:focus{outline:none;border-color:var(--cy-deep);box-shadow:0 0 0 3px rgba(61,184,245,.12)}
+  .row2{display:flex;gap:8px}
+  .row2>*{flex:1;min-width:0}
+  .toggles{display:flex;gap:8px}
+  .toggles button{flex:1;background:var(--bg2);border:1px solid var(--line-2);color:var(--dim);
+    border-radius:8px;padding:7px;font-size:11.5px;cursor:pointer;font-weight:600}
+  .toggles button.on{color:var(--cy-br);border-color:var(--cy-deep);background:rgba(61,184,245,.08);
+    box-shadow:0 0 12px rgba(61,184,245,.15)}
+  .apply{width:100%;margin-top:4px;background:linear-gradient(180deg,#2ea0e6,#1c7fd0);border:none;
+    color:#04121f;font-weight:800;letter-spacing:.6px;border-radius:9px;padding:10px;font-size:12.5px;cursor:pointer;
+    box-shadow:0 0 18px rgba(61,184,245,.3)}
+  .apply:hover{filter:brightness(1.08)}
+  .sumrow{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line)}
+  .sumrow:last-of-type{border-bottom:none}
+  .sumrow .k{color:var(--dim);font-size:11.5px;letter-spacing:.4px}
+  .sumrow .v{font-weight:700;font-size:15px}
+  .bigval{margin:10px 0 4px;padding:11px;border:1px solid var(--line-2);border-radius:9px;background:var(--bg2);text-align:center}
+  .bigval .k{color:var(--dim);font-size:10px;letter-spacing:1px}
+  .bigval .v{color:var(--cy-br);font-size:22px;font-weight:800;text-shadow:0 0 12px var(--glow)}
+  .export{width:100%;margin-top:11px;background:var(--bg2);border:1px solid var(--line-2);color:var(--cy);
+    border-radius:9px;padding:9px;font-size:11.5px;cursor:pointer;font-weight:600}
+  .export:hover{border-color:var(--cy-deep);color:var(--cy-br)}
+
+  /* ── main ── */
+  .main{display:flex;flex-direction:column;gap:14px}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .scard{display:flex;align-items:center;gap:13px;background:linear-gradient(180deg,var(--panel-2),var(--panel));
+    border:1px solid var(--line);border-radius:12px;padding:15px}
+  .scard .ic{width:44px;height:44px;border-radius:11px;display:grid;place-items:center;font-size:20px;flex:none}
+  .scard .k{color:var(--dim);font-size:10.5px;font-weight:700;letter-spacing:1px}
+  .scard .v{font-size:26px;font-weight:800;line-height:1.05;margin-top:1px}
+  .scard .s{color:var(--faint);font-size:11px;margin-top:1px}
+  .ic-cy{background:rgba(61,184,245,.12);color:var(--cy-br);box-shadow:inset 0 0 12px rgba(61,184,245,.15)}
+  .ic-good{background:rgba(67,201,139,.12);color:var(--good)}
+  .ic-gold{background:rgba(224,168,58,.12);color:var(--gold)}
+  .ic-pink{background:rgba(224,107,176,.12);color:var(--pink)}
+  .ic-red{background:rgba(242,103,138,.12);color:var(--red)}
+  .v-good{color:var(--good)} .v-red{color:var(--red)} .v-cy{color:var(--cy-br)}
+
+  /* ── tables ── */
+  table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+  thead th{text-align:right;padding:9px 14px;color:var(--faint);font-size:10px;font-weight:700;letter-spacing:1px;
+    border-bottom:1px solid var(--line);white-space:nowrap;background:rgba(0,0,0,.15)}
+  thead th.l{text-align:left}
+  tbody td{padding:0 14px;height:44px;border-bottom:1px solid rgba(26,39,64,.6);text-align:right;white-space:nowrap}
+  tbody td.l{text-align:left}
+  tbody tr:hover{background:rgba(61,184,245,.05)}
+  .iname{display:flex;align-items:center;gap:11px}
+  .isq{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:13px;flex:none;background:var(--raise)}
+  .av{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:800;flex:none;color:#04121f}
+  .cat{font-weight:700;font-size:12px}
+  .cat-oc{color:var(--cy-br)} .cat-med{color:var(--good)} .cat-al{color:var(--gold)} .cat-dr{color:var(--pink)}
+  .diff{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:6px;border:1px solid var(--line-2);color:var(--dim)}
+  .pill{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px}
+  .p-rec{background:rgba(61,184,245,.14);color:var(--cy-br)} .p-ready{background:rgba(67,201,139,.14);color:var(--good)}
+  .p-plan{background:rgba(224,168,58,.14);color:var(--gold)}
+  .muted{color:var(--faint)}
+  .chevr{color:var(--faint);cursor:pointer}
+  .barwrap{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end}
+  .bar{width:64px;height:6px;border-radius:4px;background:var(--bg2);overflow:hidden}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,var(--cy-deep),var(--cy-br))}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- HEADER -->
+  <div class="head">
+    <div class="logo">❄</div>
+    <div class="title">
+      <h1>OC SUITE</h1>
+      <div class="sub">ORGANIZED CRIME · COMMAND &amp; ASSIGNMENT</div>
+    </div>
+    <div class="hbtns"><div class="hbtn">⚙</div><div class="hbtn">✕</div></div>
+  </div>
+
+  <div class="grid">
+    <!-- SIDEBAR -->
+    <aside class="side">
+      <section class="panel">
+        <div class="phead">FILTERS</div>
+        <div class="pbody">
+          <div class="fld"><div class="lab">TIME WINDOW</div>
+            <div class="toggles"><button class="on">7 DAYS</button><button>30 DAYS</button><button>ALL</button></div>
+          </div>
+          <div class="fld"><div class="lab">OC STATUS</div><select class="sel"><option>All statuses</option><option>Recruiting</option><option>Planning</option><option>Ready to initiate</option></select></div>
+          <div class="fld"><div class="lab">DIFFICULTY</div><select class="sel"><option>All difficulties</option><option>D3–D5</option><option>D6+</option></select></div>
+          <div class="fld"><div class="lab">ROLE</div><select class="sel"><option>All roles</option><option>Muscle</option><option>Robber</option><option>Hacker</option></select></div>
+          <div class="fld"><div class="lab">MIN CPR</div><input class="inp" type="number" value="0" /></div>
+          <div class="fld"><div class="lab">SORT BY</div>
+            <div class="row2"><select class="sel"><option>OCs Run</option><option>Success %</option><option>Avg CPR</option></select><select class="sel"><option>DESC</option><option>ASC</option></select></div>
+          </div>
+          <button class="apply">⟲ APPLY FILTERS</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="phead">FACTION SUMMARY</div>
+        <div class="pbody">
+          <div class="sumrow"><span class="k">MEMBERS</span><span class="v">53</span></div>
+          <div class="sumrow"><span class="k">OCS RUN</span><span class="v">1,265</span></div>
+          <div class="sumrow"><span class="k">FAILED</span><span class="v v-red">195</span></div>
+          <div class="sumrow"><span class="k">ACTIVE OCS</span><span class="v">21</span></div>
+          <div class="bigval"><div class="k">SUCCESS RATE</div><div class="v">85%</div></div>
+          <div class="bigval"><div class="k">TOTAL PAID TO MEMBERS</div><div class="v">$2.46b</div></div>
+          <button class="export">⤓ EXPORT CURRENT VIEW (CSV)</button>
+        </div>
+      </section>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main">
+      <!-- summary cards -->
+      <div class="cards">
+        <div class="scard"><div class="ic ic-cy">🎯</div><div><div class="k">ACTIVE OCS</div><div class="v">21</div><div class="s">6 recruiting · 15 planning</div></div></div>
+        <div class="scard"><div class="ic ic-pink">🕳️</div><div><div class="k">OPEN SLOTS</div><div class="v">40</div><div class="s">across 21 active OCs</div></div></div>
+        <div class="scard"><div class="ic ic-gold">👤</div><div><div class="k">FREE MEMBERS</div><div class="v">7</div><div class="s">available to assign</div></div></div>
+        <div class="scard"><div class="ic ic-good">✓</div><div><div class="k">SUCCESS RATE</div><div class="v v-good">85%</div><div class="s">1,070 of 1,265</div></div></div>
+        <div class="scard"><div class="ic ic-red">⚠️</div><div><div class="k">LOW CPR</div><div class="v v-red">14</div><div class="s">filled slots below 70%</div></div></div>
+        <div class="scard"><div class="ic ic-cy">💰</div><div><div class="k">NET / DAY</div><div class="v v-cy">$213m</div><div class="s">over the last 14 days</div></div></div>
+      </div>
+
+      <!-- OC breakdown -->
+      <section class="panel">
+        <div class="phead">OC BREAKDOWN <span class="chev">▲</span></div>
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th class="l">ORGANIZED CRIME</th><th class="l">DIFF</th><th class="l">STATUS</th><th>SLOTS</th><th class="l">BEST FILL</th><th>SUCCESS</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="l"><div class="iname"><span class="isq" style="color:var(--cy-br)">🏦</span>Break the Bank</div></td><td class="l"><span class="diff">D5</span></td><td class="l"><span class="pill p-rec">Recruiting</span></td><td>5 / 8</td><td class="l">Kroil <span class="v-good" style="font-weight:700">88%</span></td><td class="v-good">82%</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="isq" style="color:var(--pink)">🎭</span>Honey Trap</div></td><td class="l"><span class="diff">D5</span></td><td class="l"><span class="pill p-ready">Ready</span></td><td>8 / 8</td><td class="l muted">— full —</td><td class="v-good">84%</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="isq" style="color:var(--gold)">🎬</span>Stage Fright</div></td><td class="l"><span class="diff">D4</span></td><td class="l"><span class="pill p-plan">Planning</span></td><td>7 / 8</td><td class="l">Darkhalf <span class="v-good" style="font-weight:700">84%</span></td><td class="v-good">79%</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="isq" style="color:var(--cy-br)">❄️</span>Snow Blind</div></td><td class="l"><span class="diff">D4</span></td><td class="l"><span class="pill p-rec">Recruiting</span></td><td>6 / 8</td><td class="l">Emir <span class="v-good" style="font-weight:700">78%</span></td><td class="v-good">76%</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="isq" style="color:var(--purple)">🪞</span>Smoke and Wing Mirrors</div></td><td class="l"><span class="diff">D3</span></td><td class="l"><span class="pill p-rec">Recruiting</span></td><td>4 / 6</td><td class="l">Tunabox <span style="color:var(--gold);font-weight:700">68%</span></td><td class="v-good">72%</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="isq" style="color:var(--good)">🌸</span>Plucking the Lotus Petal</div></td><td class="l"><span class="diff">D6</span></td><td class="l"><span class="pill p-plan">Planning</span></td><td>8 / 8</td><td class="l muted">— full —</td><td class="v-good">88%</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="isq muted">🚗</span>No Reserve</div></td><td class="l"><span class="diff">D5</span></td><td class="l"><span class="pill p-ready">Ready</span></td><td>8 / 8</td><td class="l muted">— full —</td><td class="v-good">70%</td><td><span class="chevr">›</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </section>
+
+      <!-- member breakdown -->
+      <section class="panel">
+        <div class="phead">MEMBER BREAKDOWN <span class="chev">▲</span></div>
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th class="l">MEMBER</th><th>LEVEL</th><th>OCS RUN</th><th>SUCCESS</th><th class="l">BEST ROLE</th><th>AVG CPR</th><th class="l">LAST ACTIVE</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="l"><div class="iname"><span class="av" style="background:#3db8f5">H</span><div>Hades91<div class="muted" style="font-size:10px">Co-leader</div></div></div></td><td>44</td><td>312</td><td class="v-good">91%</td><td class="l">Muscle</td><td><span class="barwrap"><span class="bar"><i style="width:88%"></i></span>88</span></td><td class="l muted">now</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="av" style="background:#43c98b">C</span><div>Collete<div class="muted" style="font-size:10px">Co-leader</div></div></div></td><td>52</td><td>280</td><td class="v-good">89%</td><td class="l">Actor</td><td><span class="barwrap"><span class="bar"><i style="width:84%"></i></span>84</span></td><td class="l muted">14m</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="av" style="background:#e0a83a">W</span><div>Westend<div class="muted" style="font-size:10px">Leader · QM</div></div></div></td><td>71</td><td>198</td><td class="v-good">87%</td><td class="l">Muscle</td><td><span class="barwrap"><span class="bar"><i style="width:80%"></i></span>80</span></td><td class="l muted">2m</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="av" style="background:#a98bf0">S</span>ST4TIC</div></td><td>63</td><td>176</td><td class="v-good">85%</td><td class="l">Hacker</td><td><span class="barwrap"><span class="bar"><i style="width:78%"></i></span>78</span></td><td class="l muted">1h</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="av" style="background:#f2678a">B</span>Blight</div></td><td>80</td><td>90</td><td style="color:var(--gold)">73%</td><td class="l">Thief</td><td><span class="barwrap"><span class="bar"><i style="width:64%;background:linear-gradient(90deg,#b8862e,#e0a83a)"></i></span>64</span></td><td class="l muted">3h</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="av" style="background:#3db8f5">K</span>Kroil</div></td><td>38</td><td>41</td><td style="color:var(--gold)">73%</td><td class="l">Robber</td><td><span class="barwrap"><span class="bar"><i style="width:62%;background:linear-gradient(90deg,#b8862e,#e0a83a)"></i></span>62</span></td><td class="l muted">3h</td><td><span class="chevr">›</span></td></tr>
+            <tr><td class="l"><div class="iname"><span class="av" style="background:#43c98b">V</span>Vexen</div></td><td>26</td><td>7</td><td class="muted">?</td><td class="l muted">too few runs</td><td><span class="barwrap"><span class="bar"><i style="width:50%;background:#33507a"></i></span><span class="muted">est 50</span></span></td><td class="l muted">1d</td><td><span class="chevr">›</span></td></tr>
+          </tbody>
+        </table>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+</body>
+</html>

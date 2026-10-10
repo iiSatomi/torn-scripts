@@ -1,0 +1,68 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Test Faction — OC Report</title>
+<style>
+  body { background:#141414; color:#d0d0d0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; margin:0; padding:28px; }
+  h1 { font-size:20px; margin:0 0 4px; color:#e0e0e0; }
+  .sub { color:#8a8a99; font-size:12px; margin-bottom:22px; }
+  .card { background:#1e1e1e; border:1px solid #2e2e2e; border-radius:10px; padding:16px 18px; margin-bottom:16px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#59a5d8; margin:0 0 10px; }
+  .note { color:#8a8a99; font-size:11px; margin:0 0 10px; line-height:1.6; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; font-size:9px; text-transform:uppercase; letter-spacing:.07em; color:#8a8a99; padding:6px 10px; border-bottom:1px solid #2a2e36; }
+  th.num, td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  td { padding:8px 10px; border-bottom:1px solid #242424; color:#aaa; }
+  td:first-child { color:#e0e0e0; font-weight:600; }
+  td.money { color:#7cba5c; font-weight:600; }
+  td.money.neg { color:#d75f5f; }
+  tbody tr:hover td { background:#232323; }
+  .kpis { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+  .kpi { flex:1; min-width:150px; background:#1e1e1e; border:1px solid #2e2e2e; border-radius:8px; padding:12px 14px; }
+  .kpi .l { font-size:9px; text-transform:uppercase; letter-spacing:.06em; color:#8a8a99; }
+  .kpi .v { font-size:21px; font-weight:700; margin-top:2px; }
+  .legend { font-size:10px; color:#8a8a99; margin:8px 0 0; }
+  .sw { display:inline-block; width:9px; height:9px; border-radius:2px; vertical-align:middle; margin-right:4px; }
+  footer { color:#848494; font-size:10px; margin-top:20px; }
+</style></head><body>
+<h1>Test Faction — Organised Crime Report</h1>
+<div class="sub">Generated 7/23/2026, 8:15:14 PM · 4 tracked OCs</div>
+<div class="kpis">
+  <div class="kpi"><div class="l">Gross produced</div><div class="v" style="color:#e0e0e0">$449.67m</div></div>
+  <div class="kpi"><div class="l">Paid to members</div><div class="v" style="color:#59a5d8">$378</div></div>
+  <div class="kpi"><div class="l">Faction kept</div><div class="v" style="color:#7cba5c">$1</div></div>
+  <div class="kpi"><div class="l">Respect</div><div class="v" style="color:#e8a33d">432</div></div>
+</div>
+<div class="card"><h2>Members vs Faction, by period</h2>
+        <svg viewBox="0 0 760 220" width="100%" role="img">
+          <line x1="34" y1="186" x2="726" y2="186" stroke="#333"/>
+          <rect x="36" y="183.19773541785696" width="169" height="2.8022645821430423" fill="#59a5d8"><title>Wk of 29 Jun — to members $6.74m</title></rect>
+                <rect x="207" y="185.48389466576637" width="169" height="0.5161053342336259" fill="#7cba5c"><title>Wk of 29 Jun — faction kept $1.24m</title></rect>
+                <text x="207" y="199" font-size="9" fill="#8a8a99" text-anchor="middle">29 Jun</text><rect x="382" y="34" width="169" height="152" fill="#59a5d8"><title>Wk of 6 Jul — to members $365.81m</title></rect>
+                <rect x="553" y="154.72200695995429" width="169" height="31.277993040045708" fill="#7cba5c"><title>Wk of 6 Jul — faction kept $75.27m</title></rect>
+                <text x="553" y="199" font-size="9" fill="#8a8a99" text-anchor="middle">6 Jul</text>
+        </svg>
+        <p class="legend"><span class="sw" style="background:#59a5d8"></span> Paid to members
+           <span class="sw" style="background:#7cba5c;margin-left:14px"></span> Faction kept</p></div>
+<div class="card">
+        <h2>Weekly summary</h2>
+        <p class="note">OCs run per week, split between members and the faction.</p>
+        <table>
+          <thead><tr><th>Period</th><th class="num">OCs</th><th class="num">Gross</th><th class="num">To members</th><th class="num">Item cost</th><th class="num">Faction kept</th><th class="num">Respect</th></tr></thead>
+          <tbody><tr><td>Wk of 6 Jul</td><td class="num">2</td><td class="num money">$441.24m</td><td class="num money">$365.81m</td><td class="num money">$158.6k</td><td class="num money">$75.27m</td><td class="num">332</td></tr><tr><td>Wk of 29 Jun</td><td class="num">2</td><td class="num money">$8.43m</td><td class="num money">$6.74m</td><td class="num money">$443.9k</td><td class="num money">$1.24m</td><td class="num">100</td></tr></tbody>
+        </table>
+      </div><div class="card">
+        <h2>Member earnings</h2>
+        <p class="note">Total each member received across all PAID OCs, plus their share of respect.</p>
+        <table>
+          <thead><tr><th>Member</th><th class="num">User ID</th><th class="num">OCs</th><th class="num">Earned</th><th class="num">Avg per OC</th><th class="num">Respect</th></tr></thead>
+          <tbody><tr><td>Ashvile</td><td class="num">2</td><td class="num">3</td><td class="num money">$111.13m</td><td class="num money">$37.04m</td><td class="num">141</td></tr><tr><td>iSatomi</td><td class="num">1</td><td class="num">2</td><td class="num money">$107.76m</td><td class="num money">$53.88m</td><td class="num">111</td></tr><tr><td>ST4TIC</td><td class="num">4</td><td class="num">2</td><td class="num money">$53.47m</td><td class="num money">$26.73m</td><td class="num">66</td></tr><tr><td>BarbenBOO</td><td class="num">3</td><td class="num">1</td><td class="num money">$50.09m</td><td class="num money">$50.09m</td><td class="num">36</td></tr><tr><td>ElKingCharles</td><td class="num">5</td><td class="num">1</td><td class="num money">$50.09m</td><td class="num money">$50.09m</td><td class="num">36</td></tr></tbody>
+        </table>
+      </div><div class="card">
+        <h2>By scenario</h2>
+        <p class="note">Per crime type. &quot;Kept per run&quot; is what ranks them — a big gross with a 90% split can keep less than a small one.</p>
+        <table>
+          <thead><tr><th>Scenario</th><th class="num">Runs</th><th class="num">Gross</th><th class="num">To members</th><th class="num">Item cost</th><th class="num">Faction kept</th><th class="num">Kept per run</th><th class="num">Respect</th><th class="num">Respect per run</th></tr></thead>
+          <tbody><tr><td>Break the Bank</td><td class="num">1</td><td class="num money">$313.09m</td><td class="num money">$250.47m</td><td class="num money">$2.5k</td><td class="num money">$62.62m</td><td class="num money">$62.62m</td><td class="num">182</td><td class="num money">$182</td></tr><tr><td>Bidding War</td><td class="num">1</td><td class="num money">$128.15m</td><td class="num money">$115.33m</td><td class="num money">$156.1k</td><td class="num money">$12.66m</td><td class="num money">$12.66m</td><td class="num">150</td><td class="num money">$150</td></tr><tr><td>Market Forces</td><td class="num">1</td><td class="num money">$8.43m</td><td class="num money">$6.74m</td><td class="num money">$528</td><td class="num money">$1.69m</td><td class="num money">$1.69m</td><td class="num">60</td><td class="num money">$60</td></tr><tr><td>No Reserve</td><td class="num">1</td><td class="num money">$0</td><td class="num money">$0</td><td class="num money">$443.4k</td><td class="num money neg">$-443.4k</td><td class="num money neg">$-443.4k</td><td class="num">40</td><td class="num money">$40</td></tr></tbody>
+        </table>
+      </div>
+<footer>Generated by Torn OC Suite. "Faction kept" = gross − member payouts − consumed materials.</footer>
+</body></html>

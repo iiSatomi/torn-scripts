@@ -1,0 +1,50 @@
+{
+  "script": "Torn_OC_Suite_PurrfectCrime.user.js",
+  "url": "https://www.torn.com/factions.php?step=your&type=1#/tab=crimes",
+  "haveKey": true,
+  "tabs": {
+    "home": {
+      "navFound": true,
+      "exists": true,
+      "chars": 256,
+      "sample": "21 Active OCs 48 Open slots 4 Free members 15 Low CPR 3 Blocked 0 Stuck ⚡ NEEDS YOU NOW 3 ",
+      "newErrors": 0
+    },
+    "crimes": {
+      "navFound": true,
+      "exists": true,
+      "chars": 713,
+      "sample": "🎯 Fill Slots 4 📋 Active OCs 21 📊 History ACTIVE 21 OPEN 48 FREE 4 ⚠ LOW CPR 15 🔴 BLOCK",
+      "newErrors": 0
+    },
+    "people": {
+      "navFound": true,
+      "exists": true,
+      "chars": 5209,
+      "sample": "🎯 Assignments 2 🤝 Loans 1 🚫 Blocked 3 ⚡ Optimize 22 📈 CPR Data MISPLACED 2 high-weight",
+      "newErrors": 0
+    },
+    "consumables": {
+      "navFound": true,
+      "exists": true,
+      "chars": 126,
+      "sample": "🧪 CONSUMABLES — USAGE COMMAND Not configured yet — add your Google Sheet URL, read secret",
+      "newErrors": 0
+    },
+    "war": {
+      "navFound": true,
+      "exists": true,
+      "chars": 4281,
+      "sample": "⚔️ WAR PAYOUT REPORT Fallout Shelter selected — nothing cached yet. Pull report to fetch. ",
+      "newErrors": 0
+    },
+    "armoury": {
+      "navFound": true,
+      "exists": true,
+      "chars": 74,
+      "sample": "🛡️ Armoury OC item stock vs requirements, and current loans. Coming soon.",
+      "newErrors": 0
+    }
+  },
+  "errors": []
+}

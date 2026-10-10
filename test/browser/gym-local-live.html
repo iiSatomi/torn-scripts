@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Gym Planner local live fixture</title>
+  <style>
+    body { margin: 0; background: #20242a; color: #d6dae1; font: 14px Arial, sans-serif; }
+    .content-wrapper { max-width: 900px; margin: 24px auto; padding: 16px; background: #11151a; }
+    .fixture-bar { padding: 10px; margin-bottom: 12px; border: 1px solid #40506a; background: #182130; }
+  </style>
+</head>
+<body>
+  <main class="content-wrapper">
+  <div class="fixture-bar">Energy: 140/150 · Happy: 5,025</div>
+  <h2>George's</h2>
+  <button type="button" aria-label="Train speed">TRAIN</button>
+  <button type="button" id="emit-result">Emit mock Torn result</button>
+  </main>
+  <script>
+    // Isolated in-memory userscript storage; no API key or real account data.
+    window.__gymFixtureStore = Object.create(null);
+    window.GM_getValue = (key, fallback) => Object.prototype.hasOwnProperty.call(window.__gymFixtureStore, key)
+      ? window.__gymFixtureStore[key] : fallback;
+    window.GM_setValue = (key, value) => { window.__gymFixtureStore[key] = value; };
+    window.GM_deleteValue = key => { delete window.__gymFixtureStore[key]; };
+    window.GM_setClipboard = value => { window.__gymFixtureClipboard = value; };
+    window.GM_xmlhttpRequest = options => options.onerror?.({ error: "fixture network disabled" });
+    document.getElementById('emit-result').addEventListener('click', () => {
+      const result = document.createElement('div');
+      result.textContent = "You used 100 energy and 0 happiness training your speed 10 times in George's increasing it by 1,000.00 to 100,000.00";
+      document.querySelector('.fixture-bar').appendChild(result);
+    });
+  </script>
+  <script src="/Torn%20Gym%20Planner-3.36.txt"></script>
+  <!-- Deliberate duplicate load: the document singleton guard must keep one mount. -->
+  <script src="/Torn%20Gym%20Planner-3.36.txt"></script>
+</body>
+</html>
