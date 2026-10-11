@@ -24,7 +24,7 @@ const path = require('path');
 
 const PORT = Number(process.argv[2]) || 8787;
 const HOST = '127.0.0.1';
-const FILE = path.join(__dirname, 'Torn_OC_Suite_PurrfectCrime.user.js');
+const FILE = path.resolve(__dirname, '..', 'Torn_OC_Suite_Codex.user.js');
 const ROUTE = '/oc-suite.js';
 
 const stamp = () => new Date().toISOString().slice(11, 19);
@@ -32,7 +32,7 @@ const stamp = () => new Date().toISOString().slice(11, 19);
 const server = http.createServer((req, res) => {
   const url = (req.url || '').split('?')[0];
 
-  if (url !== ROUTE) {
+  if (url !== ROUTE && url !== '/Torn_OC_Suite_Codex.user.js') {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('not found - the suite is served at ' + ROUTE + '\n');
     return;

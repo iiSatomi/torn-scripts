@@ -5,6 +5,7 @@ Userscripts and development material for Torn, maintained by iSatomi.
 ## Start here
 
 - **Current OC Suite working copy:** [Torn_OC_Suite_Codex.user.js](Torn_OC_Suite_Codex.user.js)
+- **Install/update OC Suite:** [Tampermonkey userscript download](https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_OC_Suite_Codex.user.js). Current release: `3.37.0-codex13`; [audit and verification notes](docs/workspace/2026-10-10-codex13-audit.md).
 - **Published Greasy Fork snapshots:** [scripts/published-greasyfork](scripts/published-greasyfork) and its [source manifest](scripts/published-greasyfork/sources.json). These files were downloaded from [iSatomi's Greasy Fork profile](https://greasyfork.org/en/users/1572664-isatomi) on 2026-10-10. They are snapshots, not the edit target.
 - **Other local working scripts:** [repository root](.). These are local versions and may differ from Greasy Fork releases.
 - **Historical versions and original OC Suite:** [scripts/reference](scripts/reference). The PurrfectCrime file is preserved as an original reference.

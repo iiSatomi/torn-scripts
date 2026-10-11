@@ -3,7 +3,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const puppeteer = require('puppeteer-core');
 const source = fs.readFileSync(path.resolve(__dirname, '../../Torn_OC_Suite_Codex.user.js'), 'utf8');
-const region = source.slice(source.indexOf('  let _armMounted = false;'), source.indexOf('  function _ocmDiagBytes('));
+const region = source.slice(source.indexOf('  const _armMounted = new WeakSet();'), source.indexOf('  function _ocmDiagBytes('));
 
 (async () => {
   const browser = await puppeteer.launch({ executablePath: 'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe', headless: true });

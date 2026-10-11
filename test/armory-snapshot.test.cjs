@@ -1,0 +1,10 @@
+const assert = require('node:assert/strict');
+const { fn, cats } = require('./armory-categories.test.cjs');
+const render = new Function('OCUI', 'armoryGiveUrl', cats + '\n' + fn('catOfItemType') + '\n' + fn('nativeLoanCardHtml') + '\nlet _nativeLoansCollapsed=false; return nativeLoanCardHtml;')({esc:String}, ()=>'#');
+const snapshot = { ts: Math.floor(Date.now()/1000)-3600, loans: [], returnable: [{itemId:'101',uid:'123',holderName:'Fixture',itemName:'Ipecac Syrup'}], itemTypes:{101:'medical'} };
+const stale = render(snapshot);
+assert.match(stale, /out of date/i, 'Old snapshots must warn before suggesting retrieval');
+assert.doesNotMatch(stale, /class="ocm-loan-go"/, 'Stale retrieval recommendations must not be actionable');
+snapshot.ts = Math.floor(Date.now()/1000);
+assert.match(render(snapshot), /class="ocm-loan-go"/, 'Fresh recommendations remain usable');
+console.log('Native loan snapshot: stale worklists prompt refresh; fresh worklists retain actions.');

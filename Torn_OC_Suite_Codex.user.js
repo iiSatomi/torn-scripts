@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Suite Codex
 // @namespace    torn_oc_suite_rebuild
-// @version      3.37.0-codex11
+// @version      3.37.0-codex13
 // @description  Full Organised Crime management for Torn faction leaders — fill slots by CPR, track loaned items and armory gaps, and see exactly who got paid what.
 // @author       iSatomi (3580191)
 // @match        https://www.torn.com/factions.php*
@@ -18,12 +18,19 @@
 // @connect      api.torn.com
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
-// @downloadURL https://update.greasyfork.org/scripts/573001/Torn%20OC%20Manager%20Dashboard.user.js
-// @updateURL https://update.greasyfork.org/scripts/573001/Torn%20OC%20Manager%20Dashboard.meta.js
+// @downloadURL https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_OC_Suite_Codex.user.js
+// @updateURL https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_OC_Suite_Codex.user.js
 // ==/UserScript==
 //
 //
 // Changelog (recent):
+// v3.37.0-codex13 — Resolve Torn's selected armory tab container to its category
+//                    link; refresh stale armory activity and disable stale loan
+//                    shortcuts; paginate finance history and native payouts;
+//                    cancel superseded native Crimes waiters on SPA navigation.
+// v3.37.0-codex12 — Correct Codex update URLs; remount feature panes after SPA
+//                    replacement; scope native armory annotations and loan cards
+//                    to the active category and cancel stale navigation work.
 // v3.37.0-codex5 — Refined the restored 3.36 shell: removed remaining premium
 //                   input/button/glow leakage, restored classic stat ordering,
 //                   fixed an undefined hover token and stale loading copy, added
@@ -9144,9 +9151,18 @@
    *  from the ACTIVE tab's own href — the URL hash is not a reliable indicator
    *  (see armouryGoToSub). */
   function activeArmourySub() {
-    const a = [...document.querySelectorAll('#faction-armoury-tabs li.ui-tabs-active a, #faction-armoury-tabs [aria-selected="true"]')].find(el => el.offsetParent !== null);
-    const m = a && (a.getAttribute('href') || '').match(/(?:[?&#])sub=([a-z]+)(?:&|$)/i);
-    return m ? m[1].toLowerCase() : null;
+    const selected = document.querySelectorAll('#faction-armoury-tabs li.ui-tabs-active a, #faction-armoury-tabs [aria-selected="true"]');
+    for (const el of selected) {
+      if (el.offsetParent === null) continue;
+      // Torn marks the containing LI selected as well as its anchor. The LI
+      // has no href, and a second selected anchor may just point to #nogo.
+      const links = el.matches('a[href]') ? [el] : el.querySelectorAll('a[href]');
+      for (const link of links) {
+        const match = (link.getAttribute('href') || '').match(/(?:[?&#])sub=([a-z]+)(?:&|$)/i);
+        if (link.offsetParent !== null && match) return match[1].toLowerCase();
+      }
+    }
+    return null;
   }
   /** The clickable tab anchor for a sub-tab. Torn renders more than one match
    *  (desktop + a hidden variant), so take the first VISIBLE one. */
@@ -9363,6 +9379,14 @@
   let _armoryNeed = null;
   let _ocmArmoryObserver = null;
   let _ocmArmoryObservedRoot = null;
+  let _armoryAnnotationGeneration = 0;
+
+  function nativeArmouryWrap() {
+    if (!location.hash.includes('tab=armoury')) return null;
+    const sub = activeArmourySub();
+    if (!NATIVE_LOAN_SUBS.has(sub)) return null;
+    return document.getElementById(`tab=armoury&sub=${sub}`) || null;
+  }
 
   /** Build "who needs what right now" from the faction's active OCs. */
   async function fetchArmoryNeed(apiKey) {
@@ -9487,27 +9511,35 @@
    *   (blank)       — not loaned out; nothing to say
    */
   async function initArmoryAnnotations() {
+    const generation = ++_armoryAnnotationGeneration;
+    if (_ocmArmoryObserver) _ocmArmoryObserver.disconnect();
+    _ocmArmoryObserver = null;
+    _ocmArmoryObservedRoot = null;
     if (!location.href.includes('factions.php')) return;
     if (!location.hash.includes('tab=armoury')) return;
 
     const apiKey = GM_getValue(GMK.API_KEY, '');
     if (!apiKey) return;
 
-    const firstRow = await waitForEl('.item-list li .img-wrap[data-itemid]', 15000);
+    const cancelled = () => generation !== _armoryAnnotationGeneration || !location.hash.includes('tab=armoury');
+    const firstRow = await waitForEl('.item-list li .img-wrap[data-itemid]', 15000,
+      el => nativeArmouryWrap()?.contains(el), cancelled);
     if (!firstRow) return;
-    if (!NATIVE_LOAN_SUBS.has(activeArmourySub())) return;
-    const wrap = firstRow.closest('.armoury-tabs') || document.querySelector('.armoury-temporary-wrap');
+    const wrap = nativeArmouryWrap();
     if (!wrap) return;
 
     if (!_armoryNeed) {
       try {
         _armoryNeed = await fetchArmoryNeed(apiKey);
       } catch (e) {
+        if (cancelled() || nativeArmouryWrap() !== wrap || !wrap.isConnected) return;
         wrap.classList.remove('ocm-armory-annotated');   // don't leave the layout broken
         ocmToast('Could not load OC status for the armory: ' + e.message, 'warn');
         return;
       }
     }
+
+    if (cancelled() || nativeArmouryWrap() !== wrap || !wrap.isConnected) return;
 
     paintArmoryColumn(wrap, _armoryNeed);
 
@@ -9518,7 +9550,7 @@
     _ocmArmoryObservedRoot = wrap;
     let painting = false;
     const obs = new MutationObserver(() => {
-      if (!wrap.isConnected) {
+      if (cancelled() || nativeArmouryWrap() !== wrap || !wrap.isConnected) {
         obs.disconnect();
         if (_ocmArmoryObserver === obs) {
           _ocmArmoryObserver = null;
@@ -9536,20 +9568,26 @@
       fetchArmoryNeed(apiKey)
         .then(n => { _armoryNeed = n; })
         .catch(() => {})
-        .finally(() => { paintArmoryColumn(wrap, _armoryNeed); painting = false; });
+        .finally(() => {
+          if (!cancelled() && wrap.isConnected && nativeArmouryWrap() === wrap) paintArmoryColumn(wrap, _armoryNeed);
+          painting = false;
+        });
     });
     _ocmArmoryObserver = obs;
     obs.observe(wrap, { childList: true, subtree: true });
   }
 
   /** Poll for an element to appear (the armory list renders async). */
-  function waitForEl(selector, timeoutMs = 10000) {
+  function waitForEl(selector, timeoutMs = 10000, accept = () => true, cancelled = () => false) {
     return new Promise(resolve => {
-      const found = document.querySelector(selector);
+      if (cancelled()) return resolve(null);
+      const find = () => [...document.querySelectorAll(selector)].find(accept);
+      const found = find();
       if (found) return resolve(found);
       const deadline = Date.now() + timeoutMs;
       const t = setInterval(() => {
-        const el = document.querySelector(selector);
+        if (cancelled()) { clearInterval(t); resolve(null); return; }
+        const el = find();
         if (el) { clearInterval(t); resolve(el); }
         else if (Date.now() > deadline) { clearInterval(t); resolve(null); }
       }, 250);
@@ -9567,6 +9605,7 @@
   // Roll-up state — a session-scoped toggle (not persisted to storage), so it
   // resets on a fresh page load but survives re-renders (hashchange between subs).
   let _nativeLoansCollapsed = false;
+  let _nativeLoanListGeneration = 0;
 
   function nativeLoanCardHtml(snap) {
     const wrapStyle = 'background:#0f1728;border:1px solid #223a58;border-radius:8px;padding:12px 14px;margin:0 0 14px;color:#dbe6f5;font:12px/1.6 Arial,Helvetica,sans-serif';
@@ -9583,6 +9622,10 @@
     }
     const ageM = Math.max(0, Math.round((Date.now() / 1000 - (snap.ts || 0)) / 60));
     const ageTxt = ageM < 1 ? 'just now' : ageM < 60 ? `${ageM}m ago` : `${Math.round(ageM / 60)}h ago`;
+    if (ageM > 5) {
+      return `<div id="ocm-native-loans-inner" style="${wrapStyle}">${head(`<span style="color:#e0a83a;font-size:10.5px">as of ${ageTxt}</span>`)}
+        <div id="ocm-native-loans-body" style="${_nativeLoansCollapsed ? 'display:none;' : ''}margin-top:6px">This loan worklist is out of date. <a href="/factions.php?step=your#/tab=crimes" style="color:#5ad1e0">Open Crimes and refresh OC Suite</a> before preparing loans or retrieving items.</div></div>`;
+    }
     const loans = snap.loans || [];
     const returnable = snap.returnable || [];
     const types = snap.itemTypes || {};
@@ -9616,15 +9659,18 @@
 
   /** Mount (or refresh) the native-page loans card above the item list. */
   async function mountNativeLoanList() {
+    const generation = ++_nativeLoanListGeneration;
     if (!location.href.includes('factions.php')) return;
     if (!location.hash.includes('tab=armoury')) return;
     const subMatch = location.hash.match(/sub=([a-z]+)/i);
     const sub = activeArmourySub() || (subMatch ? subMatch[1].toLowerCase() : '');
     if (!NATIVE_LOAN_SUBS.has(sub)) return; // Loot/Points/Deposit aren't give-able
 
-    const firstRow = await waitForEl('.item-list li .img-wrap[data-itemid]', 15000);
+    const cancelled = () => generation !== _nativeLoanListGeneration || !location.hash.includes('tab=armoury');
+    const firstRow = await waitForEl('.item-list li .img-wrap[data-itemid]', 15000,
+      el => nativeArmouryWrap()?.contains(el), cancelled);
     if (!firstRow) return;
-    const wrap = firstRow.closest('.armoury-tabs') || document.querySelector('.armoury-temporary-wrap');
+    const wrap = nativeArmouryWrap();
     if (!wrap || !wrap.parentElement) return;
 
     let card = document.getElementById('ocm-native-loans');
@@ -9698,6 +9744,7 @@
   let _ocMoneyPainting = false;
   let _ocmMoneyObserver = null;
   let _ocmMoneyObservedRoot = null;
+  let _ocmMoneyInitGeneration = 0;
   function annotateNativeOcCards() {
     if (_ocMoneyPainting) return;
     _ocMoneyPainting = true;
@@ -9731,10 +9778,16 @@
 
   /** Paint the native cards, and keep them painted across Torn's own re-renders. */
   async function initNativeOcMoney() {
+    const generation = ++_ocmMoneyInitGeneration;
+    if (_ocmMoneyObserver) _ocmMoneyObserver.disconnect();
+    _ocmMoneyObserver = null;
+    _ocmMoneyObservedRoot = null;
     if (!location.href.includes('factions.php')) return;
-    const root = (await waitForEl('#faction-crimes-root', 15000))
+    if (!location.hash.includes('tab=crimes')) return;
+    const cancelled = () => generation !== _ocmMoneyInitGeneration || !location.hash.includes('tab=crimes');
+    const root = (await waitForEl('#faction-crimes-root', 15000, () => true, cancelled))
               || document.querySelector('[data-oc-id]')?.parentElement?.parentElement;
-    if (!root) return;
+    if (!root || cancelled()) return;
     if (!root.isConnected) return;
     annotateNativeOcCards();
     if (_ocmMoneyObservedRoot === root && _ocmMoneyObserver) return;
@@ -9746,7 +9799,7 @@
     // retrigger it.
     let t = null;
     const observer = new MutationObserver(() => {
-      if (!root.isConnected) {
+      if (cancelled() || !root.isConnected) {
         observer.disconnect();
         if (_ocmMoneyObserver === observer) {
           _ocmMoneyObserver = null;
@@ -10470,6 +10523,18 @@ ${tables}
   // Shared OC + armoury inputs, stashed each render so the Armoury → OC Stock
   // view can call analyseOcItems() without re-fetching.
   let _armDataCache = null;
+  const _financePages = { ocs: 0, paid: 0, unpaid: 0 };
+  function financePage(rows, key) {
+    const pages = Math.max(1, Math.ceil(rows.length / 50));
+    const page = _financePages[key] = Math.max(0, Math.min(_financePages[key] || 0, pages - 1));
+    return {
+      rows: rows.slice(page * 50, (page + 1) * 50),
+      controls: `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0" role="group" aria-label="${key === 'ocs' ? 'OC history' : key + ' payouts'} pages">
+        <button type="button" data-fin-page="${key}" data-step="-1" ${page === 0 ? 'disabled' : ''} style="min-height:44px">Previous</button>
+        <span>${rows.length} records · ${page + 1} / ${pages}</span>
+        <button type="button" data-fin-page="${key}" data-step="1" ${page >= pages - 1 ? 'disabled' : ''} style="min-height:44px">Next</button></div>`,
+    };
+  }
   function renderFinanceSection(crimes, armory = {}, itemNames = {}, itemValues = {}, loanedOut = [], memberNames = {}, itemTypes = {}) {
     // v3.17 split the old single #ocm-finance pane into separate Money and People
     // containers. Guard on one that actually exists — guarding on the deleted
@@ -10897,7 +10962,8 @@ ${tables}
             </div>
           </div>`;
       };
-      const rows = perOc.map(r => `<tr class="ocm-fin-ocrow" data-oc="${esc(String(r.id))}" style="cursor:pointer">
+      const ocPage = financePage(perOc, 'ocs');
+      const rows = ocPage.rows.map(r => `<tr class="ocm-fin-ocrow" data-oc="${esc(String(r.id))}" style="cursor:pointer">
           <td style="color:var(--ocm-text-muted);white-space:nowrap">${dateStr(r.executedAt)}</td>
           <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.name)} — click for full breakdown">▸ ${esc(r.name)}</td>
           <td class="td-right" style="color:var(--ocm-text-dim)">${fmtMoney(r.revenue)}</td>
@@ -10941,7 +11007,7 @@ ${tables}
             <thead><tr><th style="width:56px">Date</th><th style="width:auto">OC</th>
               <th class="td-right" style="width:76px">Revenue</th><th class="td-right" style="width:70px">Cost</th>
               <th class="td-right" style="width:78px">Net</th><th style="width:38px;text-align:center">Paid</th></tr></thead>
-            <tbody>${rows}</tbody></table></div>`;
+            <tbody>${rows}</tbody></table></div>${ocPage.controls}`;
     }
 
     // — Trends pane
@@ -11132,7 +11198,10 @@ ${tables}
         </tr>
         ${paid ? `<tr class="ocm-pay-detail" data-oc="${esc(String(r.id))}"><td colspan="7"><div class="ocm-pay-crewwrap">${crewDetail(r)}</div></td></tr>` : ''}`;
       }).join('');
-      const ocTable = (rows, title, note, paid) => !rows.length ? '' : `
+      const ocTable = (rows, title, note, paid) => {
+        if (!rows.length) return '';
+        const page = financePage(rows, paid ? 'paid' : 'unpaid');
+        return `
         <div class="ocm-section-title" style="margin-top:16px">${title}</div>
         ${note ? `<div style="font-size:11px;color:var(--ocm-text-muted);margin-bottom:8px;line-height:1.5">${note}</div>` : ''}
         <table class="ocm-pay-table">
@@ -11144,7 +11213,8 @@ ${tables}
             <th style="width:96px;text-align:right" title="What each participant received">Each</th>
             <th style="width:86px;text-align:right">Paid</th>
           </tr></thead>
-          <tbody>${ocRows(rows, paid)}</tbody></table>`;
+          <tbody>${ocRows(page.rows, paid)}</tbody></table>${page.controls}`;
+      };
 
       payoutsPane = kpis + memberTable
         + ocTable(unpaidOcs, `⏳ Awaiting Payout (${unpaidOcs.length})`,
@@ -11636,6 +11706,13 @@ ${tables}
 
     // ── wire paid toggles (stopPropagation so the row doesn't collapse)
     const rerender = () => renderFinanceSection(crimes, armory, itemNames, itemValues, loanedOut, memberNames, itemTypes);
+    el.querySelectorAll('[data-fin-page]').forEach(button => button.addEventListener('click', () => {
+      const key = button.dataset.finPage;
+      if (!Object.hasOwn(_financePages, key)) return;
+      _financePages[key] += Number(button.dataset.step);
+      rerender();
+      el.querySelector(`[data-fin-page="${key}"][data-step="${button.dataset.step}"]`)?.focus();
+    }));
     el.querySelectorAll('.ocm-paid-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -12415,7 +12492,7 @@ ${tables}
                       raffleW: { loss: 1, wins: 0, respect: 0, defHeld: 0, assists: 0, enemyOn: 0, flat: 0 },
                       raffleN: 1, raffleCap: 0, raffleMin: 1, raffleWinners: null };
   const _ENERGY_PER_XANAX = 250, _HITS_PER_XANAX = 10;
-  let _warMounted = false;
+  const _warMounted = new WeakSet();
   const _warUi = { query: '', page: 0, request: 0, pulling: false };
 
   function _warWorkspaceStyle() {
@@ -14490,12 +14567,11 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
   }
 
   async function mountWarInline() {
-    if (_warMounted) return;
     const pane = document.getElementById('ocm-pane-war');
-    if (!pane) return;
-    _warMounted = true;
+    if (!pane || _warMounted.has(pane)) return;
+    _warMounted.add(pane);
     const key = GM_getValue(GMK.API_KEY, '');
-    if (!key) { pane.innerHTML = OCUI.card({ title: '⚔️ War Payout', body: '<div style="color:var(--ocm-text-dim)">Set your Torn API key in <b>⚙ Config</b> to load war data.</div>' }); _warMounted = false; return; }
+    if (!key) { pane.innerHTML = OCUI.card({ title: '⚔️ War Payout', body: '<div style="color:var(--ocm-text-dim)">Set your Torn API key in <b>⚙ Config</b> to load war data.</div>' }); _warMounted.delete(pane); return; }
     pane.innerHTML = _warWorkspaceStyle() +
       OCUI.card({ title: '⚔️ War workspace',
         body: '<p class="ocm-war-intro">Plan the battle, review participation, and prepare payouts. Select a war to load saved reports without a fresh API pull.</p><div class="ocm-war-toolbar">' +
@@ -14518,6 +14594,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       if (!_warState.ctx) { _warState.ctx = await TWPR.getFactionContext(key); _warState.wars = TWPR.listWars(_warState.ctx); }
       let cachedIds = new Set();
       try { cachedIds = new Set((await TWPR.cacheIndexGet()).map(x => x.warId)); } catch (_) {}
+      if (!pane.isConnected || document.getElementById('ocm-pane-war') !== pane) return;
       const sel = document.getElementById('ocm-war-select');
       if (sel) sel.innerHTML = (_warState.wars || []).map((w, i) => {
         const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
@@ -14525,9 +14602,10 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       }).join('');
       _warStatus(`${(_warState.wars || []).length} war(s) · 💾 = cached`);
     } catch (e) {
+      if (!pane.isConnected || document.getElementById('ocm-pane-war') !== pane) return;
       _warStatus('Unable to load wars. Check your API key and connection.', true);
       const retry = document.getElementById('ocm-war-run');
-      if (retry) { retry.disabled = false; retry.textContent = 'Retry loading'; retry.addEventListener('click', () => { _warMounted = false; mountWarInline(); }); }
+      if (retry) { retry.disabled = false; retry.textContent = 'Retry loading'; retry.addEventListener('click', () => { _warMounted.delete(pane); mountWarInline(); }); }
       return;
     }
     // Selecting a war loads its cached data (shared with the Multi-war sweep) across the tabs.
@@ -14560,7 +14638,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
   }
 
   // Consumables tab — NATIVE render (premium look) driven by the embedded FBUSAGE engine.
-  let _consMounted = false;
+  const _consMounted = new WeakSet();
   const _pillStyle = 'background:var(--ocm-bg);border:1px solid var(--ocm-border-soft);color:var(--ocm-text-dim);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer';
   const _btnStyle  = 'background:var(--ocm-bg-card);border:1px solid var(--ocm-border-soft);color:var(--ocm-text-dim);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer';
   const _consUi = { query: '', sortKey: 'total', sortDir: -1, activity: 'all', page: 0, refreshing: false, error: '' };
@@ -14787,7 +14865,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
     if (!pane) return;
     try { if (!document.getElementById('frostbite-usage-command')) FBUSAGE.init(); }
     catch (e) { console.error('[OC Suite] Usage Command init failed', e); return; }
-    if (!_consMounted) { _consMounted = true; renderConsumables(); }
+    if (!_consMounted.has(pane)) { _consMounted.add(pane); renderConsumables(); }
   }
 
   // ── Armoury tab ──────────────────────────────────────────────────────────
@@ -14796,7 +14874,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
   // back on first load and merge new entries on refresh (dedup by news id),
   // persisting to GM storage. Aggregated per member into used / withdrew /
   // deposited / returned / filled totals, with profile pictures.
-  let _armMounted = false;
+  const _armMounted = new WeakSet();
   const ARM = (() => {
     const K_LEDGER = 'ocs_armory_ledger';   // { newsId: {ts, mid, name, cat, item, qty, toId, toName} }
     const K_PFP    = 'ocs_pfp_cache';        // { mid: {url, ts} }
@@ -14808,7 +14886,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       { key: 'filled',    label: 'Filled',    color: '#c7a3ff', sign:  0 },
       { key: 'other',     label: 'Other',     color: 'var(--ocm-text-dim)', sign: 0 },
     ];
-    const state = { view: 'log', member: null, fAction: 'all', fMember: 'all', q: '', page: 0, days: 'all', loading: false, note: '' };
+    const state = { view: 'log', member: null, fAction: 'all', fMember: 'all', q: '', page: 0, days: 'all', loading: false, lastSync: 0, note: '' };
 
     const jget = (k) => { try { return JSON.parse(GM_getValue(k, '{}')) || {}; } catch { return {}; } };
     const jset = (k, v) => GM_setValue(k, JSON.stringify(v));
@@ -15290,6 +15368,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
     _armSetStatus(full ? 'backfilling…' : 'refreshing…');
     try {
       const { added, total, oldest } = await ARM.sync(full);
+      if (!full) ARM.state.lastSync = Date.now();
       const back = oldest ? ' · back to ' + new Date(oldest * 1000).toLocaleDateString() : '';
       _armSetStatus(`${added ? '+' + _num(added) + ' new · ' : ''}${_num(total)} logged${back}`);
     } catch (e) {
@@ -15301,13 +15380,13 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
   }
 
   function mountArmouryInline() {
-    if (_armMounted) return;
     const pane = document.getElementById('ocm-pane-armoury');
-    if (!pane) return;
-    _armMounted = true;
+    if (!pane || _armMounted.has(pane)) return;
+    _armMounted.add(pane);
     renderArmoury();
-    // Auto-pull on first open if the ledger is empty.
-    if (!ARM.entries().length && GM_getValue(GMK.API_KEY, '')) _armLoad(false);
+    // An existing ledger may be weeks old. Refresh once per session on open,
+    // then at most once per five minutes when Torn replaces the suite pane.
+    if (GM_getValue(GMK.API_KEY, '') && Date.now() - (ARM.state.lastSync || 0) > 300000) _armLoad(false);
   }
 
   function _ocmDiagBytes(bytes) {
@@ -15928,7 +16007,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
           if ($secret) $secret.value = next.readSecret ? '•'.repeat(16) : '';
           if ($key) $key.value = next.tornApiKey ? '•'.repeat(16) : '';
           if ($status) { $status.textContent = 'Saved ✓'; $status.style.color = 'var(--ocm-cpr-good)'; }
-          try { if (_consMounted) renderConsumables(); } catch (_) {}
+          try { if (_consMounted.has(document.getElementById('ocm-pane-consumables'))) renderConsumables(); } catch (_) {}
         });
       })();
 
