@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.5.1
+// @version      1.5.2
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
 // @description  Standalone Script Hub calculator: enemy-only war payouts and cache-based per-hit estimates.
@@ -31,7 +31,7 @@
 (function () {
 'use strict';
 if (window.top !== window.self) return;
-const WAR_PAYOUT_RELEASE_VERSION = "1.5.1";
+const WAR_PAYOUT_RELEASE_VERSION = "1.5.2";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -186,6 +186,52 @@ function createScriptUiThemeClient({doc,win,scriptId,read=()=>null,write=()=>{},
   return {start,stop,get,setOverride,refresh,subscribe};
 }
 
+// DOM attributes coordinate independently bundled windows; no callbacks or data cross worlds.
+function scriptUiFloatingOwner(doc,node) {
+  let owner=null;
+  for(let current=node;current&&current!==doc.body&&current!==doc.documentElement;current=current.parentElement){
+    if(doc.defaultView.getComputedStyle(current).position==='fixed')owner=current;
+  }
+  return owner;
+}
+function scriptUiFloatingWindows(doc) {
+  const nodes=new Set(doc.querySelectorAll('[data-tsui-kit="1"][data-tsui-surface="floating"],#tsh-dialog,[data-tsui-stack-window="1"]'));
+  for(const root of doc.querySelectorAll('.tsui-legacy-surface')){const owner=scriptUiFloatingOwner(doc,root);if(owner)nodes.add(owner);}
+  return Array.from(nodes)
+    .filter(node=>!node.hidden&&node.isConnected&&node.getClientRects().length)
+    .sort((a,b)=>{
+      const rank=node=>{const value=Number(node.getAttribute('data-tsui-stack'));return Number.isSafeInteger(value)&&value>=0&&value<1000000?value:0;};
+      return rank(a)-rank(b);
+    });
+}
+function focusScriptUiWindow(doc,node) {
+  const windows=scriptUiFloatingWindows(doc),index=windows.indexOf(node);
+  if(index!==-1){windows.splice(index,1);windows.push(node);}
+  windows.forEach((entry,i)=>{entry.setAttribute('data-tsui-stack',String(i));entry.style.zIndex=String(2147481000+i*2);});
+  return windows.length;
+}
+
+// Original, bundled vector artwork. Colors inherit theme roles; no remote assets or user data.
+function appendScriptUiHeaderArt(doc,header) {
+  const mark=doc.createElement('span');mark.className='tsui-theme-mark';mark.setAttribute('aria-hidden','true');
+  mark.innerHTML='<svg class="tsui-frost-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M16 3v26M5 9l22 14M5 23L27 9M12 6l4 4 4-4M12 26l4-4 4 4M5 14l5-1-1-5M23 24l-1-5 5-1M5 18l5 1-1 5M23 8l-1 5 5 1"/><path d="m16 11 4 2v6l-4 2-4-2v-6z"/></svg><svg class="tsui-workbench-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="4" y="5" width="24" height="22" rx="3"/><path d="M4 11h24M12 11v16M8 8h1m3 0h1m3 0h1M16 16l3 3-3 3m6 0h3"/></svg><svg class="tsui-torn-mark" viewBox="0 0 32 32" fill="currentColor"><path d="M3 26h26v3H3zm2-9h5v8H5zm7-10h8v18h-8zm10 6h5v12h-5zM14 3h4v3h-4z"/><path d="M14 10h1v2h-1zm3 0h1v2h-1zm-3 5h1v2h-1zm3 0h1v2h-1z" fill="var(--tsui-raised)"/></svg>';
+  const scene=doc.createElement('span');scene.className='tsui-theme-scene';scene.setAttribute('aria-hidden','true');
+  scene.innerHTML='<svg viewBox="0 0 300 72" preserveAspectRatio="xMaxYMid slice" fill="none" stroke="currentColor"><path d="m0 72 52-38 30 18 49-45 41 35 27-18 46 34 55-42v56z" fill="currentColor" opacity=".09" stroke="none"/><path d="m0 72 52-38 30 18 49-45 41 35 27-18 46 34 55-42M97 39l34-32 5 35 22 15m-70-2 43-48 41 35m-120-8 7 30m140-40 11 39" opacity=".45"/><path d="M260 6v18m-8-14 16 10m-16 0 16-10M224 8v8m-4-6 8 4m-8 0 8-4" opacity=".7"/></svg>';
+  header.prepend(mark);header.append(scene);
+}
+function scriptUiIdentityCss(scope) {
+  return `${scope} .tsui-theme-mark{display:none;flex:none;width:30px;height:30px;color:var(--tsui-accent);pointer-events:none}
+${scope} .tsui-theme-mark svg{display:none;width:100%;height:100%}
+${scope}[data-tsui-layout] .tsui-theme-mark{display:block}
+${scope}[data-tsui-layout=frostbite] .tsui-frost-mark,${scope}[data-tsui-layout=workbench] .tsui-workbench-mark,${scope}[data-tsui-layout=torn] .tsui-torn-mark{display:block}
+${scope} .tsui-theme-scene{display:none;position:absolute;inset:0 0 0 auto;width:min(44%,300px);overflow:hidden;color:var(--tsui-accent);opacity:.45;pointer-events:none;z-index:-1}
+${scope} .tsui-theme-scene svg{width:100%;height:100%}
+${scope}[data-tsui-layout=frostbite] .tsui-theme-scene{display:block}
+${scope}[data-tsui-layout=frostbite] .tsui-header,${scope}[data-tsui-layout=frostbite] .tsh-header{isolation:isolate}
+${scope}[data-tsui-layout=torn] .tsui-theme-mark{width:22px;height:22px}
+@media(max-width:600px){${scope} .tsui-theme-mark{width:24px;height:24px}${scope} .tsui-theme-scene{opacity:.28;width:38%}}`;
+}
+
 'use strict';
 
 /** Shared, framework-free native script surfaces. No network or storage is owned here.
@@ -312,6 +358,7 @@ function createTornScriptUI(options = {}) {
   title.title = 'Drag to move. Focus and use arrow keys to move; Shift + arrows resize. Escape cancels a drag.';
   const controls = node('div', 'tsui-controls');
   header.append(title, controls);
+  if(typeof appendScriptUiHeaderArt==='function')appendScriptUiHeaderArt(doc,header);
   const body = node('div', 'tsui-body');
   const nav = node('nav', 'tsui-nav'); nav.setAttribute('aria-label', 'Tool pages');
   const content = node('div', 'tsui-content');
@@ -363,6 +410,9 @@ function createTornScriptUI(options = {}) {
   }
   function focus() {
     if (destroyed) return;
+    if(typeof focusScriptUiWindow==='function'){
+      const count=focusScriptUiWindow(doc,root);launcherTray.style.zIndex=String(2147481001+count*2);stackLaunchers();return;
+    }
     const windows = floatingRoots();
     const index = windows.indexOf(root);
     if (index !== -1) { windows.splice(index, 1); windows.push(root); }
@@ -371,6 +421,7 @@ function createTornScriptUI(options = {}) {
     stackLaunchers();
   }
   function floatingRoots() {
+    if(typeof scriptUiFloatingWindows==='function')return scriptUiFloatingWindows(doc);
     return Array.from(doc.querySelectorAll('[data-tsui-kit="1"][data-tsui-surface="floating"]'))
       .filter(entry => !entry.hidden && entry.isConnected && entry.getClientRects().length)
       .sort((left, right) => {
@@ -621,13 +672,13 @@ function createTornScriptUI(options = {}) {
 }
 
 function scriptUiKitCss() {
-  return `
+  return (typeof scriptUiIdentityCss==='function'?scriptUiIdentityCss('.tsui-root'):'')+`
 .tsui-root,.tsui-launcher-host{font:calc(14px * var(--tsui-font-scale,1))/1.45 system-ui,sans-serif;color:var(--tsui-text,#e5eaf2);color-scheme:light;box-sizing:border-box}.tsui-root[data-tsui-mode=dark],.tsui-launcher-host[data-tsui-mode=dark]{color-scheme:dark}
 .tsui-root *,.tsui-launcher-host *{box-sizing:border-box}.tsui-root[hidden],.tsui-root [hidden],.tsui-launchers[hidden],.tsui-launcher-host[hidden],.tsui-launcher-host [hidden]{display:none!important}
 .tsui-root{background:var(--tsui-background,#171d28);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,12px);overflow:hidden;min-width:0;display:flex;flex-direction:column;isolation:isolate}
 .tsui-root[data-tsui-surface=floating]{position:fixed;box-shadow:0 18px 60px #0007;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
 .tsui-root[data-tsui-surface=embedded]{position:relative;width:100%;min-height:220px;max-height:80dvh}
-.tsui-header{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:var(--tsui-space,10px);background:var(--tsui-raised,#242d3c);border-bottom:1px solid var(--tsui-border,#506076);flex:none}
+.tsui-header{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:var(--tsui-space,10px);background:var(--tsui-raised,#242d3c);border-bottom:1px solid var(--tsui-border,#506076);flex:none}
 .tsui-title{font-weight:750;flex:1;min-width:90px;cursor:move;touch-action:none;padding:6px}.tsui-controls{display:flex;flex-wrap:wrap;gap:4px}
 .tsui-root button,.tsui-launcher{font:inherit;cursor:pointer;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,6px);padding:6px 10px;min-height:var(--tsui-control-height,34px)}
 .tsui-root button:hover{background:var(--tsui-selection,#38455b)}.tsui-root :focus-visible,.tsui-launcher:focus-visible{outline:2px solid var(--tsui-focus,#8fbcff);outline-offset:2px}
@@ -645,7 +696,9 @@ function scriptUiKitCss() {
 .tsui-root[data-tsui-layout=workbench] .tsui-body,.tsui-root[data-tsui-layout=torn] .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto}.tsui-root[data-tsui-layout=workbench] .tsui-content,.tsui-root[data-tsui-layout=torn] .tsui-content{grid-column:1}
 .tsui-root[data-tsui-layout=workbench] .tsui-nav,.tsui-root[data-tsui-layout=torn] .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);grid-row:auto}
 .tsui-root[data-tsui-layout=workbench] .tsui-nav{padding-bottom:0;gap:2px}.tsui-root[data-tsui-layout=workbench] .tsui-nav button{border-bottom-left-radius:0;border-bottom-right-radius:0}.tsui-root[data-tsui-layout=workbench] .tsui-settings,.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:1}
-.tsui-root[data-tsui-layout=torn]{border-radius:3px}.tsui-root[data-tsui-layout=torn] .tsui-header{padding:5px 8px}.tsui-root[data-tsui-layout=torn] .tsui-nav{padding:5px;gap:4px}.tsui-root[data-tsui-layout=torn] .tsui-content{padding:10px}.tsui-root[data-tsui-layout=torn] .tsui-settings,.tsui-root[data-tsui-layout=torn] .tsui-inspector{grid-column:1}
+.tsui-root[data-tsui-layout=frostbite] .tsui-header{background:linear-gradient(115deg,var(--tsui-surface),var(--tsui-raised));min-height:70px;padding:12px 16px}.tsui-root[data-tsui-layout=frostbite] .tsui-nav{background:var(--tsui-background)}.tsui-root[data-tsui-layout=frostbite] .tsui-nav button[aria-current=page]{box-shadow:inset 3px 0 0 var(--tsui-accent)}
+.tsui-root[data-tsui-layout=workbench] .tsui-header{background:var(--tsui-background);padding:8px 12px}.tsui-root[data-tsui-layout=workbench] .tsui-title{font-family:Consolas,"SFMono-Regular",monospace;font-size:.95em}.tsui-root[data-tsui-layout=workbench] .tsui-nav{background:var(--tsui-background);gap:0;padding-top:0}.tsui-root[data-tsui-layout=workbench] .tsui-nav button{border-top:2px solid var(--tsui-background);border-bottom:0;color:var(--tsui-muted);background:var(--tsui-background);padding:9px 14px}.tsui-root[data-tsui-layout=workbench] .tsui-nav button[aria-current=page]{border-top-color:var(--tsui-accent);background:var(--tsui-surface);color:var(--tsui-text)}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{background:var(--tsui-background)}
+.tsui-root[data-tsui-layout=torn]{box-shadow:inset 0 0 0 2px var(--tsui-surface),0 18px 60px #0007}.tsui-root[data-tsui-layout=torn] .tsui-header{padding:5px 8px;background:linear-gradient(var(--tsui-raised),var(--tsui-surface));border-top:2px solid var(--tsui-accent);box-shadow:inset 0 1px 0 var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] .tsui-title{font-family:Arial,Helvetica,sans-serif;font-size:.92em;letter-spacing:.025em;text-transform:uppercase}.tsui-root[data-tsui-layout=torn] .tsui-nav{padding:5px;gap:4px;background:var(--tsui-raised);box-shadow:inset 0 1px 0 var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] .tsui-nav button{padding:5px 10px;font-size:.9em;font-weight:700}.tsui-root[data-tsui-layout=torn] .tsui-content{padding:10px;background:var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] :is(th,td){padding:6px 8px}.tsui-root[data-tsui-layout=torn] th{background:linear-gradient(var(--tsui-raised),var(--tsui-surface));font-size:.9em}.tsui-root[data-tsui-layout=torn] tbody tr:nth-child(even){background:var(--tsui-raised)}.tsui-root[data-tsui-layout=torn] .tsui-settings,.tsui-root[data-tsui-layout=torn] .tsui-inspector{grid-column:1}
 @media(min-width:850px){.tsui-root[data-tsui-layout=workbench] .tsui-body:has(.tsui-inspector:not(:empty)){grid-template-columns:minmax(0,1fr) 180px}.tsui-root[data-tsui-layout=workbench] .tsui-nav{grid-column:1/-1}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:2;grid-row:2/4;border-left:1px solid var(--tsui-border,#506076)}}
 @media(max-width:600px),(pointer:coarse){.tsui-root button,.tsui-launcher{min-height:44px}.tsui-root input,.tsui-root select,.tsui-root textarea{font-size:16px}.tsui-header{gap:4px;padding:6px}.tsui-controls{width:100%;overflow:auto;flex-wrap:nowrap}.tsui-controls button{flex:1;padding:4px;font-size:12px}.tsui-root .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto auto;align-content:start}.tsui-root .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);padding:6px;grid-row:auto}.tsui-root .tsui-content{padding:10px;grid-column:1;overflow:visible}.tsui-root .tsui-settings,.tsui-root .tsui-inspector{grid-column:1;grid-row:auto}.tsui-resize{display:none}.tsui-title{touch-action:auto;cursor:default}.tsui-task{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.tsui-root *{animation:none!important;transition:none!important}}
@@ -728,6 +781,7 @@ function createScriptUiAppearanceAdapter(options) {
     let record=roots.get(node);if(!record){record={styles:new Map(),attributes:new Map(),hadClass:node.classList.contains('tsui-legacy-surface')};roots.set(node,record);}
     const styles=new Map(),attributes=new Map();
     const resolved=apply({style:{setProperty:(key,value)=>styles.set(key,value)},setAttribute:(key,value)=>attributes.set(key,value)},theme,win.matchMedia?.('(prefers-color-scheme: dark)').matches===true);
+    attributes.set('data-tsui-owner',id);
     for(const [key,role]of Object.entries(aliases))styles.set(key,resolved.colors[role]);
     for(const [key,value]of styles){
       if(!record.styles.has(key))record.styles.set(key,{value:node.style.getPropertyValue(key),priority:node.style.getPropertyPriority(key)});

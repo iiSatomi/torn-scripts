@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Script Hub
 // @namespace    isatomi.torn.script-hub
-// @version      1.4.2
+// @version      1.4.3
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.
@@ -391,6 +391,52 @@ function createScriptUiThemeClient({doc,win,scriptId,read=()=>null,write=()=>{},
   return {start,stop,get,setOverride,refresh,subscribe};
 }
 
+// DOM attributes coordinate independently bundled windows; no callbacks or data cross worlds.
+function scriptUiFloatingOwner(doc,node) {
+  let owner=null;
+  for(let current=node;current&&current!==doc.body&&current!==doc.documentElement;current=current.parentElement){
+    if(doc.defaultView.getComputedStyle(current).position==='fixed')owner=current;
+  }
+  return owner;
+}
+function scriptUiFloatingWindows(doc) {
+  const nodes=new Set(doc.querySelectorAll('[data-tsui-kit="1"][data-tsui-surface="floating"],#tsh-dialog,[data-tsui-stack-window="1"]'));
+  for(const root of doc.querySelectorAll('.tsui-legacy-surface')){const owner=scriptUiFloatingOwner(doc,root);if(owner)nodes.add(owner);}
+  return Array.from(nodes)
+    .filter(node=>!node.hidden&&node.isConnected&&node.getClientRects().length)
+    .sort((a,b)=>{
+      const rank=node=>{const value=Number(node.getAttribute('data-tsui-stack'));return Number.isSafeInteger(value)&&value>=0&&value<1000000?value:0;};
+      return rank(a)-rank(b);
+    });
+}
+function focusScriptUiWindow(doc,node) {
+  const windows=scriptUiFloatingWindows(doc),index=windows.indexOf(node);
+  if(index!==-1){windows.splice(index,1);windows.push(node);}
+  windows.forEach((entry,i)=>{entry.setAttribute('data-tsui-stack',String(i));entry.style.zIndex=String(2147481000+i*2);});
+  return windows.length;
+}
+
+// Original, bundled vector artwork. Colors inherit theme roles; no remote assets or user data.
+function appendScriptUiHeaderArt(doc,header) {
+  const mark=doc.createElement('span');mark.className='tsui-theme-mark';mark.setAttribute('aria-hidden','true');
+  mark.innerHTML='<svg class="tsui-frost-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M16 3v26M5 9l22 14M5 23L27 9M12 6l4 4 4-4M12 26l4-4 4 4M5 14l5-1-1-5M23 24l-1-5 5-1M5 18l5 1-1 5M23 8l-1 5 5 1"/><path d="m16 11 4 2v6l-4 2-4-2v-6z"/></svg><svg class="tsui-workbench-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="4" y="5" width="24" height="22" rx="3"/><path d="M4 11h24M12 11v16M8 8h1m3 0h1m3 0h1M16 16l3 3-3 3m6 0h3"/></svg><svg class="tsui-torn-mark" viewBox="0 0 32 32" fill="currentColor"><path d="M3 26h26v3H3zm2-9h5v8H5zm7-10h8v18h-8zm10 6h5v12h-5zM14 3h4v3h-4z"/><path d="M14 10h1v2h-1zm3 0h1v2h-1zm-3 5h1v2h-1zm3 0h1v2h-1z" fill="var(--tsui-raised)"/></svg>';
+  const scene=doc.createElement('span');scene.className='tsui-theme-scene';scene.setAttribute('aria-hidden','true');
+  scene.innerHTML='<svg viewBox="0 0 300 72" preserveAspectRatio="xMaxYMid slice" fill="none" stroke="currentColor"><path d="m0 72 52-38 30 18 49-45 41 35 27-18 46 34 55-42v56z" fill="currentColor" opacity=".09" stroke="none"/><path d="m0 72 52-38 30 18 49-45 41 35 27-18 46 34 55-42M97 39l34-32 5 35 22 15m-70-2 43-48 41 35m-120-8 7 30m140-40 11 39" opacity=".45"/><path d="M260 6v18m-8-14 16 10m-16 0 16-10M224 8v8m-4-6 8 4m-8 0 8-4" opacity=".7"/></svg>';
+  header.prepend(mark);header.append(scene);
+}
+function scriptUiIdentityCss(scope) {
+  return `${scope} .tsui-theme-mark{display:none;flex:none;width:30px;height:30px;color:var(--tsui-accent);pointer-events:none}
+${scope} .tsui-theme-mark svg{display:none;width:100%;height:100%}
+${scope}[data-tsui-layout] .tsui-theme-mark{display:block}
+${scope}[data-tsui-layout=frostbite] .tsui-frost-mark,${scope}[data-tsui-layout=workbench] .tsui-workbench-mark,${scope}[data-tsui-layout=torn] .tsui-torn-mark{display:block}
+${scope} .tsui-theme-scene{display:none;position:absolute;inset:0 0 0 auto;width:min(44%,300px);overflow:hidden;color:var(--tsui-accent);opacity:.45;pointer-events:none;z-index:-1}
+${scope} .tsui-theme-scene svg{width:100%;height:100%}
+${scope}[data-tsui-layout=frostbite] .tsui-theme-scene{display:block}
+${scope}[data-tsui-layout=frostbite] .tsui-header,${scope}[data-tsui-layout=frostbite] .tsh-header{isolation:isolate}
+${scope}[data-tsui-layout=torn] .tsui-theme-mark{width:22px;height:22px}
+@media(max-width:600px){${scope} .tsui-theme-mark{width:24px;height:24px}${scope} .tsui-theme-scene{opacity:.28;width:38%}}`;
+}
+
 // Public appearance only. No script data or credential values enter this module.
 function normalizeScriptUiPresets(raw, normalize) {
   if (!Array.isArray(raw)) return [];
@@ -544,7 +590,7 @@ function renderHubThemes(config) {
 }
 
 function hubThemeStyles() {
-  return `
+  return (typeof scriptUiIdentityCss==='function'?scriptUiIdentityCss('#tsh-dialog'):'')+`
   #tsh-dialog[data-tsui-layout]{background:var(--tsui-surface);color:var(--tsui-text);border-color:var(--tsui-border);border-radius:var(--tsui-radius,10px);font-size:calc(13px * var(--tsui-font-scale,1));--tsh-accent:var(--tsui-accent)}
   #tsh-dialog[data-tsui-layout] :is(button,input,select,textarea){font:inherit;color:var(--tsui-text);border-color:var(--tsui-border)!important;border-radius:var(--tsui-radius,7px);background:var(--tsui-raised)}
   #tsh-dialog[data-tsui-layout] :is(input,select,textarea){background:var(--tsui-surface)!important;color:var(--tsui-text)!important}
@@ -559,6 +605,18 @@ function hubThemeStyles() {
   #tsh-dialog[data-tsui-layout] button[aria-selected=true],#tsh-dialog[data-tsui-layout] button[aria-pressed=true]{background:var(--tsui-selection);color:var(--tsui-accent);border-color:var(--tsui-accent)!important}
   #tsh-dialog[data-tsui-layout] :focus-visible{outline:2px solid var(--tsui-focus);outline-offset:2px}
   #tsh-dialog[data-tsui-layout] .tsh-theme-save{background:var(--tsui-accent);color:var(--tsui-on-accent)}
+  #tsh-dialog[data-tsui-layout] .tsh-header{isolation:isolate}
+  #tsh-dialog[data-tsui-layout] .tsh-header h2{position:relative;font-size:16px;letter-spacing:-.025em;line-height:1.2}
+  #tsh-dialog[data-tsui-layout] .tsh-header>:is(.tsh-count,button){position:relative;z-index:1}
+  #tsh-dialog[data-tsui-layout] .tsui-theme-mark{display:flex;align-items:center;justify-content:center;flex:none;width:34px;height:34px;color:var(--tsui-accent)}
+  #tsh-dialog[data-tsui-layout] .tsui-theme-mark>:is(.tsui-frost-mark,.tsui-workbench-mark,.tsui-torn-mark){display:none;width:100%;height:100%}
+  #tsh-dialog[data-tsui-layout] .tsui-theme-scene{display:none;pointer-events:none}
+  #tsh-dialog[data-tsui-layout] .tsh-nav-icon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:17px;height:17px;vertical-align:middle}
+  #tsh-dialog[data-tsui-layout] .tsh-hub-tab{display:flex;align-items:center;justify-content:center;gap:7px}
+  #tsh-dialog[data-tsui-layout] .tsh-primary .tsh-icon{flex:none;color:var(--tsui-accent)}
+  #tsh-dialog[data-tsui-layout] .tsh-primary:hover .tsh-icon{color:var(--tsui-accent)}
+  #tsh-dialog[data-tsui-layout] :is(.tsh-script-heading,.tsh-form-section){border-color:var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout] .tsh-settings-script small{color:var(--tsui-muted)}
   #tsh-dialog .tsh-theme-section{border-top:1px solid var(--tsui-border);padding:16px 0}
   #tsh-dialog .tsh-themes h4{margin:0 0 8px;font-size:13px}
   #tsh-dialog .tsh-themes p{font-size:12px;line-height:1.5}
@@ -593,31 +651,92 @@ function hubThemeStyles() {
   #tsh-dialog .tsh-appearance-inspector{display:none;padding:14px;border-left:1px solid var(--tsui-border);background:var(--tsui-raised);font-size:12px;min-width:0}
   #tsh-dialog .tsh-appearance-inspector p{color:var(--tsui-muted);line-height:1.5}
   #tsh-dialog[data-tsui-layout=frostbite]{display:grid;grid-template-columns:124px minmax(0,1fr);align-content:start}
-  #tsh-dialog[data-tsui-layout=frostbite]>.tsh-header{grid-column:1/-1;grid-row:1}
-  #tsh-dialog[data-tsui-layout=frostbite]>.tsh-hub-nav{grid-column:1;grid-row:2/8;flex-direction:column;position:static;align-self:stretch;justify-content:flex-start;border-right:1px solid var(--tsui-border);padding:12px 8px}
-  #tsh-dialog[data-tsui-layout=frostbite]>.tsh-hub-nav button{flex:none;text-align:left}
+  #tsh-dialog[data-tsui-layout=frostbite]>.tsh-header{grid-column:1/-1;grid-row:1;min-height:76px;padding:14px 18px;background:linear-gradient(115deg,var(--tsui-surface),var(--tsui-raised));gap:11px}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsui-theme-mark>.tsui-frost-mark{display:block}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsui-theme-mark{width:37px;height:37px}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsui-theme-scene{display:block;position:absolute;inset:0 82px 0 auto;width:200px;max-width:46%;height:100%;color:var(--tsui-accent);opacity:.23;z-index:-1;overflow:hidden}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-count{padding:5px 8px;border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);background:var(--tsui-surface);font-size:11px;white-space:nowrap}
+  #tsh-dialog[data-tsui-layout=frostbite]>.tsh-hub-nav{grid-column:1;grid-row:2/8;flex-direction:column;position:static;align-self:stretch;justify-content:flex-start;border-right:1px solid var(--tsui-border);border-bottom:0;padding:14px 8px;background:var(--tsui-background);gap:6px}
+  #tsh-dialog[data-tsui-layout=frostbite]>.tsh-hub-nav button{flex:none;justify-content:flex-start;text-align:left;padding:10px 8px;border-color:var(--tsui-background)!important;background:var(--tsui-background)}
+  #tsh-dialog[data-tsui-layout=frostbite]>.tsh-hub-nav button[aria-selected=true]{border-color:var(--tsui-border)!important;box-shadow:inset 3px 0 0 var(--tsui-accent)}
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-toolbar{grid-column:2;grid-row:2}
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-intro{grid-column:2;grid-row:3}
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-grid{grid-column:2;grid-row:4}
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-actions{grid-column:2;grid-row:5}
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-settings-view{grid-column:2;grid-row:2/7;min-width:0}
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-status{grid-column:2;grid-row:7}
+  #tsh-dialog[data-tsui-layout=frostbite]>.tsh-grid{grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:12px;padding:16px}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary{flex:1;min-height:124px;padding:16px 8px 12px;gap:10px;background:linear-gradient(150deg,var(--tsui-surface),var(--tsui-raised));box-shadow:inset 0 1px 0 var(--tsui-surface);border-radius:var(--tsui-radius)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary .tsh-icon{width:43px;height:43px;padding:8px;border:1px solid var(--tsui-border);border-radius:calc(var(--tsui-radius) * .8);background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary .tsh-name{font-weight:600}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile-controls{justify-content:center;gap:5px;margin-top:6px}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile-controls button{background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-settings-script{padding:12px;background:var(--tsui-surface);border-radius:var(--tsui-radius)}
   #tsh-dialog[data-tsui-layout=workbench]{display:grid;grid-template-columns:minmax(0,1fr) 160px;align-content:start}
   #tsh-dialog[data-tsui-layout=workbench]>:is(.tsh-header,.tsh-hub-nav){grid-column:1/-1}
-  #tsh-dialog[data-tsui-layout=workbench]>.tsh-header{grid-row:1}
-  #tsh-dialog[data-tsui-layout=workbench]>.tsh-hub-nav{grid-row:2;position:static;background:var(--tsui-background)}
-  #tsh-dialog[data-tsui-layout=workbench]>.tsh-hub-nav button{border-radius:5px 5px 0 0;background:transparent}
-  #tsh-dialog[data-tsui-layout=workbench]>.tsh-hub-nav button[aria-selected=true]{background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=workbench]>.tsh-header{grid-row:1;min-height:52px;padding:10px 14px;background:var(--tsui-background);gap:10px}
+  #tsh-dialog[data-tsui-layout=workbench] .tsui-theme-mark>.tsui-workbench-mark{display:block}
+  #tsh-dialog[data-tsui-layout=workbench] .tsui-theme-mark{width:28px;height:28px}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-header h2{font-family:Consolas,"SFMono-Regular",monospace;font-size:14px;letter-spacing:-.04em}
+  #tsh-dialog[data-tsui-layout=workbench]>.tsh-hub-nav{grid-row:2;position:static;background:var(--tsui-background);padding:0 12px;gap:0}
+  #tsh-dialog[data-tsui-layout=workbench]>.tsh-hub-nav button{border-radius:var(--tsui-radius) var(--tsui-radius) 0 0;background:var(--tsui-background);border-bottom:0;border-top:2px solid var(--tsui-background);padding:10px 14px;font-size:12px;color:var(--tsui-muted)}
+  #tsh-dialog[data-tsui-layout=workbench]>.tsh-hub-nav button[aria-selected=true]{background:var(--tsui-surface);border-top-color:var(--tsui-accent)!important;border-left-color:var(--tsui-border)!important;border-right-color:var(--tsui-border)!important}
   #tsh-dialog[data-tsui-layout=workbench]>.tsh-toolbar{grid-column:1;grid-row:3}
   #tsh-dialog[data-tsui-layout=workbench]>.tsh-intro{grid-column:1;grid-row:4}
   #tsh-dialog[data-tsui-layout=workbench]>.tsh-grid{grid-column:1;grid-row:5}
   #tsh-dialog[data-tsui-layout=workbench]>.tsh-actions{grid-column:1;grid-row:6}
   #tsh-dialog[data-tsui-layout=workbench]>.tsh-status{grid-column:1;grid-row:7}
   #tsh-dialog[data-tsui-layout=workbench]>.tsh-settings-view{grid-column:1;grid-row:3/7;min-width:0}
-  #tsh-dialog[data-tsui-layout=workbench]>.tsh-appearance-inspector{display:block;grid-column:2;grid-row:3/8}
-  #tsh-dialog[data-tsui-layout=torn]>.tsh-header{border-top:3px solid var(--tsui-accent)}
+  #tsh-dialog[data-tsui-layout=workbench]>.tsh-appearance-inspector{display:block;grid-column:2;grid-row:3/8;background:var(--tsui-background);padding:16px 12px;box-shadow:inset 3px 0 0 var(--tsui-raised)}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-appearance-inspector h4{font:600 11px Consolas,"SFMono-Regular",monospace;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--tsui-border);padding-bottom:10px;margin:0 0 10px}
+  #tsh-dialog[data-tsui-layout=workbench]>.tsh-grid{grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:9px;padding:14px}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-tile{border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);background:var(--tsui-raised);overflow:hidden}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-primary{display:grid;grid-template-columns:26px minmax(0,1fr);align-content:center;gap:8px 10px;min-height:84px;padding:12px;text-align:left;border:0;border-radius:0;background:var(--tsui-surface);box-shadow:none}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-primary .tsh-icon{width:26px;height:26px;grid-row:1/3}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-primary .tsh-name{font-size:12px;font-weight:600}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-primary .tsh-state{grid-column:2;font:10px Consolas,"SFMono-Regular",monospace}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-tile-controls{gap:0;margin:0;border-top:1px solid var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-tile-controls button{margin:0;border:0;border-radius:0;background:var(--tsui-raised)}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-tile-controls .tsh-pin{border-right:1px solid var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-settings-script{background:var(--tsui-surface);border-left:3px solid var(--tsui-border);border-radius:var(--tsui-radius)}
+  #tsh-dialog[data-tsui-layout=workbench] .tsh-settings-script:hover{border-left-color:var(--tsui-accent)}
+  #tsh-dialog[data-tsui-layout=torn]{background:var(--tsui-background);box-shadow:inset 0 0 0 2px var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=torn]>.tsh-header{min-height:44px;padding:6px 10px;gap:8px;border-top:2px solid var(--tsui-accent);border-bottom:1px solid var(--tsui-border);background:linear-gradient(var(--tsui-raised),var(--tsui-surface));box-shadow:inset 0 1px 0 var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=torn] .tsui-theme-mark>.tsui-torn-mark{display:block}
+  #tsh-dialog[data-tsui-layout=torn] .tsui-theme-mark{width:24px;height:24px}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-header h2{font-family:Arial,Helvetica,sans-serif;font-size:13px;letter-spacing:.035em;text-transform:uppercase}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-count{font-size:11px;font-variant-numeric:tabular-nums;padding:2px 6px;border:1px solid var(--tsui-border);background:var(--tsui-background);border-radius:var(--tsui-radius)}
+  #tsh-dialog[data-tsui-layout=torn]>.tsh-hub-nav{position:static;padding:4px 7px;gap:3px;background:var(--tsui-raised);box-shadow:inset 0 1px 0 var(--tsui-surface);border-bottom:1px solid var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout=torn]>.tsh-hub-nav button{flex:1;padding:5px 8px;min-height:30px;border-radius:var(--tsui-radius);background:var(--tsui-surface);font-size:11px;font-weight:700}
+  #tsh-dialog[data-tsui-layout=torn]>.tsh-toolbar{padding:9px 10px 0}
+  #tsh-dialog[data-tsui-layout=torn]>.tsh-intro{margin:8px 10px 0;font-size:11px}
+  #tsh-dialog[data-tsui-layout=torn]>.tsh-grid{grid-template-columns:minmax(0,1fr);gap:0;margin:10px;padding:0;border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);background:var(--tsui-surface);box-shadow:inset 0 0 0 2px var(--tsui-background)}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-tile{flex-direction:row;align-items:stretch;gap:0;border-bottom:1px solid var(--tsui-border);padding:2px}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-tile:last-child{border-bottom:0}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-tile:nth-child(even){background:var(--tsui-raised)}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-primary{flex:1;min-width:0;display:grid;grid-template-columns:22px minmax(0,1fr) auto;min-height:38px;gap:8px;align-content:center;padding:7px 9px;border:0;border-radius:var(--tsui-radius);background:none;box-shadow:none;text-align:left}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-primary .tsh-icon{width:22px;height:22px}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-primary .tsh-name{font-size:12px;font-weight:600}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-state{font-size:10px;white-space:nowrap}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-tile-controls{flex:none;margin:0;align-items:center;gap:3px;padding:0 4px;border-left:1px solid var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-tile-controls button{margin:0;min-height:28px;background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-tile-controls .tsh-more{padding:5px 8px}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-empty{padding:10px}
+  #tsh-dialog[data-tsui-layout=torn] :is(.tsh-settings-view,.tsh-actions){padding:10px}
+  #tsh-dialog[data-tsui-layout=torn] :is(.tsh-settings-view>h3,.tsh-actions>h3,.tsh-form-section>h3,.tsh-form-section>legend){width:100%;padding:6px 8px;margin:0 0 8px;border:1px solid var(--tsui-border);background:linear-gradient(var(--tsui-raised),var(--tsui-surface));font-size:12px;box-shadow:inset 0 1px 0 var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-settings-script{min-height:40px;margin:0;padding:7px 9px;border-radius:var(--tsui-radius);background:var(--tsui-surface);box-shadow:inset 0 0 0 1px var(--tsui-background)}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-settings-script+.tsh-settings-script{border-top:0}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-settings-page{margin:0 0 4px;background:var(--tsui-surface);min-height:34px;padding:7px 9px}
+  #tsh-dialog[data-tsui-layout=torn] .tsh-form-section{margin-top:10px;padding-bottom:10px;gap:9px}
   #tsh-dialog[data-tsui-density=compact] .tsh-theme-section{padding:10px 0}
   #tsh-dialog[data-tsui-density=compact] .tsh-theme-color{padding:6px}
+  @media(min-width:601px) and (min-height:501px){
+    #tsh-dialog[data-tsui-layout=frostbite][data-tsui-density=compact]>.tsh-grid{gap:8px;padding:12px}
+    #tsh-dialog[data-tsui-layout=frostbite][data-tsui-density=compact] .tsh-primary{min-height:106px;padding:10px 6px;gap:7px}
+    #tsh-dialog[data-tsui-layout=workbench][data-tsui-density=compact]>.tsh-grid{gap:6px;padding:10px}
+    #tsh-dialog[data-tsui-layout=workbench][data-tsui-density=compact] .tsh-primary{min-height:68px;padding:9px}
+    #tsh-dialog[data-tsui-layout=torn][data-tsui-density=compact] .tsh-primary{min-height:32px;padding:4px 7px}
+  }
   @media(max-width:600px),(max-height:500px){
     #tsh-dialog[data-tsui-layout]{display:block}
     #tsh-dialog[data-tsui-layout]>.tsh-hub-nav{display:flex;flex-direction:row;position:static;padding:7px;border-right:0}
@@ -629,7 +748,22 @@ function hubThemeStyles() {
     #tsh-dialog .tsh-theme-layout small{display:none}
     #tsh-dialog .tsh-theme-fields{grid-template-columns:1fr}
     #tsh-dialog .tsh-theme-actions{justify-content:flex-start}
+    #tsh-dialog[data-tsui-layout=frostbite]>.tsh-header{min-height:66px;padding:10px 12px}
+    #tsh-dialog[data-tsui-layout=frostbite]>.tsh-hub-nav{border-bottom:1px solid var(--tsui-border);gap:4px}
+    #tsh-dialog[data-tsui-layout=frostbite]>.tsh-hub-nav button{justify-content:center;flex-wrap:wrap;gap:5px}
+    #tsh-dialog[data-tsui-layout=frostbite]>.tsh-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding:12px}
+    #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary{min-height:116px;padding:12px 6px 9px}
+    #tsh-dialog[data-tsui-layout=workbench]>.tsh-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px}
+    #tsh-dialog[data-tsui-layout=workbench]>.tsh-hub-nav{padding:4px 6px 0}
+    #tsh-dialog[data-tsui-layout=workbench]>.tsh-hub-nav button{padding:8px 5px;gap:5px}
+    #tsh-dialog[data-tsui-layout=workbench] .tsh-primary{min-height:88px;padding:10px;gap:6px 8px}
+    #tsh-dialog[data-tsui-layout=torn]>.tsh-grid{grid-template-columns:minmax(0,1fr);gap:0}
+    #tsh-dialog[data-tsui-layout=torn] .tsh-primary{grid-template-columns:22px minmax(0,1fr);min-height:44px;padding:7px}
+    #tsh-dialog[data-tsui-layout=torn] .tsh-primary .tsh-state{grid-column:2;font-size:10px}
+    #tsh-dialog[data-tsui-layout=torn] .tsh-tile-controls{padding:0 2px}
+    #tsh-dialog[data-tsui-layout] :is(.tsh-hub-nav button,.tsh-tile-controls button,.tsh-settings-script,.tsh-settings-page){min-height:44px}
   }
+  @media(pointer:coarse){#tsh-dialog[data-tsui-layout][data-tsui-density] :is(.tsh-hub-nav button,.tsh-primary,.tsh-tile-controls button,.tsh-settings-script,.tsh-settings-page){min-height:44px}}
   @media(prefers-reduced-motion:reduce){#tsh-dialog[data-tsui-layout] *{scroll-behavior:auto;transition:none}}
   `;
 }
@@ -1823,7 +1957,7 @@ function createHubSettingsController(config) {
   function mount(dialog){
     const previous=panel;
     nav=element('div','tsh-hub-nav');nav.setAttribute('role','tablist');
-    for(const [id,label]of [['scripts','Scripts'],['settings','Settings'],...(themeAvailable?[['themes','Themes']]:[]),['keys','API Keys']]){const item=button(label,'tsh-hub-tab',()=>setView(id));item.dataset.hubView=id;item.setAttribute('role','tab');item.setAttribute('aria-selected',String(view===id));nav.append(item);}
+    for(const [id,label]of [['scripts','Scripts'],['settings','Settings'],...(themeAvailable?[['themes','Themes']]:[]),['keys','API Keys']]){const item=button(label,'tsh-hub-tab',()=>setView(id));const mark=icon(id);mark.classList.add('tsh-nav-icon');item.prepend(mark);item.dataset.hubView=id;item.setAttribute('role','tab');item.setAttribute('aria-selected',String(view===id));nav.append(item);}
     dialog.querySelector('.tsh-header').after(nav);
     toolbar=element('div','tsh-toolbar');const search=doc.createElement('input');search.type='search';search.placeholder='Find a script…';search.className='tsh-search';search.setAttribute('aria-label','Search scripts');search.addEventListener('input',()=>config.render());
     const category=doc.createElement('select');category.className='tsh-category';category.setAttribute('aria-label','Filter script category');category.addEventListener('change',()=>config.render());toolbar.append(search,category);nav.after(toolbar);
@@ -1959,6 +2093,9 @@ try {
 } catch (_) {}
 
 const ICONS = {
+  settings: '<path d="M9 3h6l1 4 4 1v7l-4 1-1 5H9l-1-5-4-1V8l4-1z"/><circle cx="12" cy="12" r="3"/>',
+  themes: '<path d="M12 3a9 9 0 1 0 0 18h2a2 2 0 0 0 0-4h-1a2 2 0 0 1 0-4h4a4 4 0 0 0 4-4c0-4-5-6-9-6z"/><path d="M7 9h.01M11 6h.01M16 7h.01M6 14h.01"/>',
+  keys: '<circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-5-5 3-3m-1 5 3-3"/>',
   scripts: '<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/>',
   oc: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 2v5m0 10v5M2 12h5m10 0h5"/>',
   gym: '<path d="M7 12h10M3 8v8m4-11v14M17 5v14m4-11v8"/>',
@@ -2015,6 +2152,7 @@ function openHub() {
   say(''); render();
   settingsController.open();
   windowController.open();
+  focusScriptUiWindow(document,dialog);
   dialog.querySelector('.tsh-close').focus({ preventScroll: true });
   emit('discover', {});
 }
@@ -2088,7 +2226,7 @@ function launch(id, action, isPending = false) {
   if (!isPending) clearPending();
   if (!entry.active) { navigate(entry, action); return; }
   const request = 'hub-' + Date.now() + '-' + (++requestCounter);
-  actionInFlight = { id, action, request, instance: entry.instance, isPending };
+  actionInFlight = { id, action, request, instance: entry.instance, isPending, windows: new Set(scriptUiFloatingWindows(document)) };
   actionTimer = setTimeout(() => {
     actionInFlight = null; actionTimer = null;
     if (isPending) clearPending();
@@ -2133,7 +2271,17 @@ function onResult(event) {
   if(!owner?.active||owner.instance!==request.instance){clearTimeout(actionTimer);actionTimer=null;actionInFlight=null;return;}
   if (!['opened', 'not-ready', 'navigate', 'error'].includes(result.status)) return;
   clearTimeout(actionTimer); actionTimer = null; actionInFlight = null;
-  if (result.status === 'opened') { if (request.isPending) clearPending(); closeHub(false); return; }
+  if (result.status === 'opened') {
+    if (request.isPending) clearPending();
+    // Legacy actions focus their own menus. Include the outer fixed backdrop;
+    // raising a child alone cannot escape its parent's stacking context.
+    const focused=scriptUiFloatingOwner(document,document.activeElement);
+    const declared=[...document.querySelectorAll('[data-tsui-owner="'+owner.id+'"]')].map(root=>scriptUiFloatingOwner(document,root)).filter(node=>node&&!node.hidden&&node.getClientRects().length);
+    const target=declared.find(node=>node.contains(document.activeElement))||declared.at(-1)||focused;
+    if(target&&target!==dialog){target.setAttribute('data-tsui-stack-window','1');focusScriptUiWindow(document,target);}
+    else {const opened=scriptUiFloatingWindows(document).filter(node=>node!==dialog&&!request.windows.has(node));if(opened.length)focusScriptUiWindow(document,opened.at(-1));}
+    if(!dialog?.hidden)say(owner.name+' opened.'); return;
+  }
   if (result.status === 'navigate' && !request.isPending) { navigate(registry.get(request.id), request.action); return; }
   if (['not-ready', 'navigate'].includes(result.status) && request.isPending && pendingAttempts < 20 && pending?.expires > Date.now()) {
     retryTimer = setTimeout(() => { retryTimer = null; resumePending(); }, 500);
@@ -2231,12 +2379,15 @@ function mount() {
     const count = document.createElement('span'); count.className = 'tsh-count';
     const close = button('×', 'tsh-close', () => closeHub()); close.setAttribute('aria-label', 'Close script menus');
     header.append(title, count, close);
+    appendScriptUiHeaderArt(document,header);
     const intro = document.createElement('p'); intro.className = 'tsh-intro'; intro.textContent = 'All your connected tools, in one place.';
     grid = document.createElement('div'); grid.className = 'tsh-grid';
     actionList = document.createElement('div'); actionList.className = 'tsh-actions'; actionList.id = 'tsh-actions'; actionList.hidden = true;
     status = document.createElement('p'); status.className = 'tsh-status'; status.setAttribute('role', 'status');
     dialog.append(header, intro, grid, actionList, status); document.body.append(dialog);
     settingsController.mount(dialog);
+    dialog.addEventListener('pointerdown',()=>focusScriptUiWindow(document,dialog));
+    dialog.addEventListener('focusin',()=>focusScriptUiWindow(document,dialog));
   }
   windowController.mount(dialog);
   placeLauncher();
@@ -2254,8 +2405,9 @@ function observe() {
   observer.observe(document.documentElement, { childList: true, subtree: true });
 }
 function onKey(event) {
-  if (dialog?.hidden) return;
+  if (dialog?.hidden || event.defaultPrevented) return;
   if (event.key === 'Escape' && windowController.cancelInteraction()) { event.preventDefault(); return; }
+  if (scriptUiFloatingWindows(document).at(-1) !== dialog) return;
   // The hub can stay open while Torn controls own keyboard focus.
   if (!dialog.contains(event.target) && !launcher?.contains(event.target)) return;
   if (event.key === 'Escape') { event.preventDefault(); if(settingsController.cancelPrompt())return;closeHub(); }
@@ -2266,6 +2418,11 @@ function onKey(event) {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }
+}
+function onWindowFocus(event) {
+  if(!awake||!dialog||dialog.hidden)return;
+  const owner=scriptUiFloatingWindows(document).find(node=>node.contains(event.target));
+  if(owner)focusScriptUiWindow(document,owner);
 }
 function onRoute() { closeHub(false,true); emit('discover', {}); scheduleMount(); }
 function updateActivity() {
@@ -2295,6 +2452,8 @@ function start() {
   document.addEventListener(HUB_PREFIX + 'unregister', onUnregister);
   document.addEventListener(HUB_PREFIX + 'result', onResult);
   document.addEventListener('keydown', onKey);
+  document.addEventListener('pointerdown', onWindowFocus);
+  document.addEventListener('focusin', onWindowFocus);
   document.addEventListener('visibilitychange', updateActivity);
   window.addEventListener('hashchange', onRoute);
   window.addEventListener('popstate', onRoute);
@@ -2313,6 +2472,8 @@ function stop() {
   document.removeEventListener(HUB_PREFIX + 'unregister', onUnregister);
   document.removeEventListener(HUB_PREFIX + 'result', onResult);
   document.removeEventListener('keydown', onKey);
+  document.removeEventListener('pointerdown', onWindowFocus);
+  document.removeEventListener('focusin', onWindowFocus);
   document.removeEventListener('visibilitychange', updateActivity);
   window.removeEventListener('hashchange', onRoute);
   window.removeEventListener('popstate', onRoute);
