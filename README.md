@@ -29,3 +29,8 @@ Run syntax and focused tests with Node.js. Some browser tests require a local si
 The downloaded Greasy Fork scripts retain their own metadata and licenses. Some local files have different provenance; do not assume one repository-wide license covers them all.
 
 
+
+
+## Managed Script Hub and War Payout Calculator
+
+The Script Hub and standalone War Payout Calculator have independent automatic update feeds. Verified changes on `main` are built and checked by GitHub Actions before the generated scripts are published. See [automatic update setup](docs/managed-userscript-updates.md) for installation links, release rules, and secret checks.

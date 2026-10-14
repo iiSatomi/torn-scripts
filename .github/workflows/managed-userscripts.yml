@@ -1,0 +1,151 @@
+name: Managed userscripts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'script-hub/src/**'
+      - 'script-hub/tools/**'
+      - 'script-hub/release.json'
+      - 'script-hub/test/**'
+      - 'script-hub/dist/Torn_Script_Hub.user.js'
+      - 'script-hub/dist/Torn_Script_Hub.meta.js'
+      - 'lib/war-payout-*'
+      - 'tools/*war-payout*.cjs'
+      - 'tools/*userscripts*.cjs'
+      - 'tools/userscript-release-core.cjs'
+      - 'tools/check-managed-secrets.cjs'
+      - 'tools/managed-publication-files.json'
+      - 'test/managed-secrets.test.cjs'
+      - 'tools/release-browser/**'
+      - 'test/*war-payout*.cjs'
+      - 'test/userscript-releases.test.cjs'
+      - 'test/browser/war-payout-*.cjs'
+      - 'Torn_War_Payout_Calculator.user.js'
+      - 'Torn_War_Payout_Calculator.meta.js'
+      - '.github/workflows/managed-userscripts.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-userscripts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check allowlisted files for secrets before executing builds
+        run: node tools/check-managed-secrets.cjs
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/release-browser/package-lock.json
+      - name: Install pinned browser runtime
+        run: npm ci --ignore-scripts --prefix tools/release-browser
+      - name: Install Chromium
+        run: node tools/release-browser/node_modules/playwright/cli.js install --with-deps chromium
+      - name: Configure portable browser checks
+        run: |
+          echo "TORN_PLAYWRIGHT=$GITHUB_WORKSPACE/tools/release-browser/node_modules/playwright" >> "$GITHUB_ENV"
+          echo "TORN_BROWSER=$(node -e "process.stdout.write(require('./tools/release-browser/node_modules/playwright').chromium.executablePath())")" >> "$GITHUB_ENV"
+      - name: Prepare and verify managed releases
+        run: node tools/release-userscripts.cjs --prepare
+
+  publish:
+    needs: verify
+    if: >-
+      github.repository == 'iiSatomi/torn-scripts' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # No write credential is available in the PR verification job above.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Check allowlisted files for secrets before executing builds
+        run: node tools/check-managed-secrets.cjs
+      - name: Check that the verified commit is still main
+        id: head
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          remote_sha=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$remote_sha" = "$EXPECTED_SHA" ]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::notice::Main advanced; the newer main run will publish its verified release.'
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: steps.head.outputs.current == 'true'
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tools/release-browser/package-lock.json
+      - name: Install pinned browser runtime and Chromium
+        if: steps.head.outputs.current == 'true'
+        run: |
+          npm ci --ignore-scripts --prefix tools/release-browser
+          node tools/release-browser/node_modules/playwright/cli.js install --with-deps chromium
+          echo "TORN_PLAYWRIGHT=$GITHUB_WORKSPACE/tools/release-browser/node_modules/playwright" >> "$GITHUB_ENV"
+          echo "TORN_BROWSER=$(node -e "process.stdout.write(require('./tools/release-browser/node_modules/playwright').chromium.executablePath())")" >> "$GITHUB_ENV"
+      - name: Rebuild and verify the trusted main checkout
+        if: steps.head.outputs.current == 'true'
+        run: node tools/release-userscripts.cjs --prepare
+      - name: Commit only the six managed release files
+        if: steps.head.outputs.current == 'true'
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          remote_sha=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$remote_sha" != "$EXPECTED_SHA" ]; then
+            echo '::notice::Main advanced during checks; publication deferred to its newer run.'
+            exit 0
+          fi
+          files=(
+            script-hub/release.json
+            lib/war-payout-release.json
+            script-hub/dist/Torn_Script_Hub.user.js
+            script-hub/dist/Torn_Script_Hub.meta.js
+            Torn_War_Payout_Calculator.user.js
+            Torn_War_Payout_Calculator.meta.js
+          )
+          git add -- "${files[@]}"
+          if git diff --cached --quiet; then
+            echo 'No managed payload changed.'
+            exit 0
+          fi
+          while IFS= read -r file; do
+            permitted=false
+            for allowed in "${files[@]}"; do
+              if [ "$file" = "$allowed" ]; then permitted=true; break; fi
+            done
+            if [ "$permitted" != true ]; then
+              echo '::error::Unexpected staged file; publication stopped.'
+              exit 1
+            fi
+          done < <(git diff --cached --name-only)
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Release verified Hub and payout userscripts'
+          # A race is rejected by normal fast-forward push rules. Never force.
+          # The built-in token does not trigger a recursive workflow run.
+          git push origin HEAD:refs/heads/main

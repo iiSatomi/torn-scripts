@@ -1,0 +1,9 @@
+{
+  "name": "torn-managed-userscript-checks",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned browser runtime for managed Hub and payout release checks",
+  "dependencies": {
+    "playwright": "1.62.1"
+  }
+}
