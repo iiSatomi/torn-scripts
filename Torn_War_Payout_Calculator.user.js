@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.5.2
+// @version      1.5.3
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
 // @description  Standalone Script Hub calculator: enemy-only war payouts and cache-based per-hit estimates.
@@ -31,7 +31,7 @@
 (function () {
 'use strict';
 if (window.top !== window.self) return;
-const WAR_PAYOUT_RELEASE_VERSION = "1.5.2";
+const WAR_PAYOUT_RELEASE_VERSION = "1.5.3";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -280,7 +280,7 @@ function createTornScriptUI(options = {}) {
   let themeQueued = false, nextTask = 0;
   const initial = { x: 24, y: 40, width: 760, height: 540 };
   let rect = { ...initial }, previousRect = null;
-  let booting = true, writingLayout = false, persistQueued = false, pendingLayout = null;
+  let booting = true, visibilityQueued = false, writingLayout = false, persistQueued = false, pendingLayout = null;
   let layoutLoading = floating && typeof options.readLayout === 'function';
   const editedGeometry = new Set(), editedSelection = new Set();
   let currentProfile = profileName();
@@ -385,6 +385,12 @@ function createTornScriptUI(options = {}) {
 
   function active() { return !destroyed && shown && !minimized && !collapsed && pageActive && doc.visibilityState !== 'hidden' && pdaActive; }
   function visibility() {
+    // Consumers may still be moving their content into the returned shell.
+    // Initial notifications must run after construction and caller assignment.
+    if(booting){
+      if(!visibilityQueued){visibilityQueued=true;Promise.resolve().then(()=>{visibilityQueued=false;if(!destroyed)visibility();});}
+      return;
+    }
     queuePersist();
     const value = active();
     if (value === lastActive) return;
@@ -1186,6 +1192,9 @@ function getHubPlatformEnvironment() {
   if(typeof GM_deleteValue==='function')env.GM_deleteValue=GM_deleteValue;
   if(typeof GM!=='undefined')env.GM=GM;
   for(const name of ['PDA_storage','flutter_inappwebview','__PDA_platformReadyPromise','PDA_getTabState','PDA_httpGet','__tornpda'])if(globalThis[name])env[name]=globalThis[name];
+  // PDA binds this native store inside the script's private outer closure.
+  // Prefer that namespace over any unrelated page-global value.
+  if(typeof PDA_storage!=='undefined'&&PDA_storage)env.PDA_storage=PDA_storage;
   return env;
 }
 
@@ -2277,7 +2286,7 @@ function createWarPayoutNativeCreditAdapter({doc,win,awake}) {
       if(cents(native.input.value)!==baseline||native.hidden&&cents(native.hidden.value)!==baseline)return {ready:false,reason:'The native balance field has an unfinished edit.'};
       if(!Number.isSafeInteger(entry.amount)||entry.amount<=0)return {ready:false,reason:'Credit amount must be a positive whole-dollar payout.'};
       const target=baseline+BigInt(entry.amount)*100n;
-      if(target>LIMIT||target<-LIMIT)return {ready:false,reason:'This payout would exceed Torn’s native balance limit.'};
+      if(target>LIMIT||target<-LIMIT)return {ready:false,reason:'This payout would exceed Torn\u2019s native balance limit.'};
       return {ready:true,reason:'Uses the native inline balance editor; each click saves one reviewed member amount.'};
     }catch(_){return {ready:false,reason:'Native balance format is unsupported. Review it in Torn before crediting.'};}
   }
@@ -2343,10 +2352,10 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
   const money=value=>'$'+Number(value).toLocaleString('en-US');
   const el=(tag,text)=>{const value=doc.createElement(tag);if(text!==undefined)value.textContent=text;return value;};
   const panel=el('div');panel.id='twpc-credit-panel';panel.className='twpc-content';panel.hidden=true;
-  panel.innerHTML=`<section><p>One click credits one member’s faction balance.</p><p id="twpc-credit-note" role="status"></p></section>
+  panel.innerHTML=`<section><p>One click credits one member\u2019s faction balance.</p><p id="twpc-credit-note" role="status"></p></section>
   <section><label class="twpc-checkbox"><input id="twpc-credit-reviewed" type="checkbox">I checked the amounts and the available-log draft.</label><div class="twpc-actions"><button id="twpc-credit-lock" class="twpc-primary">Lock payouts</button></div></section>
   <section><p id="twpc-credit-summary" aria-live="polite"></p><button id="twpc-credit-next" class="twpc-primary" disabled>Credit next member</button><div class="twpc-table-scroll" style="margin-top:8px"><table id="twpc-credit-members"><thead><tr><th>Member</th><th>War hits</th><th>Enemy losses</th><th>Credit</th><th>Status</th><th>Action</th></tr></thead><tbody></tbody></table></div></section>
-  <details id="twpc-credit-recovery"><summary>Saved runs / recovery</summary><label for="twpc-credit-saved">Saved payout run<select id="twpc-credit-saved"><option value="">No saved runs</option></select></label><p id="twpc-credit-run"></p><div class="twpc-actions"><button id="twpc-credit-own">Reload saved runs</button><button id="twpc-credit-export" disabled>Export ledger</button></div><p>Only ended wars with actual profit can be locked. Amounts stay fixed. If a credit needs review, check Torn’s balance/history before marking it credited or unpaid. Never retry an uncertain credit without checking.</p></details>`;
+  <details id="twpc-credit-recovery"><summary>Saved runs / recovery</summary><label for="twpc-credit-saved">Saved payout run<select id="twpc-credit-saved"><option value="">No saved runs</option></select></label><p id="twpc-credit-run"></p><div class="twpc-actions"><button id="twpc-credit-own">Reload saved runs</button><button id="twpc-credit-export" disabled>Export ledger</button></div><p>Only ended wars with actual profit can be locked. Amounts stay fixed. If a credit needs review, check Torn\u2019s balance/history before marking it credited or unpaid. Never retry an uncertain credit without checking.</p></details>`;
   dialog.append(panel);
   const find=name=>panel.querySelector('#twpc-credit-'+name);
   function note(message){find('note').textContent=message;}
@@ -2375,7 +2384,7 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
     find('next').textContent=run.busy&&creditingEntry?`Crediting ${creditingEntry.name} — wait for confirmation`:run.blocked&&!run.busy?'Review the uncertain credit first':next?`Credit next: ${next.name} [${next.id}] — ${money(next.amount)}`:pending.length?'No eligible pending member on this page':'No pending member credits';
     find('next').disabled=!next||!!run.busy||!!run.blocked||!available(run,next);
     const inspection=nativeAdapter.inspect(run.scope,next);
-    if(owner&&active)note(run.busy?'A payout operation is in progress. Wait for its result.':run.blocked?'A credit result needs review. Check Torn’s balance/history and reconcile it before continuing.':inspection.reason||'Ready for one member credit per click.');
+    if(owner&&active)note(run.busy?'A payout operation is in progress. Wait for its result.':run.blocked?'A credit result needs review. Check Torn\u2019s balance/history and reconcile it before continuing.':inspection.reason||'Ready for one member credit per click.');
     for(const entry of entries){
       const row=el('tr');row.dataset.status=entry.status;for(const value of [`${entry.name} [${entry.id}]`,entry.hits??entry.counts?.hits??0,entry.losses??entry.counts?.losses??0,money(entry.amount),statuses[entry.status]||entry.status])row.append(el('td',String(value)));
       const cell=el('td');const disabled=!owner||!active||!!run.busy;
@@ -2422,7 +2431,7 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
     active=false;ownerGeneration++;owner=false;
     clearExport();
     const stopped=controller?.stop();
-    Promise.resolve(stopped).catch(()=>note('A stopped credit could not be saved. Review Torn’s balance/history before continuing.')).finally(()=>{releaseOwner?.();});
+    Promise.resolve(stopped).catch(()=>note('A stopped credit could not be saved. Review Torn\u2019s balance/history before continuing.')).finally(()=>{releaseOwner?.();});
     render();
   }
   function show(){active=true;panel.hidden=false;render();acquire();}
@@ -2597,7 +2606,7 @@ function installWarPayoutCalculator() {
   function connection() {
     if ($('key-state')) $('key-state').textContent=sharedKey?'Approved Hub Torn key available.':personalKey?'Personal fallback configured.':'No key configured. Use Hub API Keys or enter a personal fallback.';
     if ($('remember-key')) $('remember-key').disabled=!privateStore.eligible;
-    if ($('storage-note')) $('storage-note').textContent=privateStore.eligible?'Saved personal keys use this script’s manager/native storage.':'Private persistent key storage is unavailable here. A personal key can be used for this page only.';
+    if ($('storage-note')) $('storage-note').textContent=privateStore.eligible?'Saved personal keys use this script\u2019s manager/native storage.':'Private persistent key storage is unavailable here. A personal key can be used for this page only.';
   }
   function readRates() { return Object.fromEntries(metrics.map(metric=>[metric,number('rate-'+metric)])); }
   function cacheInput() {
@@ -2635,7 +2644,7 @@ function installWarPayoutCalculator() {
       $('cache-state').textContent=snapshot?`${snapshot.live?'Live snapshot':reportSource}${snapshot.savedAt?' · '+new Date(snapshot.savedAt).toLocaleString():''}`:'';
       $('cache-state').classList.toggle('twpc-live',!!snapshot?.live);
     }
-    if (!snapshot) { if($('war-counts'))$('war-counts').textContent='War details';$('coverage').textContent='Load a war to calculate each player’s payout. Planning estimates can use expected counts.'; return; }
+    if (!snapshot) { if($('war-counts'))$('war-counts').textContent='War details';$('coverage').textContent='Load a war to calculate each player\u2019s payout. Planning estimates can use expected counts.'; return; }
     const totals=snapshot.totals;
     if($('war-counts'))$('war-counts').textContent=`${totals.hits} hits · ${totals.losses} losses · ${snapshot.rows.length} ${snapshot.rows.length===1?'player':'players'}`;
     $('coverage').textContent=`War #${snapshot.scope.warId}: ${totals.hits} war hits · ${totals.losses} losses to enemy · ${snapshot.scanned} attacks checked across ${snapshot.pages} pages. ${snapshot.live?'Live war: counts so far. ':''}${snapshot.excluded} outside/nonpaying attacks excluded, including ${snapshot.unattributed||0} unattributed and ${snapshot.unknownResults||0} unknown outcomes. Draft from available API logs; completeness is unverified.`;
@@ -2679,7 +2688,7 @@ function installWarPayoutCalculator() {
       $('balance-label').textContent=result.leftover<0?'Funding shortfall':'Leftover';$('balance').textContent=money(Math.abs(result.leftover));$('balance').classList.toggle('twpc-warning',result.leftover<0);
       renderRows(result,rates);
       const planning=rough&&$('count-source').value==='expected';
-      $('table-note').textContent=planning?'Table uses loaded player counts and the chosen rates. Expected totals are for planning; switch to loaded counts to export player payouts.':rough?'Estimated values and the chosen fixed rates; unsold caches are not actual profit.':'Payouts use the chosen fixed rates. A shortfall does not change anyone’s rate.';
+      $('table-note').textContent=planning?'Table uses loaded player counts and the chosen rates. Expected totals are for planning; switch to loaded counts to export player payouts.':rough?'Estimated values and the chosen fixed rates; unsold caches are not actual profit.':'Payouts use the chosen fixed rates. A shortfall does not change anyone\u2019s rate.';
       current={result,context:{reportStatus:'Draft — API log completeness unverified',warId:snapshot?.scope.warId||'',opponent:snapshot?.opponentName||'',start:snapshot?.scope.start||'',end:snapshot?.scope.end||'',mode:rough?'Cache estimate':'Actual profit',coverage:snapshot?.coverage||'Not loaded',coverageStatus:snapshot?.coverageStatus||'not-loaded',live:!!snapshot?.live,unattributed:snapshot?.unattributed||0,unknownResults:snapshot?.unknownResults||0,cutMode,cutValue,countSource:rough?$('count-source').value:'loaded',...(rough?cacheInput():{})}};
       const canExport=!!snapshot&&!planning;
       $('copy').disabled=!canExport;$('csv').disabled=!canExport;
@@ -2785,9 +2794,9 @@ function installWarPayoutCalculator() {
       if(saved){showReport(saved,'Cached');status(saved.live?'Saved live preview. Refresh to scan for updated counts.':'');return;}
       let selected=war;
       {
-        status('Checking the war’s current status…');
+        status('Checking the war\u2019s current status…');
         const refreshed=await client.listWars(signal);
-        if(refreshed.factionId!==war.factionId)throw new Error('This API key belongs to a different faction. Use the saved war’s faction key to Refresh. Saved counts were kept.');
+        if(refreshed.factionId!==war.factionId)throw new Error('This API key belongs to a different faction. Use the saved war\u2019s faction key to Refresh. Saved counts were kept.');
         const latest=refreshed.wars.find(item=>item.warId===war.warId);
         if(war.end===0&&!latest)throw new Error('Selected war details changed. Sync wars and select it again.');
         if(latest&&(latest.factionId!==war.factionId||latest.opponentId!==war.opponentId||latest.start!==war.start||(war.end&&latest.end!==war.end)))throw new Error('Selected war details changed. Sync wars and select it again.');

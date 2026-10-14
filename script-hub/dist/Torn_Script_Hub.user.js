@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Script Hub
 // @namespace    isatomi.torn.script-hub
-// @version      1.4.4
+// @version      1.4.5
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.
@@ -1529,6 +1529,9 @@ function getHubPlatformEnvironment() {
   if(typeof GM_deleteValue==='function')env.GM_deleteValue=GM_deleteValue;
   if(typeof GM!=='undefined')env.GM=GM;
   for(const name of ['PDA_storage','flutter_inappwebview','__PDA_platformReadyPromise','PDA_getTabState','PDA_httpGet','__tornpda'])if(globalThis[name])env[name]=globalThis[name];
+  // PDA binds this native store inside the script's private outer closure.
+  // Prefer that namespace over any unrelated page-global value.
+  if(typeof PDA_storage!=='undefined'&&PDA_storage)env.PDA_storage=PDA_storage;
   return env;
 }
 
@@ -1733,7 +1736,7 @@ function createHubSettingsController(config) {
   }
   async function openAppearance(id,force=false){
     if(!force&&!allowLeave(()=>openAppearance(id,true)))return;
-    const entry=registry.get(id);if(!entry?.active){message('Open this script’s page before changing its appearance.');return;}
+    const entry=registry.get(id);if(!entry?.active){message('Open this script\u2019s page before changing its appearance.');return;}
     selected=id;showSurface('settings');const token=screen();panel.append(button('‹ '+entry.name+' settings','tsh-back',()=>openScript(id)),heading(entry,'Appearance'));message('Loading appearance…');
     try{
       const state=await rpc(entry,'ui-appearance','read');if(token!==generation||!started)return;
@@ -1899,7 +1902,7 @@ function createHubSettingsController(config) {
     vaultReady=ready;
     if(!ready){
       clearNewKeys();for(const control of panel.querySelectorAll('input,button'))control.disabled=true;
-      message('Key storage is unavailable. Reload Torn to retry, or use the scripts’ own key settings.');
+      message('Key storage is unavailable. Reload Torn to retry, or use the scripts\u2019 own key settings.');
     }else message(text);
     return ready;
   }
@@ -1908,7 +1911,7 @@ function createHubSettingsController(config) {
     const token=screen();panel.classList.add('tsh-key-view');
     panel.append(element('h3','','Shared API keys'),element('p','tsh-subtitle','Configure a key once, then enable access for the scripts you trust. Keys are never included in preference exports.'));
     await refreshVault();const providers=vault?await vault.status():[];if(token!==generation||!started)return;
-    if(!vaultReady)panel.append(element('p','tsh-key-unavailable','Key sharing is unavailable in this environment. Use the scripts’ own key settings.'));
+    if(!vaultReady)panel.append(element('p','tsh-key-unavailable','Key sharing is unavailable in this environment. Use the scripts\u2019 own key settings.'));
     const records=[...new Set(['torn','tornstats','ffscouter',...providers.map(record=>record.id)])].map(id=>providers.find(record=>record.id===id)||{id,configured:false,permissions:[]});
     for(const provider of records.filter(item=>item.id!=='script-settings')){
       const section=element('section','tsh-key-provider');section.append(element('h4','',({torn:'Torn',tornstats:'TornStats',ffscouter:'FFScouter'})[provider.id]||provider.id));
@@ -2207,7 +2210,7 @@ function render() {
   }
   if (!visibleEntries.length) {
     const empty = document.createElement('p'); empty.className = 'tsh-empty';
-    empty.textContent = registry.entries().length ? 'No scripts match your search or category.' : 'Your script menus will appear here as connected scripts load. Visit each script’s page once to add its shortcut.';
+    empty.textContent = registry.entries().length ? 'No scripts match your search or category.' : 'Your script menus will appear here as connected scripts load. Visit each script\u2019s page once to add its shortcut.';
     grid.append(empty);
   }
   dialog.querySelector('.tsh-count').textContent = registry.entries().length + ' scripts';
