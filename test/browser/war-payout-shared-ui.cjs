@@ -21,7 +21,7 @@ async function main(){
    window.GM_xmlhttpRequest=options=>{const part=new URL(options.url).pathname.split('/').pop();apiCalls.push(part);const timer=setTimeout(()=>options.onload({status:200,responseText:JSON.stringify(data[part])}),window.slowScan?1000:5);return{abort:()=>clearTimeout(timer)};};
   },fixture);
   await page.evaluate(code=>(0,eval)(code),hub);await page.evaluate(code=>(0,eval)(code),source);
-  const open=async()=>{await page.click('#tsh-launcher');await page.click('[data-script="war-payout-calculator"] .tsh-primary');};
+  const open=async()=>{if(await page.isHidden('#tsh-dialog'))await page.click('#tsh-launcher');await page.click('[data-script="war-payout-calculator"] .tsh-primary');};
   await open();
   assert.equal(await page.locator('#twpc-dialog').getAttribute('data-tsui-kit'),'1','payout adopts the actual shared shell');
   for(const label of ['Lock or unlock position','Reset window position','Minimize window','Maximize or restore window','Close window'])assert.equal(await page.locator('#twpc-dialog').getByLabel(label,{exact:true}).count(),1);
@@ -114,7 +114,7 @@ async function main(){
   await page.waitForSelector('#twpc-war option[value="99"]',{state:'attached',timeout:2000});await page.selectOption('#twpc-war','99');
   await page.waitForFunction(()=>document.getElementById('twpc-coverage').textContent.includes('2 war hits'));
   assert.match(await page.textContent('#twpc-cache-state'),/Cached/,'saved report reopens without a key or scan');assert.deepEqual(await page.evaluate(()=>apiCalls),[]);
-  await page.click('#twpc-close');await page.click('#tsh-launcher');await page.click('[data-hub-view="settings"]');await page.click('[data-settings-script="war-payout-calculator"]');await page.click('.tsh-script-appearance');
+  await page.click('#twpc-close');if(await page.isHidden('#tsh-dialog'))await page.click('#tsh-launcher');await page.click('[data-hub-view="settings"]');await page.click('[data-settings-script="war-payout-calculator"]');await page.click('.tsh-script-appearance');
   await page.uncheck('.tsh-theme-follow input');await page.click('.tsh-theme-layout[data-layout="workbench"]');await page.selectOption('.tsh-theme-mode','light');await page.click('.tsh-theme-save');
   await page.waitForFunction(()=>document.querySelector('.tsh-theme-message').textContent==='Theme saved.');
   assert.equal(await page.locator('#twpc-dialog').getAttribute('data-tsui-layout'),'workbench');

@@ -22,7 +22,7 @@ const html='<html><head></head><body><aside id="sidebar"><div class="status-icon
    window.GM_xmlhttpRequest=o=>{const part=new URL(o.url).pathname.split('/').pop();const timer=setTimeout(()=>o.onload({status:200,responseText:JSON.stringify(data[part])}),10);return{abort:()=>clearTimeout(timer)};};
   },fixture);
   await page.evaluate(code=>(0,eval)(code),hub);await page.evaluate(code=>(0,eval)(code),source);
-  await page.waitForSelector('#tsh-launcher');await page.click('#tsh-launcher');await page.click('[data-script="war-payout-calculator"] .tsh-primary');
+  await page.waitForSelector('#tsh-launcher');if(await page.isHidden('#tsh-dialog'))await page.click('#tsh-launcher');await page.click('[data-script="war-payout-calculator"] .tsh-primary');
   await page.click('#twpc-settings-toggle');await page.type('#twpc-key','TESTTESTTESTTEST');await page.click('#twpc-use-key');await page.click('#twpc-tab-calculator');
   await page.click('#twpc-list-wars');await page.waitForSelector('#twpc-war option[value="99"]',{state:'attached'});await page.selectOption('#twpc-war','99');await page.click('#twpc-load');
   await page.waitForFunction(()=>document.getElementById('twpc-coverage').textContent.includes('2 war hits'));
@@ -53,7 +53,7 @@ const html='<html><head></head><body><aside id="sidebar"><div class="status-icon
     input.addEventListener('input',()=>{model=input.value;hidden.value=model;});button.addEventListener('click',()=>{if(button.getAttribute('aria-label')==='Edit balance'){editor.firstChild.textContent='';button.setAttribute('aria-label','Save balance');return;}document.body.dataset.nativeSaves=String(Number(document.body.dataset.nativeSaves||0)+1);button.disabled=true;setTimeout(()=>{depositor.balance=Number(model);editor.firstChild.textContent='$'+model;button.setAttribute('aria-label','Edit balance');button.disabled=false;},20);});}
    location.hash='/tab=controls';
   });
-  await page.waitForFunction(()=>document.getElementById('twpc-dialog').hidden);await page.click('#tsh-launcher');await page.click('[data-script="war-payout-calculator"] .tsh-primary');await page.click('#twpc-tab-credits');
+  await page.waitForFunction(()=>document.getElementById('twpc-dialog').hidden);if(await page.isHidden('#tsh-dialog'))await page.click('#tsh-launcher');await page.click('[data-script="war-payout-calculator"] .tsh-primary');await page.click('#twpc-tab-credits');
   await page.waitForFunction(()=>!document.getElementById('twpc-credit-next').disabled);await page.click('#twpc-credit-next');await page.waitForFunction(()=>document.getElementById('twpc-credit-summary').textContent.includes('1/2'));
   assert.equal(await page.$eval('body',e=>e.dataset.nativeSaves),'1','full bundle saves one member for one click');
   assert.equal(await page.$eval('[class*=editBalanceWrap]',e=>e.firstChild.textContent),'$110.25','uses locked $100 and preserves native balance');

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
 const release = require('../lib/war-payout-release.json');
-const modules = ['script-hub/src/script-hub-theme.cjs','script-hub/src/script-hub-theme-client.cjs','script-hub/src/script-hub-ui-kit.cjs','script-hub/src/script-hub-appearance-adapter.cjs','script-hub/src/script-hub-credentials.cjs', 'script-hub/src/script-hub-platform.cjs', 'script-hub/src/script-hub-adapter.cjs', 'lib/war-payout-domain.cjs', 'lib/war-payout-api.cjs', 'lib/war-payout-cache.cjs', 'lib/war-payout-credits.cjs', 'lib/war-payout-native.js', 'lib/war-payout-credit-ui.js', 'lib/war-payout-shell.js', 'lib/war-payout-ui.js'];
+const modules = ['script-hub/src/script-hub-theme.cjs','script-hub/src/script-hub-theme-client.cjs','script-hub/src/script-hub-window-stack.cjs','script-hub/src/script-hub-theme-art.cjs','script-hub/src/script-hub-ui-kit.cjs','script-hub/src/script-hub-appearance-adapter.cjs','script-hub/src/script-hub-credentials.cjs', 'script-hub/src/script-hub-platform.cjs', 'script-hub/src/script-hub-adapter.cjs', 'lib/war-payout-domain.cjs', 'lib/war-payout-api.cjs', 'lib/war-payout-cache.cjs', 'lib/war-payout-credits.cjs', 'lib/war-payout-native.js', 'lib/war-payout-credit-ui.js', 'lib/war-payout-shell.js', 'lib/war-payout-ui.js'];
 const bundle = modules.map(file => fs.readFileSync(path.join(root, file), 'utf8')
   .replace(/^.*require\(['"]\.\/war-payout-domain\.cjs['"]\).*\r?\n/gm, '')
   .replace(/^module\.exports[^\n]*$/gm, '').trim()).join('\n\n');

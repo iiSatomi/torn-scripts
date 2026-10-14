@@ -74,6 +74,7 @@ function createScriptUiAppearanceAdapter(options) {
     let record=roots.get(node);if(!record){record={styles:new Map(),attributes:new Map(),hadClass:node.classList.contains('tsui-legacy-surface')};roots.set(node,record);}
     const styles=new Map(),attributes=new Map();
     const resolved=apply({style:{setProperty:(key,value)=>styles.set(key,value)},setAttribute:(key,value)=>attributes.set(key,value)},theme,win.matchMedia?.('(prefers-color-scheme: dark)').matches===true);
+    attributes.set('data-tsui-owner',id);
     for(const [key,role]of Object.entries(aliases))styles.set(key,resolved.colors[role]);
     for(const [key,value]of styles){
       if(!record.styles.has(key))record.styles.set(key,{value:node.style.getPropertyValue(key),priority:node.style.getPropertyPriority(key)});

@@ -23,6 +23,9 @@ try {
 } catch (_) {}
 
 const ICONS = {
+  settings: '<path d="M9 3h6l1 4 4 1v7l-4 1-1 5H9l-1-5-4-1V8l4-1z"/><circle cx="12" cy="12" r="3"/>',
+  themes: '<path d="M12 3a9 9 0 1 0 0 18h2a2 2 0 0 0 0-4h-1a2 2 0 0 1 0-4h4a4 4 0 0 0 4-4c0-4-5-6-9-6z"/><path d="M7 9h.01M11 6h.01M16 7h.01M6 14h.01"/>',
+  keys: '<circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-5-5 3-3m-1 5 3-3"/>',
   scripts: '<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/>',
   oc: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="M12 2v5m0 10v5M2 12h5m10 0h5"/>',
   gym: '<path d="M7 12h10M3 8v8m4-11v14M17 5v14m4-11v8"/>',
@@ -79,6 +82,7 @@ function openHub() {
   say(''); render();
   settingsController.open();
   windowController.open();
+  focusScriptUiWindow(document,dialog);
   dialog.querySelector('.tsh-close').focus({ preventScroll: true });
   emit('discover', {});
 }
@@ -152,7 +156,7 @@ function launch(id, action, isPending = false) {
   if (!isPending) clearPending();
   if (!entry.active) { navigate(entry, action); return; }
   const request = 'hub-' + Date.now() + '-' + (++requestCounter);
-  actionInFlight = { id, action, request, instance: entry.instance, isPending };
+  actionInFlight = { id, action, request, instance: entry.instance, isPending, windows: new Set(scriptUiFloatingWindows(document)) };
   actionTimer = setTimeout(() => {
     actionInFlight = null; actionTimer = null;
     if (isPending) clearPending();
@@ -197,7 +201,17 @@ function onResult(event) {
   if(!owner?.active||owner.instance!==request.instance){clearTimeout(actionTimer);actionTimer=null;actionInFlight=null;return;}
   if (!['opened', 'not-ready', 'navigate', 'error'].includes(result.status)) return;
   clearTimeout(actionTimer); actionTimer = null; actionInFlight = null;
-  if (result.status === 'opened') { if (request.isPending) clearPending(); closeHub(false); return; }
+  if (result.status === 'opened') {
+    if (request.isPending) clearPending();
+    // Legacy actions focus their own menus. Include the outer fixed backdrop;
+    // raising a child alone cannot escape its parent's stacking context.
+    const focused=scriptUiFloatingOwner(document,document.activeElement);
+    const declared=[...document.querySelectorAll('[data-tsui-owner="'+owner.id+'"]')].map(root=>scriptUiFloatingOwner(document,root)).filter(node=>node&&!node.hidden&&node.getClientRects().length);
+    const target=declared.find(node=>node.contains(document.activeElement))||declared.at(-1)||focused;
+    if(target&&target!==dialog){target.setAttribute('data-tsui-stack-window','1');focusScriptUiWindow(document,target);}
+    else {const opened=scriptUiFloatingWindows(document).filter(node=>node!==dialog&&!request.windows.has(node));if(opened.length)focusScriptUiWindow(document,opened.at(-1));}
+    if(!dialog?.hidden)say(owner.name+' opened.'); return;
+  }
   if (result.status === 'navigate' && !request.isPending) { navigate(registry.get(request.id), request.action); return; }
   if (['not-ready', 'navigate'].includes(result.status) && request.isPending && pendingAttempts < 20 && pending?.expires > Date.now()) {
     retryTimer = setTimeout(() => { retryTimer = null; resumePending(); }, 500);
@@ -295,12 +309,15 @@ function mount() {
     const count = document.createElement('span'); count.className = 'tsh-count';
     const close = button('×', 'tsh-close', () => closeHub()); close.setAttribute('aria-label', 'Close script menus');
     header.append(title, count, close);
+    appendScriptUiHeaderArt(document,header);
     const intro = document.createElement('p'); intro.className = 'tsh-intro'; intro.textContent = 'All your connected tools, in one place.';
     grid = document.createElement('div'); grid.className = 'tsh-grid';
     actionList = document.createElement('div'); actionList.className = 'tsh-actions'; actionList.id = 'tsh-actions'; actionList.hidden = true;
     status = document.createElement('p'); status.className = 'tsh-status'; status.setAttribute('role', 'status');
     dialog.append(header, intro, grid, actionList, status); document.body.append(dialog);
     settingsController.mount(dialog);
+    dialog.addEventListener('pointerdown',()=>focusScriptUiWindow(document,dialog));
+    dialog.addEventListener('focusin',()=>focusScriptUiWindow(document,dialog));
   }
   windowController.mount(dialog);
   placeLauncher();
@@ -318,8 +335,9 @@ function observe() {
   observer.observe(document.documentElement, { childList: true, subtree: true });
 }
 function onKey(event) {
-  if (dialog?.hidden) return;
+  if (dialog?.hidden || event.defaultPrevented) return;
   if (event.key === 'Escape' && windowController.cancelInteraction()) { event.preventDefault(); return; }
+  if (scriptUiFloatingWindows(document).at(-1) !== dialog) return;
   // The hub can stay open while Torn controls own keyboard focus.
   if (!dialog.contains(event.target) && !launcher?.contains(event.target)) return;
   if (event.key === 'Escape') { event.preventDefault(); if(settingsController.cancelPrompt())return;closeHub(); }
@@ -330,6 +348,11 @@ function onKey(event) {
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   }
+}
+function onWindowFocus(event) {
+  if(!awake||!dialog||dialog.hidden)return;
+  const owner=scriptUiFloatingWindows(document).find(node=>node.contains(event.target));
+  if(owner)focusScriptUiWindow(document,owner);
 }
 function onRoute() { closeHub(false,true); emit('discover', {}); scheduleMount(); }
 function updateActivity() {
@@ -359,6 +382,8 @@ function start() {
   document.addEventListener(HUB_PREFIX + 'unregister', onUnregister);
   document.addEventListener(HUB_PREFIX + 'result', onResult);
   document.addEventListener('keydown', onKey);
+  document.addEventListener('pointerdown', onWindowFocus);
+  document.addEventListener('focusin', onWindowFocus);
   document.addEventListener('visibilitychange', updateActivity);
   window.addEventListener('hashchange', onRoute);
   window.addEventListener('popstate', onRoute);
@@ -377,6 +402,8 @@ function stop() {
   document.removeEventListener(HUB_PREFIX + 'unregister', onUnregister);
   document.removeEventListener(HUB_PREFIX + 'result', onResult);
   document.removeEventListener('keydown', onKey);
+  document.removeEventListener('pointerdown', onWindowFocus);
+  document.removeEventListener('focusin', onWindowFocus);
   document.removeEventListener('visibilitychange', updateActivity);
   window.removeEventListener('hashchange', onRoute);
   window.removeEventListener('popstate', onRoute);

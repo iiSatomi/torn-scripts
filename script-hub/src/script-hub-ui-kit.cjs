@@ -124,6 +124,7 @@ function createTornScriptUI(options = {}) {
   title.title = 'Drag to move. Focus and use arrow keys to move; Shift + arrows resize. Escape cancels a drag.';
   const controls = node('div', 'tsui-controls');
   header.append(title, controls);
+  if(typeof appendScriptUiHeaderArt==='function')appendScriptUiHeaderArt(doc,header);
   const body = node('div', 'tsui-body');
   const nav = node('nav', 'tsui-nav'); nav.setAttribute('aria-label', 'Tool pages');
   const content = node('div', 'tsui-content');
@@ -175,6 +176,9 @@ function createTornScriptUI(options = {}) {
   }
   function focus() {
     if (destroyed) return;
+    if(typeof focusScriptUiWindow==='function'){
+      const count=focusScriptUiWindow(doc,root);launcherTray.style.zIndex=String(2147481001+count*2);stackLaunchers();return;
+    }
     const windows = floatingRoots();
     const index = windows.indexOf(root);
     if (index !== -1) { windows.splice(index, 1); windows.push(root); }
@@ -183,6 +187,7 @@ function createTornScriptUI(options = {}) {
     stackLaunchers();
   }
   function floatingRoots() {
+    if(typeof scriptUiFloatingWindows==='function')return scriptUiFloatingWindows(doc);
     return Array.from(doc.querySelectorAll('[data-tsui-kit="1"][data-tsui-surface="floating"]'))
       .filter(entry => !entry.hidden && entry.isConnected && entry.getClientRects().length)
       .sort((left, right) => {
@@ -433,13 +438,13 @@ function createTornScriptUI(options = {}) {
 }
 
 function scriptUiKitCss() {
-  return `
+  return (typeof scriptUiIdentityCss==='function'?scriptUiIdentityCss('.tsui-root'):'')+`
 .tsui-root,.tsui-launcher-host{font:calc(14px * var(--tsui-font-scale,1))/1.45 system-ui,sans-serif;color:var(--tsui-text,#e5eaf2);color-scheme:light;box-sizing:border-box}.tsui-root[data-tsui-mode=dark],.tsui-launcher-host[data-tsui-mode=dark]{color-scheme:dark}
 .tsui-root *,.tsui-launcher-host *{box-sizing:border-box}.tsui-root[hidden],.tsui-root [hidden],.tsui-launchers[hidden],.tsui-launcher-host[hidden],.tsui-launcher-host [hidden]{display:none!important}
 .tsui-root{background:var(--tsui-background,#171d28);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,12px);overflow:hidden;min-width:0;display:flex;flex-direction:column;isolation:isolate}
 .tsui-root[data-tsui-surface=floating]{position:fixed;box-shadow:0 18px 60px #0007;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
 .tsui-root[data-tsui-surface=embedded]{position:relative;width:100%;min-height:220px;max-height:80dvh}
-.tsui-header{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:var(--tsui-space,10px);background:var(--tsui-raised,#242d3c);border-bottom:1px solid var(--tsui-border,#506076);flex:none}
+.tsui-header{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:var(--tsui-space,10px);background:var(--tsui-raised,#242d3c);border-bottom:1px solid var(--tsui-border,#506076);flex:none}
 .tsui-title{font-weight:750;flex:1;min-width:90px;cursor:move;touch-action:none;padding:6px}.tsui-controls{display:flex;flex-wrap:wrap;gap:4px}
 .tsui-root button,.tsui-launcher{font:inherit;cursor:pointer;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,6px);padding:6px 10px;min-height:var(--tsui-control-height,34px)}
 .tsui-root button:hover{background:var(--tsui-selection,#38455b)}.tsui-root :focus-visible,.tsui-launcher:focus-visible{outline:2px solid var(--tsui-focus,#8fbcff);outline-offset:2px}
@@ -457,7 +462,9 @@ function scriptUiKitCss() {
 .tsui-root[data-tsui-layout=workbench] .tsui-body,.tsui-root[data-tsui-layout=torn] .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto}.tsui-root[data-tsui-layout=workbench] .tsui-content,.tsui-root[data-tsui-layout=torn] .tsui-content{grid-column:1}
 .tsui-root[data-tsui-layout=workbench] .tsui-nav,.tsui-root[data-tsui-layout=torn] .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);grid-row:auto}
 .tsui-root[data-tsui-layout=workbench] .tsui-nav{padding-bottom:0;gap:2px}.tsui-root[data-tsui-layout=workbench] .tsui-nav button{border-bottom-left-radius:0;border-bottom-right-radius:0}.tsui-root[data-tsui-layout=workbench] .tsui-settings,.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:1}
-.tsui-root[data-tsui-layout=torn]{border-radius:3px}.tsui-root[data-tsui-layout=torn] .tsui-header{padding:5px 8px}.tsui-root[data-tsui-layout=torn] .tsui-nav{padding:5px;gap:4px}.tsui-root[data-tsui-layout=torn] .tsui-content{padding:10px}.tsui-root[data-tsui-layout=torn] .tsui-settings,.tsui-root[data-tsui-layout=torn] .tsui-inspector{grid-column:1}
+.tsui-root[data-tsui-layout=frostbite] .tsui-header{background:linear-gradient(115deg,var(--tsui-surface),var(--tsui-raised));min-height:70px;padding:12px 16px}.tsui-root[data-tsui-layout=frostbite] .tsui-nav{background:var(--tsui-background)}.tsui-root[data-tsui-layout=frostbite] .tsui-nav button[aria-current=page]{box-shadow:inset 3px 0 0 var(--tsui-accent)}
+.tsui-root[data-tsui-layout=workbench] .tsui-header{background:var(--tsui-background);padding:8px 12px}.tsui-root[data-tsui-layout=workbench] .tsui-title{font-family:Consolas,"SFMono-Regular",monospace;font-size:.95em}.tsui-root[data-tsui-layout=workbench] .tsui-nav{background:var(--tsui-background);gap:0;padding-top:0}.tsui-root[data-tsui-layout=workbench] .tsui-nav button{border-top:2px solid var(--tsui-background);border-bottom:0;color:var(--tsui-muted);background:var(--tsui-background);padding:9px 14px}.tsui-root[data-tsui-layout=workbench] .tsui-nav button[aria-current=page]{border-top-color:var(--tsui-accent);background:var(--tsui-surface);color:var(--tsui-text)}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{background:var(--tsui-background)}
+.tsui-root[data-tsui-layout=torn]{box-shadow:inset 0 0 0 2px var(--tsui-surface),0 18px 60px #0007}.tsui-root[data-tsui-layout=torn] .tsui-header{padding:5px 8px;background:linear-gradient(var(--tsui-raised),var(--tsui-surface));border-top:2px solid var(--tsui-accent);box-shadow:inset 0 1px 0 var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] .tsui-title{font-family:Arial,Helvetica,sans-serif;font-size:.92em;letter-spacing:.025em;text-transform:uppercase}.tsui-root[data-tsui-layout=torn] .tsui-nav{padding:5px;gap:4px;background:var(--tsui-raised);box-shadow:inset 0 1px 0 var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] .tsui-nav button{padding:5px 10px;font-size:.9em;font-weight:700}.tsui-root[data-tsui-layout=torn] .tsui-content{padding:10px;background:var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] :is(th,td){padding:6px 8px}.tsui-root[data-tsui-layout=torn] th{background:linear-gradient(var(--tsui-raised),var(--tsui-surface));font-size:.9em}.tsui-root[data-tsui-layout=torn] tbody tr:nth-child(even){background:var(--tsui-raised)}.tsui-root[data-tsui-layout=torn] .tsui-settings,.tsui-root[data-tsui-layout=torn] .tsui-inspector{grid-column:1}
 @media(min-width:850px){.tsui-root[data-tsui-layout=workbench] .tsui-body:has(.tsui-inspector:not(:empty)){grid-template-columns:minmax(0,1fr) 180px}.tsui-root[data-tsui-layout=workbench] .tsui-nav{grid-column:1/-1}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:2;grid-row:2/4;border-left:1px solid var(--tsui-border,#506076)}}
 @media(max-width:600px),(pointer:coarse){.tsui-root button,.tsui-launcher{min-height:44px}.tsui-root input,.tsui-root select,.tsui-root textarea{font-size:16px}.tsui-header{gap:4px;padding:6px}.tsui-controls{width:100%;overflow:auto;flex-wrap:nowrap}.tsui-controls button{flex:1;padding:4px;font-size:12px}.tsui-root .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto auto;align-content:start}.tsui-root .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);padding:6px;grid-row:auto}.tsui-root .tsui-content{padding:10px;grid-column:1;overflow:visible}.tsui-root .tsui-settings,.tsui-root .tsui-inspector{grid-column:1;grid-row:auto}.tsui-resize{display:none}.tsui-title{touch-action:auto;cursor:default}.tsui-task{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.tsui-root *{animation:none!important;transition:none!important}}

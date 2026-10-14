@@ -87,7 +87,7 @@ async function install(page, code, world, native = false) {
       for (const [code, world] of calculatorFirst ? [[source, 'calculator'], [hub, 'hub']] : [[hub, 'hub'], [source, 'calculator']]) await install(page, code, world);
       await page.waitForSelector('#tsh-launcher');
       assert.equal(await page.$eval('body', el => el.dataset.requests || '0'), '0', 'opening page makes no Torn requests');
-      await page.click('#tsh-launcher');
+      if(await page.isHidden('#tsh-dialog'))await page.click('#tsh-launcher');
       await page.click('[data-script="war-payout-calculator"] .tsh-primary');
       await page.waitForSelector('#twpc-dialog[data-tsui-kit="1"]:not([hidden])');
       assert.equal(await page.$eval('#twpc-dialog',e=>e.getBoundingClientRect().width),760,'desktop panel uses shared window geometry');
@@ -166,7 +166,7 @@ async function install(page, code, world, native = false) {
       assert.equal(await page.$eval('#twpc-dialog',e=>e.dataset.tsuiCollapsed),'false','second Escape expands the shared window');
       await page.click('#twpc-close');
       assert.equal(await page.$eval('#twpc-dialog',el=>el.hidden),true,'Close hides the shared window');
-      await page.click('#tsh-launcher');
+      if(await page.isHidden('#tsh-dialog'))await page.click('#tsh-launcher');
       await page.click('[data-script="war-payout-calculator"] .tsh-primary');
       assert.equal(await page.$$eval('#twpc-dialog', els => els.length),1);
       await page.selectOption('#twpc-war','100');
@@ -195,7 +195,7 @@ async function install(page, code, world, native = false) {
       await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
       assert.equal(await page.locator('#twpc-dialog').count(),0,'pagehide destroys the shared window');
       await page.evaluate(()=>window.dispatchEvent(new Event('pageshow')));
-      await page.click('#tsh-launcher');
+      if(await page.isHidden('#tsh-dialog'))await page.click('#tsh-launcher');
       await page.click('[data-script="war-payout-calculator"] .tsh-primary');
       assert.equal(await page.$$eval('#twpc-dialog',els=>els.length),1);
       assert.deepEqual(errors,[]);

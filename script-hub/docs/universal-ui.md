@@ -1,6 +1,6 @@
 # Universal script UI and themes
 
-Implementation: Script Hub 1.4.2, shared UI contract version 1.
+Implementation: Script Hub 1.4.3, shared UI contract version 1.
 
 ## User controls
 
@@ -9,9 +9,18 @@ Background page updates and window remeasurement preserve the editor's scroll
 position. **Keep editing**, including Escape from the discard prompt, returns
 to the last edited control and position without losing the draft or open sections.
 Frostbite, Workbench, and Torn native layouts share components and content slots.
+Frostbite uses bundled crystal icons and restrained mountain artwork in its header.
+Workbench uses editor tabs and an inspector; Torn uses compact game-style title
+bars and script rows. Artwork inherits color roles and requires no remote assets.
 Palettes provide separate light/dark colors. Custom colors cover surfaces, text,
 accents, focus, selection, semantic statuses, and six chart categories. Spacing,
 corner radius, and text scale are separate preferences.
+
+Opening a script keeps the Hub open. Shared floating tools and declared legacy
+floating menus cooperate on window order; interacting with a window brings it
+forward. Fixed modal backdrops move with their menu. Embedded content keeps its
+page placement. Escape applies to the foreground window. Navigation to another
+page still follows the existing route cleanup and pending-menu behavior.
 
 Theme edits are previews until **Save theme**. **Cancel** restores the saved
 appearance. Individual color reset and Reset colors affect the draft. Contrast
@@ -49,6 +58,9 @@ continues to demonstrate typed settings and synthetic secret controls.
 - `src/script-hub-appearance-adapter.cjs`: declared legacy-root color adoption
   and bounded instance-specific settings transport.
 - `src/script-hub-ui-kit.cjs`: reusable window/component factory.
+- `src/script-hub-window-stack.cjs`: DOM-only ordering for shared windows and
+  legacy floating owners; no script data crosses this boundary.
+- `src/script-hub-theme-art.cjs`: bundled decorative vector marks and header art.
 - `src/script-hub-themes-ui.cjs`: theme editor and appearance-only transfer.
 - `src/script-hub-theme-styles.cjs`: Hub-specific layout and component styles.
 

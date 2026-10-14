@@ -395,7 +395,7 @@ function createHubSettingsController(config) {
   function mount(dialog){
     const previous=panel;
     nav=element('div','tsh-hub-nav');nav.setAttribute('role','tablist');
-    for(const [id,label]of [['scripts','Scripts'],['settings','Settings'],...(themeAvailable?[['themes','Themes']]:[]),['keys','API Keys']]){const item=button(label,'tsh-hub-tab',()=>setView(id));item.dataset.hubView=id;item.setAttribute('role','tab');item.setAttribute('aria-selected',String(view===id));nav.append(item);}
+    for(const [id,label]of [['scripts','Scripts'],['settings','Settings'],...(themeAvailable?[['themes','Themes']]:[]),['keys','API Keys']]){const item=button(label,'tsh-hub-tab',()=>setView(id));const mark=icon(id);mark.classList.add('tsh-nav-icon');item.prepend(mark);item.dataset.hubView=id;item.setAttribute('role','tab');item.setAttribute('aria-selected',String(view===id));nav.append(item);}
     dialog.querySelector('.tsh-header').after(nav);
     toolbar=element('div','tsh-toolbar');const search=doc.createElement('input');search.type='search';search.placeholder='Find a script…';search.className='tsh-search';search.setAttribute('aria-label','Search scripts');search.addEventListener('input',()=>config.render());
     const category=doc.createElement('select');category.className='tsh-category';category.setAttribute('aria-label','Filter script category');category.addEventListener('change',()=>config.render());toolbar.append(search,category);nav.after(toolbar);
