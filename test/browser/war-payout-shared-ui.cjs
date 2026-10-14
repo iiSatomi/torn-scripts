@@ -59,7 +59,11 @@ async function main(){
    }
   }
   assert.equal(await page.evaluate(()=>apiCalls.length),callsBeforeThemes,'theme and viewport changes do not fetch data');
+  const desktopGeometry=await page.evaluate(()=>values['twpc-ui-layout-v1'].desktop);
   await page.setViewportSize({width:1920,height:1080});
+  // Chromium may deliver resize after setViewportSize resolves. Wait for the
+  // desktop profile before measuring keyboard movement from its starting rect.
+  await page.waitForFunction(expected=>{const r=document.getElementById('twpc-dialog').getBoundingClientRect();return ['x','y','width','height'].every(key=>r[key]===expected[key]);},desktopGeometry);
   const title=page.locator('#twpc-dialog .tsui-title');await title.focus();
   const before=await page.locator('#twpc-dialog').boundingBox();await page.keyboard.press('ArrowRight');await page.keyboard.press('Shift+ArrowRight');
   const moved=await page.locator('#twpc-dialog').boundingBox();assert.equal(moved.x,before.x+10);assert.equal(moved.width,before.width+10);
