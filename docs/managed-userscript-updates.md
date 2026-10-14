@@ -4,6 +4,19 @@ Publication uses the explicit file allowlist in `tools/managed-publication-files
 
 These two scripts have independent update feeds in `iiSatomi/torn-scripts`.
 
+## Greasy Fork synchronization
+
+Both scripts were imported under the existing `iSatomi` account on October 14, 2026:
+
+- [Torn Script Hub](https://greasyfork.org/en/scripts/600221-torn-script-hub), script ID `600221`, initially version `1.4.1`.
+- [Torn War Payout Calculator](https://greasyfork.org/en/scripts/600222-torn-war-payout-calculator), script ID `600222`, initially version `1.5.1`.
+
+Each listing's Admin → Source Syncing settings use **Automatic**, pointing to the corresponding raw `main` distribution URL in the table below. Both initial imports and saved sync settings were verified. Greasy Fork periodically checks these URLs; no webhook or immediate-sync timing is configured. It imports the verified generated distribution, not internal source modules or local user data. Do not create duplicate listings for later releases.
+
+Greasy Fork replaces `@updateURL` and `@downloadURL` for installs it serves, so those installs update through Greasy Fork. GitHub-installed copies continue to use the GitHub feeds. Updating one does not require installing a duplicate copy from the other source. See [Greasy Fork's metadata rules](https://greasyfork.org/en/help/meta-keys).
+
+## GitHub feeds
+
 | Script | Install/update source | Release state |
 | --- | --- | --- |
 | Script Hub | [Install Hub](https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js) | `script-hub/release.json` |
