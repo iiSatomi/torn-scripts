@@ -32,6 +32,7 @@
     "script-hub/src/script-hub-ui-showcase.cjs",
     "script-hub/src/script-hub-ui.js",
     "script-hub/src/script-hub-window.cjs",
+    "script-hub/test/browser/script-hub-theme-interactions.cjs",
     "script-hub/test/browser/script-hub-themes.cjs",
     "script-hub/test/browser/script-hub-ui-kit.cjs",
     "script-hub/test/script-hub-appearance-adapter.test.cjs",

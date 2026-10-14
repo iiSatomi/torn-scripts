@@ -1,10 +1,13 @@
 # Universal script UI and themes
 
-Implementation: Script Hub 1.4.0, shared UI contract version 1.
+Implementation: Script Hub 1.4.2, shared UI contract version 1.
 
 ## User controls
 
 The Hub **Themes** tab selects layout, palette, and appearance independently.
+Background page updates and window remeasurement preserve the editor's scroll
+position. **Keep editing**, including Escape from the discard prompt, returns
+to the last edited control and position without losing the draft or open sections.
 Frostbite, Workbench, and Torn native layouts share components and content slots.
 Palettes provide separate light/dark colors. Custom colors cover surfaces, text,
 accents, focus, selection, semantic statuses, and six chart categories. Spacing,
@@ -154,13 +157,21 @@ capability-detected, and ignores stale replies after newer events or teardown.
 ## Verification
 
 ```text
+node tools/check-managed-userscripts.cjs --browser
+```
+
+The full local workspace also checks integrations with its other script copies:
+
+```text
 node script-hub/tools/check.cjs --browser
 ```
 
 The current checks include all three theme layouts at 1920x1080, 390x844,
 430x932 and 844x390; save/cancel/import races; per-script inheritance/conflicts;
 native draft preservation; storage failure; cross-bundle window ownership;
-pointer/keyboard gestures; layout persistence; hidden/PDA/BFCache transitions;
+pointer/keyboard gestures; layout persistence; background reflow scroll stability;
+repeated Keep editing/Escape and per-script Back focus restoration;
+hidden/PDA/BFCache transitions;
 and cleanup. These run in actual isolated Brave instances with synthetic page
 fixtures and no Torn API requests. They do not establish actual-device PDA or
 authenticated live-Torn compatibility.

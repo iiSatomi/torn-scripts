@@ -56,6 +56,10 @@ function createHubWindowController({doc,win,getPreferences,onChange}) {
   }
   function reflow(){
     if(!node||node.hidden||gesture)return;
+    // Measuring natural height temporarily expands a resized window. Browsers
+    // clamp its scroll offsets during that measurement, even if the final size
+    // is unchanged (for example when Torn adds an unrelated page element).
+    const scrollTop=node.scrollTop,scrollLeft=node.scrollLeft;
     const profile=profiles()[kind()];
     // Let a default-height window grow with pages, then keep all bounds reachable.
     node.style.height='auto';
@@ -65,6 +69,7 @@ function createHubWindowController({doc,win,getPreferences,onChange}) {
     const openingProfile=sessionOrigin?.name===kind()&&profile.mode!=='fit'?{...profile,mode:'custom',x:sessionOrigin.x,y:sessionOrigin.y}:profile;
     const rect=resolveHubWindowRect(openingProfile,viewport(),{width:bounds.width,height:bounds.height});
     sessionOrigin={name:kind(),x:rect.x,y:rect.y};apply(rect);
+    node.scrollTop=scrollTop;node.scrollLeft=scrollLeft;
   }
   function schedule(){if(frame!==null||!node||node.hidden||gesture)return;frame=win.requestAnimationFrame(()=>{frame=null;reflow();});}
   function saveRect(rect,resized){
