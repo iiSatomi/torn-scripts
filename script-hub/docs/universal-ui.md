@@ -1,8 +1,16 @@
 # Universal script UI and themes
 
-Implementation: Script Hub 1.4.3, shared UI contract version 1.
+Implementation: Script Hub 1.4.4, shared UI contract version 1.
 
 ## User controls
+
+Small screens and touch layouts use a persistent bottom-left floating launcher,
+so a collapsed or offscreen Torn sidebar cannot hide the Hub entry point. Desktop
+screens retain sidebar placement when a control row is available. Launcher
+placement remains a Hub preference.
+If PDA injects before the HTML element exists, Hub startup waits for DOM readiness
+before claiming its singleton or mounting. Normal document-end startup stays
+immediate; repeated early injections still create one Hub.
 
 The Hub **Themes** tab selects layout, palette, and appearance independently.
 Background page updates and window remeasurement preserve the editor's scroll
