@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Script Hub
 // @namespace    isatomi.torn.script-hub
-// @version      1.4.1
+// @version      1.4.2
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.
@@ -138,6 +138,10 @@ function createHubWindowController({doc,win,getPreferences,onChange}) {
   }
   function reflow(){
     if(!node||node.hidden||gesture)return;
+    // Measuring natural height temporarily expands a resized window. Browsers
+    // clamp its scroll offsets during that measurement, even if the final size
+    // is unchanged (for example when Torn adds an unrelated page element).
+    const scrollTop=node.scrollTop,scrollLeft=node.scrollLeft;
     const profile=profiles()[kind()];
     // Let a default-height window grow with pages, then keep all bounds reachable.
     node.style.height='auto';
@@ -147,6 +151,7 @@ function createHubWindowController({doc,win,getPreferences,onChange}) {
     const openingProfile=sessionOrigin?.name===kind()&&profile.mode!=='fit'?{...profile,mode:'custom',x:sessionOrigin.x,y:sessionOrigin.y}:profile;
     const rect=resolveHubWindowRect(openingProfile,viewport(),{width:bounds.width,height:bounds.height});
     sessionOrigin={name:kind(),x:rect.x,y:rect.y};apply(rect);
+    node.scrollTop=scrollTop;node.scrollLeft=scrollLeft;
   }
   function schedule(){if(frame!==null||!node||node.hidden||gesture)return;frame=win.requestAnimationFrame(()=>{frame=null;reflow();});}
   function saveRect(rect,resized){
@@ -1432,6 +1437,7 @@ function createHubSettingsController(config) {
   const pending=new Map(), schemas=new Map();
   let refreshPreferenceBaseline=null,preferenceFrame=null;
   let refreshWork=null;
+  let editorPosition=null;
   const themeAvailable=typeof normalizeScriptUiTheme==='function'&&typeof renderHubThemes==='function';
   const themeKey='torn-script-hub:ui-theme:v1', presetKey='torn-script-hub:ui-presets:v1';
   let appearance=null, appearancePresets=[], themeDirty=false;
@@ -1518,16 +1524,23 @@ function createHubSettingsController(config) {
     const title=dialog.querySelector('#tsh-title');if(title)title.textContent=prefs.title;
     config.onPreferences?.(prefs);
   }
-  function disposeForm(){if(preferenceFrame!==null)win.cancelAnimationFrame(preferenceFrame);preferenceFrame=null;refreshPreferenceBaseline=null;form?.destroy();form=null;currentPage=null;themeDirty=false;applyAppearance();}
+  function disposeForm(){editorPosition=null;if(preferenceFrame!==null)win.cancelAnimationFrame(preferenceFrame);preferenceFrame=null;refreshPreferenceBaseline=null;form?.destroy();form=null;currentPage=null;themeDirty=false;applyAppearance();}
   function hasNewKeys(){return !!panel?.querySelector('.tsh-key-input')&&[...panel.querySelectorAll('.tsh-key-input')].some(input=>input.value);}
   function clearNewKeys(){for(const input of panel?.querySelectorAll('.tsh-key-input')||[])input.value='';}
   function cancelPrompt(){const keep=getDialog()?.querySelector('.tsh-discard-confirm .tsh-keep-editing');if(!keep)return false;keep.click();return true;}
   function allowLeave(next){
     const dialog=getDialog();if(!dialog||dialog.querySelector('.tsh-discard-confirm'))return false;
     if(!form?.isDirty()&&!hasNewKeys())return true;
+    const origin=editorPosition&&panel?.contains(editorPosition.node)?editorPosition:null;
+    const scrollTop=origin?.top??dialog.scrollTop,scrollLeft=origin?.left??dialog.scrollLeft;
     const confirm=element('div','tsh-discard-confirm');confirm.setAttribute('role','alertdialog');confirm.setAttribute('aria-label','Unsaved settings');
     confirm.append(element('p','','Discard your unsaved changes?'));
-    const keep=button('Keep editing','tsh-keep-editing',()=>{confirm.remove();(form?.element.querySelector('input,select,textarea')||panel?.querySelector('.tsh-key-input'))?.focus();});
+    const keep=button('Keep editing','tsh-keep-editing',()=>{
+      confirm.remove();
+      const target=origin?.node?.isConnected?origin.node:(form?.element.querySelector('input,select,textarea')||panel?.querySelector('.tsh-key-input'));
+      target?.focus({preventScroll:true});dialog.scrollTop=scrollTop;dialog.scrollLeft=scrollLeft;
+      editorPosition=target?{node:target,top:dialog.scrollTop,left:dialog.scrollLeft}:null;
+    });
     const discard=button('Discard changes','tsh-discard',()=>{confirm.remove();clearNewKeys();disposeForm();next();});confirm.append(keep,discard);dialog.append(confirm);keep.focus();return false;
   }
   function rpc(entry,page,method,extra={}){
@@ -1815,6 +1828,12 @@ function createHubSettingsController(config) {
     toolbar=element('div','tsh-toolbar');const search=doc.createElement('input');search.type='search';search.placeholder='Find a script…';search.className='tsh-search';search.setAttribute('aria-label','Search scripts');search.addEventListener('input',()=>config.render());
     const category=doc.createElement('select');category.className='tsh-category';category.setAttribute('aria-label','Filter script category');category.addEventListener('change',()=>config.render());toolbar.append(search,category);nav.after(toolbar);
     panel=element('div','tsh-settings-view');panel.id='tsh-settings-view';panel.hidden=view==='scripts';if(previous)panel.append(...previous.childNodes);dialog.append(panel);
+    const rememberEditorPosition=event=>{
+      const target=event.target;
+      if(!target.matches('input,select,textarea,button,summary')||(target.matches('button')&&!form?.element.contains(target)))return;
+      editorPosition={node:target,top:dialog.scrollTop,left:dialog.scrollLeft};
+    };
+    for(const type of ['focusin','input','change','keyup','pointerup'])panel.addEventListener(type,rememberEditorPosition);
     toolbar.hidden=view!=='scripts';dialog.querySelector('.tsh-grid').hidden=view!=='scripts';dialog.querySelector('.tsh-intro').hidden=view!=='scripts';
     if(!doc.getElementById('tsh-settings-style')){
       const style=element('style','');style.id='tsh-settings-style';style.textContent=`
