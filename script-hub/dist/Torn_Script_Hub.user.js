@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Script Hub
 // @namespace    isatomi.torn.script-hub
-// @version      1.4.3
+// @version      1.4.4
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.
@@ -2069,7 +2069,14 @@ function createHubSettingsController(config) {
 
 
 // Bundled after script-hub-core.cjs inside the hub's private IIFE.
+(function bootHub() {
 if (location.protocol !== 'https:' || location.hostname !== 'www.torn.com' || window.top !== window.self) return;
+// PDA may inject at document-start, before even the HTML element exists.
+// Defer only that early case; ordinary document-end startup stays immediate.
+if (!document.documentElement) {
+  document.addEventListener('DOMContentLoaded', bootHub, {once:true});
+  return;
+}
 const HUB_PREFIX = 'torn-script-hub:v1:';
 const CATALOG_KEY = 'torn-script-hub:v1:catalog';
 const PENDING_KEY = 'torn-script-hub:v1:pending';
@@ -2306,7 +2313,10 @@ function findControlRow() {
 }
 function placeLauncher() {
   if (!launcher) return;
-  const row = settingsController.preferences().placement==='floating'?null:findControlRow();
+  // Touch layouts may keep a measurable sidebar outside the visible viewport.
+  // Give those screens a stable launcher independent of the sidebar drawer.
+  const compact = window.innerWidth <= 600 || window.innerHeight <= 500 || window.matchMedia?.('(pointer:coarse)')?.matches === true;
+  const row = settingsController.preferences().placement==='floating'||compact?null:findControlRow();
   if (controlRow !== row) { controlRow?.classList.remove('tsh-account-row'); controlRow = row; }
   if (row) {
     row.classList.add('tsh-account-row');
@@ -2491,5 +2501,6 @@ start();
 if (typeof globalThis.PDA_getTabState === 'function') {
   Promise.resolve().then(() => globalThis.PDA_getTabState()).then(info => { pdaActive = info?.isActiveTab === true && info?.isWebViewVisible === true; updateActivity(); }).catch(() => {});
 }
+})();
 
 })();
