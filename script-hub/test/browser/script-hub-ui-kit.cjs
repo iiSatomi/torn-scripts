@@ -213,7 +213,9 @@ async function main() {
     await page.evaluate(async () => {
       let resolveState; window.startupStates = [];
       window.PDA_getTabState = () => new Promise(resolve => { resolveState = resolve; });
-      const tool = kit.createTornScriptUI({ doc: document, win: window, applyTheme: () => {}, onVisibilityChange: value => startupStates.push(value) });
+      let returned=null;window.visibilityAfterConstruction=[];
+      const tool = kit.createTornScriptUI({ doc: document, win: window, applyTheme: () => {}, onVisibilityChange: value => {startupStates.push(value);visibilityAfterConstruction.push(returned!==null&&returned.root.isConnected);} });
+      returned=tool;
       await Promise.resolve();
       window.dispatchEvent(new CustomEvent('tornpda:tabState', { detail: { isActiveTab: true, isWebViewVisible: true } }));
       resolveState({ isActiveTab: false, isWebViewVisible: false });
@@ -222,6 +224,7 @@ async function main() {
       tool.destroy(); delete window.PDA_getTabState;
     });
     assert.deepEqual(await page.evaluate(() => [startupStates.slice(0, 2), pdaStartupActive]), [[false, true], true], 'PDA activation waits for native state, and newer events win');
+    assert.equal(await page.evaluate(()=>visibilityAfterConstruction.every(Boolean)),true,'initial visibility callbacks can safely use the returned mounted shell');
     await page.evaluate(async () => {
       window.PDA_getTabState = () => Promise.resolve(undefined);
       window.malformedPda = kit.createTornScriptUI({ doc: document, win: window, applyTheme: () => {} });

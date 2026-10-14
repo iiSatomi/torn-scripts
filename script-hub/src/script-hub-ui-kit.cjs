@@ -46,7 +46,7 @@ function createTornScriptUI(options = {}) {
   let themeQueued = false, nextTask = 0;
   const initial = { x: 24, y: 40, width: 760, height: 540 };
   let rect = { ...initial }, previousRect = null;
-  let booting = true, writingLayout = false, persistQueued = false, pendingLayout = null;
+  let booting = true, visibilityQueued = false, writingLayout = false, persistQueued = false, pendingLayout = null;
   let layoutLoading = floating && typeof options.readLayout === 'function';
   const editedGeometry = new Set(), editedSelection = new Set();
   let currentProfile = profileName();
@@ -151,6 +151,12 @@ function createTornScriptUI(options = {}) {
 
   function active() { return !destroyed && shown && !minimized && !collapsed && pageActive && doc.visibilityState !== 'hidden' && pdaActive; }
   function visibility() {
+    // Consumers may still be moving their content into the returned shell.
+    // Initial notifications must run after construction and caller assignment.
+    if(booting){
+      if(!visibilityQueued){visibilityQueued=true;Promise.resolve().then(()=>{visibilityQueued=false;if(!destroyed)visibility();});}
+      return;
+    }
     queuePersist();
     const value = active();
     if (value === lastActive) return;

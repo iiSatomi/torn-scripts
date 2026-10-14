@@ -16,6 +16,7 @@ on:
       - 'tools/*war-payout*.cjs'
       - 'tools/*userscripts*.cjs'
       - 'tools/userscript-release-core.cjs'
+      - 'tools/userscript-pda-source.cjs'
       - 'tools/check-managed-secrets.cjs'
       - 'tools/managed-publication-files.json'
       - 'test/managed-secrets.test.cjs'

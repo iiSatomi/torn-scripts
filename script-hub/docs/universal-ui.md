@@ -1,6 +1,6 @@
 # Universal script UI and themes
 
-Implementation: Script Hub 1.4.4, shared UI contract version 1.
+Implementation: Script Hub 1.4.5, shared UI contract version 1.
 
 ## User controls
 
@@ -11,6 +11,19 @@ placement remains a Hub preference.
 If PDA injects before the HTML element exists, Hub startup waits for DOM readiness
 before claiming its singleton or mounting. Normal document-end startup stays
 immediate; repeated early injections still create one Hub.
+
+Builders encode literal smart quotes as JavaScript Unicode escapes. This preserves
+the displayed text while surviving Torn PDA's source punctuation normalization,
+which otherwise turns apostrophes in messages into JavaScript syntax errors.
+Both managed distributions, optional examples, and generated adapter blocks use
+the same build helper. Tests run PDA's actual preparation step before evaluation,
+including S25 Ultra display scaling and reserved native toolbar space.
+The shared UI factory also defers its initial visibility notification until after
+construction, so PDA's initial inactive state cannot call a script while its
+content is still being moved into the new shell.
+Native PDA storage is captured from PDA's script-private lexical binding, with
+priority over a page-global object. Native namespaces and credentials remain
+private to their owning script.
 
 The Hub **Themes** tab selects layout, palette, and appearance independently.
 Background page updates and window remeasurement preserve the editor's scroll

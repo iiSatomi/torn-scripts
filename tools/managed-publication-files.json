@@ -36,10 +36,12 @@
     "script-hub/src/script-hub-ui.js",
     "script-hub/src/script-hub-window.cjs",
     "script-hub/test/browser/script-hub-theme-interactions.cjs",
+    "script-hub/test/browser/script-hub-pda.cjs",
     "script-hub/test/browser/script-hub-launcher.cjs",
     "script-hub/test/browser/script-hub-launch-design.cjs",
     "script-hub/test/browser/script-hub-themes.cjs",
     "script-hub/test/browser/script-hub-ui-kit.cjs",
+    "script-hub/test/script-hub-pda.test.cjs",
     "script-hub/test/script-hub-appearance-adapter.test.cjs",
     "script-hub/test/script-hub-credentials.test.cjs",
     "script-hub/test/script-hub-example.test.cjs",
@@ -75,6 +77,7 @@
     "tools/release-browser/package-lock.json",
     "tools/release-browser/package.json",
     "tools/release-userscripts.cjs",
+    "tools/userscript-pda-source.cjs",
     "tools/userscript-release-core.cjs"
   ],
   "generatedFiles": [
