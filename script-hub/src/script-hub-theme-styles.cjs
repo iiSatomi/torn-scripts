@@ -173,6 +173,30 @@ function hubThemeStyles() {
     #tsh-dialog[data-tsui-layout] :is(.tsh-hub-nav button,.tsh-tile-controls button,.tsh-settings-script,.tsh-settings-page){min-height:44px}
   }
   @media(pointer:coarse){#tsh-dialog[data-tsui-layout][data-tsui-density] :is(.tsh-hub-nav button,.tsh-primary,.tsh-tile-controls button,.tsh-settings-script,.tsh-settings-page){min-height:44px}}
+  #tsh-dialog .tsh-theme-layouts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #tsh-dialog .tsh-theme-stock-preset{margin-top:12px}
+  #tsh-dialog [data-layout=stock] .tsh-theme-diagram{grid-template-columns:1fr;grid-template-rows:6px 1fr;border-radius:2px}
+  #tsh-dialog[data-tsui-layout=stock]{display:block;font-family:Arial,Helvetica,sans-serif}
+  #tsh-dialog[data-tsui-layout=stock] .tsui-theme-mark{display:none}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-header{position:relative;padding:24px 10px 7px;gap:7px;background:var(--tsui-raised);min-height:58px}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-header:before{content:'⠿ drag';position:absolute;left:0;right:0;top:0;height:18px;font:10px/18px Consolas,monospace;text-align:center;letter-spacing:2px;background:var(--tsui-selection);color:var(--tsui-muted);border-bottom:1px solid var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-header h2{font-size:13px;color:var(--tsui-accent);letter-spacing:0}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-count{font-size:10px;color:var(--tsui-muted)}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-window-button{font-size:0;width:30px;padding:4px;min-height:30px}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-window-lock:before{content:'◇';font-size:16px}#tsh-dialog[data-tsui-layout=stock] .tsh-window-reset:before{content:'↺';font-size:16px}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav{position:static;padding:0 10px;gap:14px;background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav button{border:0!important;border-bottom:2px solid transparent!important;border-radius:0;padding:9px 2px;color:var(--tsui-muted);background:transparent;font-size:12px}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav button[aria-selected=true]{border-bottom-color:var(--tsui-accent)!important;color:var(--tsui-accent);background:transparent}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:12px}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-tile{border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);overflow:hidden;background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-primary{min-height:70px;padding:10px;border:0;display:grid;grid-template-columns:20px minmax(0,1fr);gap:5px 8px;text-align:left;align-content:center;background:transparent;box-shadow:none}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-primary .tsh-icon{width:20px;height:20px;grid-row:1/3}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-name{font-size:12px;font-weight:600}#tsh-dialog[data-tsui-layout=stock] .tsh-state{grid-column:2;font-size:10px}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-tile-controls{margin:0;gap:0;border-top:1px solid var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-tile-controls button{margin:0;border:0;border-radius:0;background:var(--tsui-background)}
+  #tsh-dialog[data-tsui-layout=stock] :is(.tsh-settings-view,.tsh-actions){padding:12px}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-settings-script{padding:9px;border-radius:var(--tsui-radius);background:var(--tsui-surface)}
+  @media(max-width:600px),(max-height:500px){#tsh-dialog[data-tsui-layout=stock]>.tsh-header{padding-top:8px;min-height:52px}#tsh-dialog[data-tsui-layout=stock]>.tsh-header:before{display:none}#tsh-dialog[data-tsui-layout=stock] .tsh-window-button{width:44px;min-height:44px}#tsh-dialog[data-tsui-layout=stock]>.tsh-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav{gap:5px;padding:0 7px}#tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav button{padding:8px 4px;min-height:44px;gap:4px}}
   @media(prefers-reduced-motion:reduce){#tsh-dialog[data-tsui-layout] *{scroll-behavior:auto;transition:none}}
   `;
 }

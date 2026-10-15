@@ -22,6 +22,29 @@ async function main() {
       window.embedded = kit.createTornScriptUI({ doc: document, win: window, id: 'embedded', title: 'Embedded', surface: 'embedded', mount: document.querySelector('#host'), applyTheme });
       two.hide();
     });
+    await page.evaluate(()=>{
+      const footer=document.createElement('div');footer.textContent='Stable footer';
+      window.stockFooter=footer;
+      window.stockTool=kit.createTornScriptUI({doc:document,win:window,id:'stock-contract',title:'Stock tool',theme:{layout:'stock'},applyTheme:(node,value)=>node.dataset.tsuiLayout=value.layout,
+        sections:[{id:'main',label:'Main',footer},{id:'settings',label:'Settings',headerAction:'⚙'}]});
+    });
+    assert.equal(await page.locator('[data-tsui-id="stock-contract"] .tsui-section-footer').textContent(),'Stable footer','base mounts the original section footer');
+    await page.locator('[data-tsui-id="stock-contract"]').getByRole('button',{name:'Settings',exact:true}).click();
+    assert.equal(await page.evaluate(()=>stockTool.getState().selected),'settings','compact header action selects its owned section');
+    assert.equal(await page.locator('[data-tsui-id="stock-contract"] .tsui-section-footer').isVisible(),false,'footer follows the selected section');
+    await page.evaluate(()=>stockTool.select('main'));
+    const stockBefore=await page.locator('[data-tsui-id="stock-contract"]').boundingBox();
+    await page.locator('[data-tsui-id="stock-contract"] .tsui-drag-strip').focus();await page.keyboard.press('ArrowRight');
+    assert.equal((await page.locator('[data-tsui-id="stock-contract"]').boundingBox()).x,stockBefore.x+10,'Stock Mgr drag strip supports keyboard movement');
+    await page.locator('[data-tsui-id="stock-contract"]').getByLabel('Window options',{exact:true}).click();
+    await page.locator('[data-tsui-id="stock-contract"]').getByLabel('Lock or unlock position',{exact:true}).click();
+    assert.equal(await page.evaluate(()=>stockTool.getState().locked),true,'compact options retain real window controls');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('[data-tsui-id="stock-contract"]').getByLabel('Window options',{exact:true}).getAttribute('aria-expanded'),'false');
+    assert.equal(await page.evaluate(()=>stockTool.getState().collapsed),false,'Escape first closes window options');
+    await page.evaluate(()=>{stockTool.setTheme({layout:'frostbite'});stockTool.setTheme({layout:'stock'});});
+    assert.equal(await page.evaluate(()=>stockFooter===stockTool.root.querySelector('.tsui-section-footer').firstChild),true,'theme switches preserve footer node identity');
+    await page.evaluate(()=>stockTool.destroy());
     await page.evaluate(() => two.select('settings'));
     assert.deepEqual(await page.evaluate(() => selections), ['home', 'settings'], 'consumer is notified of section changes');
     await page.evaluate(() => { window.closeCount=0;window.closable=kit.createTornScriptUI({doc:document,win:window,id:'closable',title:'Closable tool',applyTheme:()=>{},onClose:()=>closeCount++}); });

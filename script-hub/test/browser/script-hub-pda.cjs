@@ -14,6 +14,7 @@ const adapt=(source,id)=>('(function(){const PDA_storage=window.__pdaStorageFact
    page.on('pageerror',error=>errors.push(error.message));
    await page.route('**/*',r=>r.fulfill({status:200,contentType:'text/html',body:'<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{margin:0;background:#252525;color:#ddd;font:14px Arial}nav{display:flex;gap:10px;padding:12px;background:#333}main{padding:20px;min-height:1400px}#quick-items{position:fixed;right:0;bottom:0;width:52%;height:40px;background:#456;z-index:2147483647}</style></head><body><nav>Home · Stocks · Events · Messages · Faction</nav><main>Synthetic mobile home</main><div id="quick-items">Synthetic quick items</div></body></html>'}));
    await page.addInitScript(()=>{
+    localStorage.setItem('torn-script-hub:ui-theme:v1',JSON.stringify({layout:'stock',palette:'stock',mode:'dark',density:'compact'}));
     const store=new Map();window.GM_info={scriptHandler:'Torn PDA'};window.GM_getValue=(key,fallback)=>store.has(key)?store.get(key):fallback;window.GM_setValue=(key,value)=>store.set(key,value);window.GM_deleteValue=key=>store.delete(key);window.GM_registerMenuCommand=(_label,callback)=>{window.syntheticNativeOpen=callback;};
     const namespaces=new Map();window.__pdaStorageFactory=id=>{if(!namespaces.has(id))namespaces.set(id,new Map());const native=namespaces.get(id);return {get:async(key,fallback)=>native.has(key)?native.get(key):fallback,set:async(key,value)=>native.set(key,value),delete:async key=>native.delete(key)};};
     window.PDA_getTabState=async()=>({isActiveTab:true,isWebViewVisible:true});window.apiCalls=0;window.GM_xmlhttpRequest=()=>{window.apiCalls++;throw Error('No API call expected in this fixture');};
@@ -30,6 +31,10 @@ const adapt=(source,id)=>('(function(){const PDA_storage=window.__pdaStorageFact
    await page.waitForFunction(()=>document.querySelector('#tsh-dialog').hidden,{},{timeout:3000});
    async function assertFitted(w,h){await page.waitForFunction(([w,h])=>{const r=document.querySelector('#twpc-dialog').getBoundingClientRect();return r.x===8&&r.y===8&&r.width===w-16&&r.height===h-16;},[w,h],{timeout:3000});const box=await page.locator('#twpc-dialog').boundingBox();assert.deepEqual([box.x,box.y,box.width,box.height],[8,8,w-16,h-16],'PDA tool opens maximized');}
    await assertFitted(width,height);
+   assert.equal(await page.locator('#twpc-dialog').getAttribute('data-tsui-layout'),'stock');
+   assert.equal(await page.locator('#twpc-review').evaluate(node=>{const r=node.getBoundingClientRect();return node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true,'PDA footer action clears floating launchers and quick-item overlays');
+   assert.equal(await page.locator('#twpc-csv').evaluate(node=>{const r=node.getBoundingClientRect();return node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true,'PDA export clears the Hub launcher');
+   if(width===412){const artifacts=path.join(__dirname,'artifacts/current');fs.mkdirSync(artifacts,{recursive:true});await page.locator('#twpc-dialog').screenshot({path:path.join(artifacts,'stock-payout-pda-412.png')});}
    assert.equal(await page.locator('#twpc-dialog').evaluate(node=>node.contains(document.activeElement)),true,'closing Hub does not steal tool focus');
    await page.click('#twpc-close');await page.tap('#tsh-launcher');await page.tap('[data-script="war-payout-calculator"] .tsh-primary');await assertFitted(width,height);
    await page.setViewportSize({width:height,height:width});await assertFitted(height,width);

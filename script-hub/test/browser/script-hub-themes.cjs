@@ -29,7 +29,13 @@ const artifacts=path.join(__dirname,'artifacts/current');fs.mkdirSync(artifacts,
   await page.click('.tsh-theme-layout[data-layout="torn"]');await page.click('.tsh-theme-save');
   await page.waitForFunction(()=>document.querySelector('.tsh-theme-message').textContent.includes('could not be saved'));
   await page.evaluate(()=>{Storage.prototype.setItem=window.originalSet;});await page.click('.tsh-theme-cancel');
-  for(const layout of ['frostbite','workbench','torn']){
+  await page.click('.tsh-theme-stock-preset');
+  assert.equal(await page.$eval('#tsh-dialog',n=>n.dataset.tsuiLayout),'stock');
+  assert.equal(await page.$eval('.tsh-theme-palette',n=>n.value),'stock');
+  assert.equal(await page.$eval('.tsh-theme-mode',n=>n.value),'dark');
+  await page.click('.tsh-theme-save');await page.waitForFunction(()=>document.querySelector('.tsh-theme-message').textContent==='Theme saved.');
+  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('torn-script-hub:ui-theme:v1')).layout),'stock');
+  for(const layout of ['frostbite','workbench','torn','stock']){
    await page.click('.tsh-theme-layout[data-layout="'+layout+'"]');
    for(const [width,height]of [[1920,1080],[390,844],[430,932],[844,390]]){console.log('Viewport',layout,width,height);
     await page.setViewportSize({width,height});
@@ -58,6 +64,6 @@ const artifacts=path.join(__dirname,'artifacts/current');fs.mkdirSync(artifacts,
   assert.equal(await page.evaluate(()=>window.editor.isDirty()),false,'import cannot invalidate successful save');
   await page.click('.tsh-theme-cancel');assert.equal(await page.evaluate(()=>window.previewTheme.layout),'workbench');
   await page.evaluate(()=>window.editor.destroy());assert.deepEqual(errors,[]);
-  console.log('PASS Hub theme styles, independent palettes, dirty guard, save/cancel, quota recovery, 12 viewport/layout combinations, and async import/save races');
+  console.log('PASS four Hub theme styles, Stock Mgr defaults, independent palettes, save/cancel, quota recovery, 16 viewport/layout combinations and async import/save races');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

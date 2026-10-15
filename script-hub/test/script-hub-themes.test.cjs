@@ -11,6 +11,8 @@ const secret = 'synthetic-private-value-that-must-not-export';
 const exported = exportScriptUiTheme({ ...theme, apiKey: secret }, normalize);
 assert.equal(exported.includes(secret), false);
 assert.deepEqual(importScriptUiTheme(exported, normalize), theme);
+const stock=normalize({layout:'stock',palette:'stock',mode:'dark',colors:{dark:{accent:'#55aaaa'}}});
+assert.equal(importScriptUiTheme(exportScriptUiTheme(stock,normalize),normalize).layout,'stock','Stock Mgr survives appearance transfer');
 assert.throws(() => importScriptUiTheme(JSON.stringify({ version: 1, theme }), normalize));
 assert.throws(() => importScriptUiTheme('x'.repeat(32769), normalize));
 assert.throws(() => importScriptUiTheme(JSON.stringify({ kind: 'torn-script-ui-theme', version: 99, theme }), normalize));

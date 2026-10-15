@@ -1,6 +1,25 @@
 # Universal script UI and themes
 
-Implementation: Script Hub 1.4.6, shared UI contract version 1.
+Implementation: Script Hub 1.5.0, shared UI contract version 1.
+
+**Stock Mgr** is the fourth selectable layout and palette. Use **Themes → Apply
+Stock Mgr defaults → Save theme** for the charcoal/teal compact preset. Layout,
+palette, light/dark mode, density, color overrides and per-script inheritance
+remain independent. The explicit preset replaces only the appearance draft and
+can be cancelled before Save. Existing themes and saved window geometry remain.
+
+Stock Mgr supplies a slim desktop drag strip, tab navigation, optional header
+section actions, and a window-options button containing lock/reset/minimize/
+maximize. Collapse and Close remain directly accessible. Escape closes an open
+options panel first. New Stock Mgr windows default to a compact 340 px desktop
+width; existing saved geometry wins. PDA windows retain maximized opening and
+44 px touch controls. Section footers reserve space above PDA floating controls.
+
+Payout 1.6.0 uses a calculator-owned footer for its original total, balance and
+export controls plus navigation to the existing Pay members workflow. Stock Mgr
+keeps this footer visible while the form scrolls; other layouts restore the same
+nodes to their original homes. Switching themes never rebuilds input nodes,
+changes rates, locks a run, credits a member or requests war data.
 
 ## User controls
 
@@ -105,7 +124,7 @@ per script. Do not edit generated files or marked adapter blocks by hand.
 ```js
 const appearance = normalizeScriptUiTheme({
   version: 1,
-  layout: 'frostbite',       // frostbite | workbench | torn
+  layout: 'frostbite',       // frostbite | workbench | torn | stock
   palette: 'frostbite',      // independent from layout
   mode: 'system',           // system | dark | light
   density: 'comfortable',   // comfortable | compact
@@ -165,6 +184,11 @@ Content renderers run once and may return a cleanup callback. `content`,
 - `getState()`, `destroy()`.
 
 Inspect the factory's opening JSDoc and Showcase source for full helper shapes.
+Each section may supply `footer: existingNode` for a persistent, section-owned
+footer and `headerAction: '⚙'` for a Stock Mgr header shortcut. The section label
+is the shortcut's accessible name. Its original navigation button remains for
+other layouts. Footer nodes mount once, follow selection/collapse, and are
+removed with the owning window. Scripts continue to own their footer actions.
 Geometry adapters store only versioned desktop/mobile position, size, lock,
 collapse, and selected section. They support promises; initial UI mounting does
 not wait for storage. Initial reads have a 1.5-second bound. Writes wait for that

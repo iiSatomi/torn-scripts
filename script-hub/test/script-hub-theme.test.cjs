@@ -18,7 +18,8 @@ test('canonical preferences are bounded, allowlisted, independent, and immutable
 });
 
 test('all palettes resolve independent layout, separate appearances and readable accent text',()=>{
-  for(const palette of ['frostbite','workbench','torn'])for(const dark of [false,true]){
+  for(const palette of ['frostbite','workbench','torn','stock'])for(const dark of [false,true]){
+    assert.equal(normalizeScriptUiTheme({layout:palette,palette}).palette,palette,'registered palettes survive normalization');
     const a=resolveScriptUiTheme({palette,layout:'frostbite'},dark),b=resolveScriptUiTheme({palette,layout:'workbench'},dark);
     assert.deepEqual(a.colors,b.colors);assert.equal(a.mode,dark?'dark':'light');
     assert.equal(Object.keys(a.colors).length,19);assert.ok(a.contrast.onAccent>=4.5);
@@ -29,6 +30,13 @@ test('all palettes resolve independent layout, separate appearances and readable
   assert.equal(resolveScriptUiTheme({mode:'light',colors:{light:{accent:'#fff'},dark:{accent:'#000'}}},true).colors.accent,'#ffffff');
   const low=resolveScriptUiTheme({colors:{light:{text:'#ffffff',background:'#ffffff',surface:'#ffffff'}}});
   assert.equal(low.colors.text,'#ffffff');assert.ok(low.contrast.flags.includes('text'));
+});
+
+test('Stock Mgr layout and palette remain selectable, independent and editable',()=>{
+  const theme=normalizeScriptUiTheme({layout:'stock',palette:'stock',mode:'dark',colors:{dark:{accent:'#aabbcc'}}});
+  assert.equal(theme.layout,'stock');assert.equal(theme.palette,'stock');
+  assert.equal(resolveScriptUiTheme(theme).colors.accent,'#aabbcc');
+  assert.equal(resolveScriptUiTheme({layout:'stock',palette:'torn',mode:'dark'}).palette,'torn');
 });
 test('Workbench uses the approved violet and graphite palette',()=>{
   const roles=['background','surface','raised','text','muted','border','accent'];

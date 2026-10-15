@@ -9,7 +9,7 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
  const browser=await chromium.launch({executablePath:process.env.TORN_BROWSER||'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe',headless:true});
  const failures=[];
  try{
-  for(const layout of ['frostbite','workbench','torn'])for(const [width,height,windowHeight] of [[1920,1080,450],[1920,1080,0],[390,844,0],[430,932,0],[844,390,0]]){
+  for(const layout of ['frostbite','workbench','torn','stock'])for(const [width,height,windowHeight] of [[1920,1080,450],[1920,1080,0],[390,844,0],[430,932,0],[844,390,0]]){
    const label=layout+' '+width+'x'+height+' window '+windowHeight;
    const page=await browser.newPage({viewport:{width,height}});
    try{
@@ -59,6 +59,6 @@ const settle=page=>page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(
    }finally{await page.close();}
   }
   assert.deepEqual(failures,[]);
-  console.log('PASS theme preview scroll, background reflow, repeat Keep editing/Escape focus and drafts across 15 layout/window/viewport combinations');
+  console.log('PASS theme preview scroll, background reflow, repeat Keep editing/Escape focus and drafts across 20 layout/window/viewport combinations');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

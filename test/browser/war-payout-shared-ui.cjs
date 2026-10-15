@@ -30,7 +30,7 @@ async function main(){
   await page.waitForFunction(()=>document.getElementById('twpc-coverage').textContent.includes('2 war hits'));
   await page.fill('#twpc-profit','1000');await page.fill('#twpc-rate-hits','100');
   assert.equal(await page.textContent('#twpc-total'),'$200');
-  await page.evaluate(()=>{window.originalProfit=document.getElementById('twpc-profit');});
+  await page.evaluate(()=>{window.originalProfit=document.getElementById('twpc-profit');window.originalTotal=document.getElementById('twpc-total');});
   await page.click('#twpc-tab-credits');await page.check('#twpc-credit-reviewed');await page.click('#twpc-credit-lock');
   await page.waitForFunction(()=>document.querySelectorAll('#twpc-credit-members tbody tr').length===2);
   assert.equal(await page.isDisabled('#twpc-credit-next'),true,'no native form means no credit submission');
@@ -44,7 +44,7 @@ async function main(){
   await page.fill('#twpc-rate-hits','200');
   const artifacts=path.join(__dirname,'artifacts/war-payout-shared-ui');fs.mkdirSync(artifacts,{recursive:true});
   const callsBeforeThemes=await page.evaluate(()=>apiCalls.length);
-  for(const layout of ['frostbite','workbench','torn']){
+  for(const layout of ['frostbite','workbench','torn','stock']){
    await page.evaluate(layout=>{const detail=JSON.stringify({layout,palette:layout,mode:'dark'});localStorage.setItem('torn-script-hub:ui-theme:v1',detail);document.dispatchEvent(new CustomEvent('torn-script-hub:ui-theme:v1:changed',{detail}));},layout);
    await page.waitForFunction(layout=>document.getElementById('twpc-dialog').dataset.tsuiLayout===layout,layout);
    for(const [width,height]of [[1920,1080],[390,844],[430,932],[844,390]]){
@@ -54,10 +54,22 @@ async function main(){
     assert.equal(await page.evaluate(()=>originalProfit===document.getElementById('twpc-profit')),true);
     assert.equal(await page.inputValue('#twpc-profit'),'1000');
     assert.equal(await page.textContent('#twpc-total'),'$400');
+    assert.equal(await page.evaluate(()=>originalTotal===document.getElementById('twpc-total')),true,'theme switches retain the original total node');
+    if(layout==='stock'){
+     assert.equal(await page.locator('.twpc-stock-footer').isVisible(),true,'Stock Mgr pins the calculator footer');
+     await page.locator('#twpc-dialog .tsui-content').evaluate(node=>node.scrollTop=node.scrollHeight);
+     const footer=await page.locator('.twpc-stock-footer').boundingBox(),window=await page.locator('#twpc-dialog').boundingBox();
+     assert.ok(footer.y>=window.y&&footer.y+footer.height<=window.y+window.height,'footer stays inside viewport while content scrolls');
+     assert.equal(await page.locator('#twpc-review').isVisible(),true);
+     await page.click('#twpc-review');assert.equal(await page.isVisible('#twpc-credit-panel'),true,'review opens existing credit workflow');
+     await page.click('#twpc-tab-calculator');
+    }
     await page.locator('#twpc-dialog').evaluate(root=>{root.querySelector('.tsui-content').scrollTop=0;root.querySelector('.tsui-body').scrollTop=0;});
     await page.screenshot({path:path.join(artifacts,`${layout}-${width}.png`)});
    }
   }
+  await page.evaluate(()=>{const detail=JSON.stringify({layout:'torn',palette:'torn',mode:'dark'});localStorage.setItem('torn-script-hub:ui-theme:v1',detail);document.dispatchEvent(new CustomEvent('torn-script-hub:ui-theme:v1:changed',{detail}));});
+  await page.waitForFunction(()=>document.getElementById('twpc-dialog').dataset.tsuiLayout==='torn');
   assert.equal(await page.evaluate(()=>apiCalls.length),callsBeforeThemes,'theme and viewport changes do not fetch data');
   const desktopGeometry=await page.evaluate(()=>values['twpc-ui-layout-v1'].desktop);
   await page.setViewportSize({width:1920,height:1080});
@@ -120,10 +132,19 @@ async function main(){
   assert.equal(await page.locator('#twpc-dialog').getAttribute('data-tsui-layout'),'workbench');
   assert.equal(await page.locator('[data-tsui-launcher-host]').getAttribute('data-tsui-layout'),'workbench','private override reaches launcher through the shared client');
   assert.equal(await page.locator('[data-tsui-launcher-host]').getAttribute('data-tsui-mode'),'light');
+  await page.click('.tsh-theme-stock-preset');await page.selectOption('.tsh-theme-mode','light');
+  await page.$eval('[data-color-role="accent"]',input=>{input.value='#117777';input.dispatchEvent(new Event('input',{bubbles:true}));});
+  await page.click('.tsh-theme-save');await page.waitForFunction(()=>document.querySelector('.tsh-theme-message').textContent==='Theme saved.');
+  assert.equal(await page.locator('#twpc-dialog').getAttribute('data-tsui-layout'),'stock','Stock Mgr can be a private per-script theme');
+  assert.equal(await page.locator('#twpc-dialog').evaluate(node=>node.style.getPropertyValue('--tsui-accent')),'#117777','Stock Mgr custom colors reach the actual script');
+  assert.equal(await page.locator('[data-tsui-launcher-host]').getAttribute('data-tsui-mode'),'light','Stock Mgr supports light mode');
+  await page.click('[data-hub-view="scripts"]');await open();
+  await page.locator('#twpc-dialog').screenshot({path:path.join(artifacts,'stock-light-custom-desktop.png')});
+  assert.deepEqual(await page.evaluate(()=>apiCalls),[],'private appearance changes do not scan reports');
   await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:false})));
   assert.equal(await page.locator('#twpc-dialog').count(),0);assert.equal(await page.locator('[data-tsui-launcher-host]').count(),0);
   assert.deepEqual(errors,[]);
-  console.log('PASS payout shared shell, 12 layout/viewport combinations, stable drafts/calculations, credit review, window controls and inactive-route cleanup');
+  console.log('PASS payout shared shell, 16 layout/viewport combinations, stable drafts/calculations, credit review, window controls and inactive-route cleanup');
  }finally{await browser.close();}
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

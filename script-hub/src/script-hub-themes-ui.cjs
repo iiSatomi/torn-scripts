@@ -32,7 +32,7 @@ function renderHubThemes(config) {
   const urls = new Map(), disposers = [];
   const listen = (target, type, callback) => { target.addEventListener(type, callback); disposers.push(() => target.removeEventListener(type, callback)); };
   const button = (label, cls, callback) => { const node = element('button', cls, label); node.type = 'button'; listen(node, 'click', callback); return node; };
-  const names = { frostbite: 'Frostbite', workbench: 'Workbench', torn: 'Torn native' };
+  const names = { frostbite: 'Frostbite', workbench: 'Workbench', torn: 'Torn native', stock: 'Stock Mgr' };
   const roles = { background: 'Background', surface: 'Panels', raised: 'Headers and controls', text: 'Text', muted: 'Secondary text', border: 'Borders', accent: 'Accent', focus: 'Focus outline', selection: 'Selection', success: 'Success', warning: 'Warning', error: 'Error', chart1: 'Chart color 1', chart2: 'Chart color 2', chart3: 'Chart color 3', chart4: 'Chart color 4', chart5: 'Chart color 5', chart6: 'Chart color 6' };
   const heading = element('h3', '', 'Themes'), subtitle = element('p', 'tsh-subtitle', 'Preview your appearance. Save to apply it to scripts using the shared UI.');
   const status = element('p', 'tsh-theme-message'); status.setAttribute('role', 'status');
@@ -68,7 +68,7 @@ function renderHubThemes(config) {
     const pick = button('', 'tsh-theme-layout', () => { draft.layout = id; syncLayout(); preview(); });
     pick.dataset.layout = id;
     const diagram = element('span', 'tsh-theme-diagram'); diagram.setAttribute('aria-hidden', 'true'); diagram.append(element('span'), element('span'), element('span'));
-    pick.append(diagram, element('strong', '', label), element('small', '', id === 'frostbite' ? 'Navigation rail' : id === 'workbench' ? 'Tabs and inspector' : 'Compact tabs'));
+    pick.append(diagram, element('strong', '', label), element('small', '', id === 'frostbite' ? 'Navigation rail' : id === 'workbench' ? 'Tabs and inspector' : id === 'stock' ? 'Compact tool panel' : 'Compact tabs'));
     layoutButtons.set(id, pick); layouts.append(pick);
   }
   function syncLayout() { for (const [id, node] of layoutButtons) node.setAttribute('aria-pressed', String(draft.layout === id)); }
@@ -76,7 +76,7 @@ function renderHubThemes(config) {
   const choices = element('div', 'tsh-theme-fields');
   const palette = select('Color palette', Object.entries(names), draft.palette, value => { draft.palette = value; syncColors(); }, 'tsh-theme-palette');
   const mode = select('Appearance', [['system', 'Follow device'], ['dark', 'Dark'], ['light', 'Light']], draft.mode, value => { draft.mode = value; syncColors(); }, 'tsh-theme-mode');
-  choices.append(palette, mode); layoutSection.append(choices); form.append(layoutSection);
+  choices.append(palette, mode); layoutSection.append(choices,button('Apply Stock Mgr defaults','tsh-theme-stock-preset',()=>{draft=normalize({layout:'stock',palette:'stock',mode:'dark',density:'compact'});sync();preview();})); form.append(layoutSection);
   const colorSection = element('section', 'tsh-theme-section'); colorSection.append(element('h4', '', 'Custom colors'));
   const colorMode = element('p', 'tsh-subtitle'); colorSection.append(colorMode);
   const basicColors = element('div', 'tsh-theme-colors'), advanced = element('details', 'tsh-theme-advanced'), advancedColors = element('div', 'tsh-theme-colors');

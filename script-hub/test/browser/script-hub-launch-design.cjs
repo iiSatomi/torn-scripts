@@ -39,7 +39,7 @@ const payout=fs.readFileSync(path.join(root,'Torn_War_Payout_Calculator.user.js'
   await page.click('#legacy-close');assert.equal(await page.isVisible('#tsh-dialog'),true);
   await page.locator('#tsh-dialog .tsh-header').click();
   const dir=path.join(__dirname,'artifacts/current');fs.mkdirSync(dir,{recursive:true});
-  for(const layout of ['frostbite','workbench','torn']){
+  for(const layout of ['frostbite','workbench','torn','stock']){
    await page.click('[data-hub-view="themes"]');await page.click('.tsh-theme-layout[data-layout="'+layout+'"]');await page.selectOption('.tsh-theme-palette',layout);await page.selectOption('.tsh-theme-mode','dark');await page.click('.tsh-theme-save');
    await page.waitForFunction(()=>document.querySelector('.tsh-theme-message').textContent==='Theme saved.');
    assert.equal(await page.locator('#tsh-dialog .tsui-theme-mark').count(),1,'one bundled visual identity per header');
@@ -53,6 +53,6 @@ const payout=fs.readFileSync(path.join(root,'Torn_War_Payout_Calculator.user.js'
    }
    await page.setViewportSize({width:1920,height:1080});
   }
-  assert.deepEqual(errors,[]);console.log('PASS retained Hub, shared window focus, three distinct identities and 12 responsive design combinations');
+  assert.deepEqual(errors,[]);console.log('PASS retained Hub, shared window focus, four distinct identities and 16 responsive design combinations');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -2,7 +2,7 @@
 
 /** Shared, framework-free native script surfaces. No network or storage is owned here.
  * createTornScriptUI({doc,win,id,title,surface,mount,applyTheme,theme,themeClient,
- *   ownsThemeClient:false,sections:[{id,label,node,render(host,ui)}],settings,inspector,
+ *   ownsThemeClient:false,sections:[{id,label,node,footer,headerAction,render(host,ui)}],settings,inspector,
  *   onVisibilityChange(active),onSelect(id),onClose(),onDestroy(),autoDestroyOnDetach:true,
  *   readLayout(),writeLayout({version:1,desktop,mobile})}).
  * Layout adapters are optional, may be async, and receive only a bounded geometry
@@ -46,7 +46,8 @@ function createTornScriptUI(options = {}) {
   function clearPdaTimer() { if (pdaTimer !== null) { win.clearTimeout(pdaTimer); pdaTimer = null; } }
   let currentTheme = {}, explicitDark;
   let themeQueued = false, nextTask = 0;
-  const initial = { x: 24, y: 40, width: 760, height: 540 };
+  const firstTheme=options.theme||(options.themeClient?.get?options.themeClient.get():{});
+  const initial = { x: 24, y: 40, width: firstTheme?.layout==='stock'?340:760, height: firstTheme?.layout==='stock'?760:540 };
   let rect = { ...initial }, previousRect = null;
   let booting = true, visibilityQueued = false, writingLayout = false, persistQueued = false, pendingLayout = null;
   let layoutLoading = floating && typeof options.readLayout === 'function';
@@ -120,12 +121,14 @@ function createTornScriptUI(options = {}) {
   root.dataset.tsuiSurface = floating ? 'floating' : 'embedded';
   root.setAttribute('aria-label', String(options.title || 'Script tool').slice(0, 200));
   root.tabIndex = -1;
+  const dragStrip=node('div','tsui-drag-strip','⠿ drag');dragStrip.tabIndex=0;dragStrip.setAttribute('role','button');dragStrip.setAttribute('aria-label','Move '+(options.title||'Script tool'));
   const header = node('header', 'tsui-header');
   const title = node('div', 'tsui-title', options.title || 'Script tool');
   title.tabIndex = 0;
   title.setAttribute('aria-label', 'Move ' + (options.title || 'Script tool'));
   title.title = 'Drag to move. Focus and use arrow keys to move; Shift + arrows resize. Escape cancels a drag.';
   const controls = node('div', 'tsui-controls');
+  const headerActions=node('div','tsui-header-actions');controls.append(headerActions);
   header.append(title, controls);
   if(typeof appendScriptUiHeaderArt==='function')appendScriptUiHeaderArt(doc,header);
   const body = node('div', 'tsui-body');
@@ -141,8 +144,9 @@ function createTornScriptUI(options = {}) {
   const notices = node('div', 'tsui-notices'); notices.setAttribute('aria-live', 'polite');
   const taskList = node('div', 'tsui-tasks');
   footer.append(statusNode, notices, taskList);
+  const sectionFooters=node('div','tsui-section-footers');
   const resize = node('div', 'tsui-resize'); resize.setAttribute('aria-hidden', 'true');
-  root.append(header, body, footer, resize);
+  root.append(dragStrip,header, body,sectionFooters, footer, resize);
   const launcher = button(options.title || 'Script tool', 'Restore ' + (options.title || 'Script tool'), () => { restore(); focus(); });
   launcher.className = 'tsui-launcher'; launcher.hidden = true;
   const mount = options.mount || doc.body || doc.documentElement;
@@ -210,8 +214,9 @@ function createTornScriptUI(options = {}) {
   function update() {
     if (destroyed) return;
     root.hidden = !shown || minimized; launcherHost.hidden = launcher.hidden = !shown || !minimized;
-    body.hidden = collapsed; footer.hidden = collapsed;
-    root.dataset.tsuiCollapsed = String(collapsed); root.dataset.tsuiLocked = String(locked);
+    body.hidden = collapsed; footer.hidden = collapsed;sectionFooters.hidden=collapsed;
+    if(!shown||minimized||collapsed)closeWindowOptions();
+    root.dataset.tsuiCollapsed = String(collapsed); root.dataset.tsuiLocked = String(locked);root.dataset.tsuiMaximized=String(maximized);root.dataset.tsuiPda=String(pdaOpening());
     collapseButton.textContent = collapsed ? 'Expand' : 'Collapse'; collapseButton.setAttribute('aria-expanded', String(!collapsed));
     lockButton.textContent = locked ? 'Unlock' : 'Lock'; lockButton.setAttribute('aria-pressed', String(locked));
     resize.hidden = !floating || locked || maximized || collapsed;
@@ -251,14 +256,20 @@ function createTornScriptUI(options = {}) {
     root.classList.add('tsui-gesturing'); event.preventDefault();
   }
   const collapseButton = button('Collapse', 'Collapse or expand', () => collapse(), controls);
-  const lockButton = button('Lock', 'Lock or unlock position', () => setLocked(!locked), controls);
-  button('Reset', 'Reset window position', reset, controls);
+  const optionsToggle=button('⋯','Window options',()=>{const open=optionsToggle.getAttribute('aria-expanded')!=='true';optionsToggle.setAttribute('aria-expanded',String(open));windowOptions.dataset.open=String(open);if(open)windowOptions.querySelector('button')?.focus();},controls);
+  optionsToggle.className='tsui-window-options-toggle';optionsToggle.setAttribute('aria-expanded','false');
+  const windowOptions=node('div','tsui-window-options');windowOptions.setAttribute('role','group');windowOptions.setAttribute('aria-label','Window controls');controls.append(windowOptions);
+  function closeWindowOptions(){optionsToggle.setAttribute('aria-expanded','false');windowOptions.dataset.open='false';}
+  const lockButton = button('Lock', 'Lock or unlock position', () => setLocked(!locked), windowOptions);
+  button('Reset', 'Reset window position', reset, windowOptions);
   if (floating) {
-    button('Minimize', 'Minimize window', minimize, controls);
-    button('Maximize', 'Maximize or restore window', () => maximized ? restore() : maximize(), controls);
+    button('Minimize', 'Minimize window', minimize, windowOptions);
+    button('Maximize', 'Maximize or restore window', () => maximized ? restore() : maximize(), windowOptions);
   } else { lockButton.hidden = true; controls.querySelector('[aria-label="Reset window position"]').hidden = true; }
   button('×', 'Close window', close, controls);
+  listen(doc,'pointerdown',event=>{if(!controls.contains(event.target))closeWindowOptions();});
   listen(title, 'pointerdown', event => beginGesture(event, 'move'));
+  listen(dragStrip,'pointerdown',event=>beginGesture(event,'move'));
   listen(resize, 'pointerdown', event => beginGesture(event, 'resize'));
   listen(win, 'pointermove', event => {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
@@ -271,21 +282,24 @@ function createTornScriptUI(options = {}) {
   listen(win, 'pointercancel', () => endGesture(true));
   listen(win, 'blur', () => endGesture(true));
   listen(title, 'lostpointercapture', () => endGesture(true));
+  listen(dragStrip,'lostpointercapture',()=>endGesture(true));
   listen(resize, 'lostpointercapture', () => endGesture(true));
-  listen(title, 'keydown', event => {
+  function moveKey(event) {
     if (!floating || locked || maximized || !/^Arrow(Left|Right|Up|Down)$/.test(event.key)) return;
     const delta = /Left|Up/.test(event.key) ? -10 : 10;
     const horizontal = /Left|Right/.test(event.key);
     rect[event.shiftKey ? horizontal ? 'width' : 'height' : horizontal ? 'x' : 'y'] += delta;
     fit(); rememberLayout(); event.preventDefault();
-  });
+  }
+  listen(title,'keydown',moveKey);listen(dragStrip,'keydown',moveKey);
   listen(root, 'pointerdown', focus);
   listen(root, 'focusin', focus);
   listen(doc, 'keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented) return;
     const top = floatingRoots().at(-1);
     if (top !== root) return;
-    if (gesture) endGesture(true);
+    if(optionsToggle.getAttribute('aria-expanded')==='true'){closeWindowOptions();optionsToggle.focus();}
+    else if (gesture) endGesture(true);
     else if (maximized) restore();
     else collapse();
     event.preventDefault();
@@ -316,6 +330,7 @@ function createTornScriptUI(options = {}) {
   }
   function setTheme(theme, dark) {
     if (destroyed) return;
+    closeWindowOptions();
     currentTheme = theme || {}; explicitDark = dark;
     const effectiveDark = typeof dark === 'boolean' ? dark : !!(win.matchMedia && win.matchMedia('(prefers-color-scheme: dark)').matches);
     options.applyTheme(root, currentTheme, effectiveDark);
@@ -344,6 +359,8 @@ function createTornScriptUI(options = {}) {
     selected = id;
     for (const [key, section] of sections) {
       section.host.hidden = key !== id; section.button.setAttribute('aria-current', key === id ? 'page' : 'false');
+      if(section.footer)section.footer.hidden=key!==id;
+      if(section.headerButton)section.headerButton.setAttribute('aria-pressed',String(key===id));
     }
     if (changed && !booting) rememberLayout(false);
     if (changed && typeof options.onSelect === 'function') options.onSelect(id);
@@ -416,7 +433,10 @@ function createTornScriptUI(options = {}) {
     const host = node('div', 'tsui-page');
     const navButton = button(section.label || id, section.label || id, () => select(id), nav);
     if (section.node) host.append(section.node);
-    content.append(host); sections.set(id, { host, button: navButton });
+    let footerHost=null,headerButton=null;
+    if(section.footer){footerHost=node('div','tsui-section-footer');footerHost.append(section.footer);sectionFooters.append(footerHost);}
+    if(typeof section.headerAction==='string'){navButton.dataset.tsuiHeaderAction='true';headerButton=button(section.headerAction.slice(0,4),section.label||id,()=>select(id),headerActions);headerButton.setAttribute('aria-pressed','false');}
+    content.append(host); sections.set(id, { host, button: navButton,footer:footerHost,headerButton });
     if (typeof section.render === 'function') { const cleanup = section.render(host, api); if (typeof cleanup === 'function') cleanups.push(cleanup); }
   }
   if (sections.size) select(sections.keys().next().value);
@@ -458,6 +478,7 @@ function scriptUiKitCss() {
 .tsui-root[data-tsui-surface=embedded]{position:relative;width:100%;min-height:220px;max-height:80dvh}
 .tsui-header{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:var(--tsui-space,10px);background:var(--tsui-raised,#242d3c);border-bottom:1px solid var(--tsui-border,#506076);flex:none}
 .tsui-title{font-weight:750;flex:1;min-width:90px;cursor:move;touch-action:none;padding:6px}.tsui-controls{display:flex;flex-wrap:wrap;gap:4px}
+.tsui-drag-strip,.tsui-header-actions,.tsui-root .tsui-window-options-toggle{display:none}.tsui-window-options{display:contents}.tsui-section-footers{flex:none;max-height:44%;overflow:auto}.tsui-section-footers:empty,.tsui-section-footers:not(:has(.tsui-section-footer:not([hidden]))){display:none}.tsui-section-footer{border-top:1px solid var(--tsui-border);background:var(--tsui-raised);padding:10px}
 .tsui-root button,.tsui-launcher{font:inherit;cursor:pointer;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,6px);padding:6px 10px;min-height:var(--tsui-control-height,34px)}
 .tsui-root button:hover{background:var(--tsui-selection,#38455b)}.tsui-root :focus-visible,.tsui-launcher:focus-visible{outline:2px solid var(--tsui-focus,#8fbcff);outline-offset:2px}
 .tsui-root input,.tsui-root select,.tsui-root textarea{font:inherit;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:4px;padding:8px;max-width:100%}
@@ -480,6 +501,28 @@ function scriptUiKitCss() {
 @media(min-width:850px){.tsui-root[data-tsui-layout=workbench] .tsui-body:has(.tsui-inspector:not(:empty)){grid-template-columns:minmax(0,1fr) 180px}.tsui-root[data-tsui-layout=workbench] .tsui-nav{grid-column:1/-1}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:2;grid-row:2/4;border-left:1px solid var(--tsui-border,#506076)}}
 @media(max-width:600px),(pointer:coarse){.tsui-root button,.tsui-launcher{min-height:44px}.tsui-root input,.tsui-root select,.tsui-root textarea{font-size:16px}.tsui-header{gap:4px;padding:6px}.tsui-controls{width:100%;overflow:auto;flex-wrap:nowrap}.tsui-controls button{flex:1;padding:4px;font-size:12px}.tsui-root .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto auto;align-content:start}.tsui-root .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);padding:6px;grid-row:auto}.tsui-root .tsui-content{padding:10px;grid-column:1;overflow:visible}.tsui-root .tsui-settings,.tsui-root .tsui-inspector{grid-column:1;grid-row:auto}.tsui-resize{display:none}.tsui-title{touch-action:auto;cursor:default}.tsui-task{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.tsui-root *{animation:none!important;transition:none!important}}
+.tsui-root[data-tsui-layout=stock]{font-family:Arial,Helvetica,sans-serif;font-size:calc(13px * var(--tsui-font-scale,1))}
+.tsui-root[data-tsui-layout=stock] .tsui-theme-mark{display:none}
+.tsui-root[data-tsui-layout=stock][data-tsui-surface=floating]:not([data-tsui-maximized=true]) .tsui-drag-strip{display:block;background:var(--tsui-selection);color:var(--tsui-muted);font:10px/18px Consolas,monospace;letter-spacing:2px;text-align:center;cursor:move;touch-action:none;border-bottom:1px solid var(--tsui-border);flex:none}
+.tsui-root[data-tsui-layout=stock] .tsui-header{padding:7px 10px;gap:6px;flex-wrap:nowrap;background:var(--tsui-raised);z-index:3}
+.tsui-root[data-tsui-layout=stock] .tsui-title{font-size:1em;font-weight:600;color:var(--tsui-accent);padding:3px 0;min-width:60px;overflow-wrap:anywhere}
+.tsui-root[data-tsui-layout=stock] .tsui-controls{width:auto;flex-wrap:nowrap;overflow:visible;gap:4px;flex:none}
+.tsui-root[data-tsui-layout=stock] .tsui-header-actions{display:flex;gap:4px}.tsui-root[data-tsui-layout=stock] .tsui-header-actions:empty{display:none}
+.tsui-root[data-tsui-layout=stock] .tsui-controls>button,.tsui-root[data-tsui-layout=stock] .tsui-header-actions>button{width:30px;min-height:30px;padding:3px;border-radius:3px;color:var(--tsui-accent)}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options-toggle{display:block}
+.tsui-root[data-tsui-layout=stock] .tsui-controls>[aria-label="Collapse or expand"]{font-size:0}.tsui-root[data-tsui-layout=stock] .tsui-controls>[aria-label="Collapse or expand"]:before{content:'▴';font-size:16px}
+.tsui-root[data-tsui-layout=stock][data-tsui-collapsed=true] .tsui-controls>[aria-label="Collapse or expand"]:before{content:'▾'}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options{display:none;position:absolute;right:8px;top:calc(100% + 3px);width:190px;max-height:min(250px,60dvh);overflow:auto;padding:6px;background:var(--tsui-surface);border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);box-shadow:0 6px 20px #0006}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options[data-open=true]{display:flex;flex-direction:column;gap:4px}.tsui-root[data-tsui-layout=stock] .tsui-window-options button{text-align:left}
+.tsui-root[data-tsui-layout=stock] .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto;overflow:hidden}
+.tsui-root[data-tsui-layout=stock] .tsui-content{grid-column:1;padding:12px;overflow:auto;scrollbar-gutter:auto}
+.tsui-root[data-tsui-layout=stock] .tsui-nav{flex-direction:row;flex-wrap:wrap;grid-row:auto;border-right:0;border-bottom:1px solid var(--tsui-border);padding:0 10px;gap:16px;background:var(--tsui-surface)}
+.tsui-root[data-tsui-layout=stock] .tsui-nav button{background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:9px 2px;color:var(--tsui-muted);font-size:.95em}
+.tsui-root[data-tsui-layout=stock] .tsui-nav button[aria-current=page]{border-bottom-color:var(--tsui-accent);color:var(--tsui-accent)}
+.tsui-root[data-tsui-layout=stock] .tsui-nav [data-tsui-header-action=true]{display:none}.tsui-root[data-tsui-layout=stock] .tsui-settings,.tsui-root[data-tsui-layout=stock] .tsui-inspector{grid-column:1}
+.tsui-root[data-tsui-layout=stock] input,.tsui-root[data-tsui-layout=stock] select{background:var(--tsui-background)}
+.tsui-root[data-tsui-layout=stock][data-tsui-pda=true] .tsui-section-footers{padding-bottom:max(48px,env(safe-area-inset-bottom));background:var(--tsui-raised)}
+@media(max-width:600px),(pointer:coarse){.tsui-root[data-tsui-layout=stock] .tsui-controls>button,.tsui-root[data-tsui-layout=stock] .tsui-header-actions>button{width:44px;min-height:44px}.tsui-root[data-tsui-layout=stock] .tsui-body{grid-template-rows:auto minmax(0,1fr) auto auto;align-content:stretch}.tsui-root[data-tsui-layout=stock] .tsui-content{overflow:auto}.tsui-root[data-tsui-layout=stock] .tsui-nav button{min-height:44px}.tsui-root[data-tsui-layout=stock] .tsui-title{font-size:13px}}
 `;
 }
 
