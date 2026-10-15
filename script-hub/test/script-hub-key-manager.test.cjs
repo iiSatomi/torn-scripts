@@ -1,0 +1,46 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {webcrypto,randomBytes}=require('node:crypto');
+const {createHubCredentialVault,createHubCredentialClient}=require('../src/script-hub-credentials.cjs');
+const clone=value=>structuredClone(value);
+function store(){const records=new Map();return {eligible:true,records,async get(k){return records.has(k)?clone(records.get(k)):null;},async set(k,v){records.set(k,clone(v));return true;}};}
+(async()=>{
+ const storage=store(),vault=createHubCredentialVault({storage,crypto:webcrypto});
+ const clientStorage=store(),client=createHubCredentialClient({storage:clientStorage,crypto:webcrypto,scriptId:'consumer'});
+ await vault.ready();await client.ready();await client.pinHub((await vault.publicIdentity()).publicJwk);
+ const globalKey=randomBytes(16).toString('hex'),specific=randomBytes(16).toString('hex');
+ await vault.setCredential('torn',globalKey);
+ const id=await vault.addNamedKey('torn','Faction operations',specific);
+ assert.equal(typeof id,'string');assert.notEqual(id,'global');
+ const identity=(await client.publicIdentity()).publicJwk;
+ await vault.grant('consumer','torn',identity);await vault.assignKey('consumer','torn',id);
+ let counter=0;
+ async function read(context=true){const request=await client.createRequest('torn','instance','r-'+(++counter),context?{pageId:'credential-context-v2'}:{});const response=await vault.respond(request);const value=await client.consumeReply(response,request);return context&&value?JSON.parse(value):value;}
+ assert.equal(await read(false),specific,'legacy string contract resolves assignments');
+ assert.deepEqual(await read(),{version:2,value:specific,keyId:id,fallback:false,managed:true});
+ let status=await vault.status();assert.ok(!JSON.stringify(status).includes(specific));assert.ok(!JSON.stringify(status).includes(globalKey));
+ await vault.deleteNamedKey('torn',id);
+ assert.deepEqual(await read(),{version:2,value:null,keyId:id,fallback:false,managed:true},'missing key never silently switches by default');
+ await vault.setGlobalFallback('torn',true);
+ assert.deepEqual(await read(),{version:2,value:globalKey,keyId:'global',fallback:true,managed:true});
+ await vault.setNamedKey('torn',id,'Faction operations',specific);
+ assert.equal((await read()).keyId,id,'restored assignment takes precedence');
+ await vault.revoke('consumer','torn');assert.equal(await read(),null,'fallback cannot bypass consent');
+ await vault.grant('consumer','torn',identity);assert.equal((await read()).keyId,id,'revoking access preserves the named assignment for a later regrant');await vault.assignKey('consumer','torn',id);
+ await vault.assignKey('consumer','torn','global');assert.equal((await read()).fallback,false);
+ assert.equal(await vault.assignKey('consumer','torn','unknown'),false);
+ assert.equal(await vault.addNamedKey('torn','',specific),false);
+ assert.equal(await vault.addNamedKey('torn','x'.repeat(61),specific),false);
+ const reloaded=createHubCredentialVault({storage,crypto:webcrypto});await reloaded.ready();
+ assert.equal((await reloaded.status()).find(p=>p.id==='torn').globalFallback,true);
+ assert.equal(await client.rememberManaged('torn'),true);assert.equal(client.isManaged('torn'),true);
+ const resumedClient=createHubCredentialClient({storage:clientStorage,crypto:webcrypto,scriptId:'consumer'});await resumedClient.ready();assert.equal(resumedClient.isManaged('torn'),true,'enrollment survives reload');
+ const invalid=store();invalid.records.set('vault-v1',clone(storage.records.get('vault-v1')));invalid.records.get('vault-v1').providers[0].keys=Array(21).fill({id:'bad',label:'Bad',value:null});
+ assert.equal(await createHubCredentialVault({storage:invalid,crypto:webcrypto}).ready(),false,'malformed or oversized named-key records fail closed');
+ const legacy=store();legacy.records.set('vault-v1',clone(storage.records.get('vault-v1')));
+ const record=legacy.records.get('vault-v1');for(const p of record.providers){delete p.keys;delete p.globalFallback;}for(const g of record.grants)delete g.keyId;
+ const migrated=createHubCredentialVault({storage:legacy,crypto:webcrypto});assert.equal(await migrated.ready(),true);
+ assert.equal((await migrated.status()).find(p=>p.id==='torn').configured,true,'legacy global value retained');
+ assert.equal((await migrated.status()).find(p=>p.id==='torn').globalFallback,false);
+ console.log('PASS named keys, assignment, optional global fallback, consent, encrypted context and migration');
+})().catch(error=>{console.error(error);process.exitCode=1;});

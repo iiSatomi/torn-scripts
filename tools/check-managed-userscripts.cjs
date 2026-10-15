@@ -40,7 +40,7 @@ try {
   run(['test/userscript-releases.test.cjs']);
 
   if (browser) {
-    for (const name of ['script-hub-pda.cjs','script-hub-launcher.cjs','script-hub-launch-design.cjs', 'script-hub-themes.cjs', 'script-hub-theme-interactions.cjs', 'script-hub-ui-kit.cjs']) run(['script-hub/test/browser/' + name]);
+    for (const name of ['script-hub-pda.cjs','script-hub-launcher.cjs','script-hub-launch-design.cjs', 'script-hub-themes.cjs', 'script-hub-theme-interactions.cjs', 'script-hub-ui-kit.cjs','script-hub-key-manager.cjs']) run(['script-hub/test/browser/' + name]);
     // Keep the full payout runner as the authority for its browser variants.
     run(['tools/check-war-payout.cjs', '--browser']);
   }

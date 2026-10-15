@@ -5,6 +5,9 @@ For the complete operating/developer manual, see
 The [illustrated examples](script-hub-examples.md) include three small scripts,
 their source code, installable versions and actual hub screenshots.
 
+**API Keys** manages one global key or named per-script assignments, with an
+optional global fallback. See the [key manager guide](api-key-manager.md).
+
 The universal hub adds a four-square Scripts icon beside Torn's sidebar mail,
 events, and awards icons. It opens a dark grid of script menus. Each script has
 its own tile; **More** shows its additional menus. Rows grow automatically as

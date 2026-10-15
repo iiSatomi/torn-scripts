@@ -7,6 +7,7 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
   const seen = new Set();
   const requests = new Map();
   const preparedSecrets = new Map();
+  const credentialContexts = new Map();
   let changeTimer = null;
   let credentialIdentity = null;
   let pairedHub = null;
@@ -20,7 +21,7 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
   function send(name, value) {
     try { doc.dispatchEvent(new CustomEvent(prefix + name, { detail: JSON.stringify(value) })); } catch (_) {}
   }
-  function announce() { send('register', { ...metadata, instance, ...(credentialIdentity ? {credentialIdentity} : {}) }); }
+  function announce() { send('register', { ...metadata, credentialScope:features.credentialScope==='script'?'script':'main', credentialProviders:features.credentialClient?sharedProviders:[], capabilities:[...new Set([...(metadata.capabilities||[]),...(features.credentialContext?['hub-keys-v2']:[])])], instance, ...(credentialIdentity ? {credentialIdentity} : {}) }); }
   const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(value);
   const safeField = value => typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$/.test(value)&&!['__proto__','constructor','prototype'].includes(value);
   function decode(event, limit = 65536) {
@@ -114,7 +115,25 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
     const item = requests.get(reply.requestId);
     if (!item) return;
     requests.delete(reply.requestId); clearTimeout(item.timer);
-    try{const value=await features.credentialClient.consumeReply(reply,item.request);item.resolve(usable()?value:null);}catch(_){item.resolve(null);}
+    try{
+      let value=await features.credentialClient.consumeReply(reply,item.request);
+      if(item.request.pageId==='credential-context-v2' && value!==null){
+        const context=JSON.parse(value);
+        if(context?.version!==2||context.managed!==true||typeof context.fallback!=='boolean'||!(context.value===null||typeof context.value==='string'&&context.value.length<=4096)||
+          !(context.keyId==='global'||/^key-[a-f0-9]{24}$/.test(context.keyId)))throw new Error('Unavailable');
+        if(!usable())throw new Error('Unavailable');
+        if(!await features.credentialClient.rememberManaged(reply.providerId)){
+          send('credential-policy',{scriptId:metadata.id,instance,providerId:reply.providerId,status:'failed'});
+          features.onCredentialPolicyFailure?.(reply.providerId);throw new Error('Unavailable');
+        }
+        if(!usable())throw new Error('Unavailable');
+        features.onHubManagementChange?.(reply.providerId,true);
+        send('credential-policy',{scriptId:metadata.id,instance,providerId:reply.providerId,status:'saved'});
+        credentialContexts.set(reply.providerId,context);value=context.value;
+        features.onCredentialContext?.(reply.providerId,{keyId:context.keyId,fallback:context.fallback});
+      }else if(value===null)credentialContexts.delete(reply.providerId);
+      item.resolve(usable()?value:null);
+    }catch(_){credentialContexts.delete(reply.providerId);item.resolve(null);}
   }
   async function onSecretSettings(event){
     const message=decode(event,131072),request=message?.request;
@@ -160,7 +179,7 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
     if (!usable() || !features.credentialClient || !sharedProviders.includes(providerId) || requests.size >= 10) return null;
     const requestId = 'key-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     try {
-      const request = await features.credentialClient.createRequest(providerId,instance,requestId);
+      const request = await features.credentialClient.createRequest(providerId,instance,requestId,features.credentialContext?{pageId:'credential-context-v2'}:{});
       if (!request || !usable()) return null;
       return await new Promise(resolve => {
         const timer = setTimeout(() => {requests.delete(requestId);resolve(null);},2000);
@@ -220,6 +239,7 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
     doc.removeEventListener(prefix + 'credential-reply', onCredentialReply);
     doc.removeEventListener(prefix + 'credential-changed',onCredentialChanged);
     doc.removeEventListener(prefix + 'secret-settings',onSecretSettings);
+    credentialContexts.clear();
     clearCredentialWork();
     send('unregister', { id: metadata.id, instance });
     hook('onDetach');
@@ -264,6 +284,8 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
   dispose.instance = instance;
   if (features.credentialClient) {
     Promise.resolve().then(() => features.credentialClient.ready()).then(async ready => {
+      if(disposed)return;
+      features.onCredentialPolicyReady?.(ready,providerId=>features.credentialClient.isManaged?.(providerId)===true);
       if (!ready || !usable()) return;
       credentialIdentity = await features.credentialClient.publicIdentity();
       if (usable() && credentialIdentity) {announce();send('credential-discover',{});}

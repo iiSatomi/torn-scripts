@@ -7,6 +7,15 @@ function createHubSettingsController(config) {
   let prefs={...defaults}, view='scripts', selected=null, currentPage=null, form=null, panel=null, nav=null, toolbar=null;
   let sequence=0, generation=0, started=false, active=true, vault=null, storage=null, vaultReady=false;
   const pending=new Map(), schemas=new Map();
+  const policyStates=new Map();
+  function policyNote(entry,status){return status==='failed'?'Enrollment could not be saved — reload to retry. No Hub key delivered.':status==='saved'?(entry.credentialScope==='script'?'Hub-only connection confirmed':'Main Hub connection confirmed. Separate embedded tools keep their own connection settings.'):'Hub-only confirmation pending';}
+  function onCredentialPolicy(event){
+    let state;try{if(typeof event.detail!=='string'||event.detail.length>512)return;state=JSON.parse(event.detail);}catch(_){return;}
+    const entry=registry.get(state?.scriptId);
+    if(!active||!entry?.active||entry.instance!==state.instance||!entry.capabilities?.includes('hub-keys-v2')||!['torn','tornstats','ffscouter'].includes(state.providerId)||!['saved','failed'].includes(state.status))return;
+    policyStates.set(entry.id+'\n'+state.providerId,{instance:entry.instance,status:state.status});
+    for(const row of panel?.querySelectorAll('.tsh-key-routing')||[])if(row.dataset.script===entry.id&&row.dataset.provider===state.providerId){const note=row.querySelector('.tsh-policy-status');if(note)note.textContent=policyNote(entry,state.status);}
+  }
   let refreshPreferenceBaseline=null,preferenceFrame=null;
   let refreshWork=null;
   let editorPosition=null;
@@ -97,8 +106,8 @@ function createHubSettingsController(config) {
     config.onPreferences?.(prefs);
   }
   function disposeForm(){editorPosition=null;if(preferenceFrame!==null)win.cancelAnimationFrame(preferenceFrame);preferenceFrame=null;refreshPreferenceBaseline=null;form?.destroy();form=null;currentPage=null;themeDirty=false;applyAppearance();}
-  function hasNewKeys(){return !!panel?.querySelector('.tsh-key-input')&&[...panel.querySelectorAll('.tsh-key-input')].some(input=>input.value);}
-  function clearNewKeys(){for(const input of panel?.querySelectorAll('.tsh-key-input')||[])input.value='';}
+  function hasNewKeys(){return [...(panel?.querySelectorAll('.tsh-key-input')||[])].some(input=>input.value)||[...(panel?.querySelectorAll('.tsh-key-label')||[])].some(input=>input.value!==input.defaultValue);}
+  function clearNewKeys(){for(const input of panel?.querySelectorAll('.tsh-key-input')||[])input.value='';for(const input of panel?.querySelectorAll('.tsh-key-label')||[])input.value=input.defaultValue;}
   function cancelPrompt(){const keep=getDialog()?.querySelector('.tsh-discard-confirm .tsh-keep-editing');if(!keep)return false;keep.click();return true;}
   function allowLeave(next){
     const dialog=getDialog();if(!dialog||dialog.querySelector('.tsh-discard-confirm'))return false;
@@ -336,15 +345,16 @@ function createHubSettingsController(config) {
     if(!started||current!==vault||token!==generation||view!=='keys')return false;
     vaultReady=ready;
     if(!ready){
-      clearNewKeys();for(const control of panel.querySelectorAll('input,button'))control.disabled=true;
+      clearNewKeys();for(const control of panel.querySelectorAll('input,button,select'))control.disabled=true;
       message('Key storage is unavailable. Reload Torn to retry, or use the scripts’ own key settings.');
     }else message(text);
     return ready;
   }
   async function renderKeys(){
     if(hasNewKeys())return;
+    const scroll=getDialog()?.scrollTop||0;
     const token=screen();panel.classList.add('tsh-key-view');
-    panel.append(element('h3','','Shared API keys'),element('p','tsh-subtitle','Configure a key once, then enable access for the scripts you trust. Keys are never included in preference exports.'));
+    panel.append(element('h3','','API key manager'),element('p','tsh-subtitle','Use one global key or assign named keys to individual scripts. Enrolled connections use Hub keys only; coverage is shown below. Keys are never included in preference exports.'));
     await refreshVault();const providers=vault?await vault.status():[];if(token!==generation||!started)return;
     if(!vaultReady)panel.append(element('p','tsh-key-unavailable','Key sharing is unavailable in this environment. Use the scripts’ own key settings.'));
     const records=[...new Set(['torn','tornstats','ffscouter',...providers.map(record=>record.id)])].map(id=>providers.find(record=>record.id===id)||{id,configured:false,permissions:[]});
@@ -371,12 +381,45 @@ function createHubSettingsController(config) {
         if(ok){updateConfigured(false);if(token===generation&&view==='keys')message('');emit('credential-changed',{providerId:provider.id});await announceVault();if(token===generation&&view==='keys')renderKeys();}
         else if(await reportKeyFailure(current,token,'The key could not be deleted. Retry or reload Torn.'))remove.disabled=false;
       });remove.disabled=!vaultReady||!provider.configured;
-      section.append(input,save,remove,element('h5','','Scripts with access'));
-      for(const entry of registry.entries()){
+      section.dataset.provider=provider.id;
+      section.append(element('h5','','Global default'),input,save,remove);
+      const fallbackLabel=element('label','tsh-fallback-setting'),fallback=doc.createElement('input');fallback.type='checkbox';fallback.checked=provider.globalFallback===true;fallback.disabled=!vaultReady;fallback.setAttribute('aria-label',provider.id+' global fallback');
+      fallback.addEventListener('change',async()=>{if(!active)return;fallback.disabled=true;const current=vault,ok=await current.setGlobalFallback(provider.id,fallback.checked);if(!started||current!==vault||token!==generation)return;fallback.disabled=!vaultReady;if(!ok){fallback.checked=!fallback.checked;await reportKeyFailure(current,token,'Fallback setting could not be saved.');return;}provider.globalFallback=fallback.checked;await announceVault();for(const update of assignmentUpdates)update();});
+      fallbackLabel.append(fallback,element('span','','Use global key when a named assignment is missing'));section.append(fallbackLabel);
+      const assignmentUpdates=[];
+      for(const key of [...(provider.keys||[]),{id:null,label:'',configured:false}]){
+        const card=element('div','tsh-named-key');if(key.id)card.dataset.keyId=key.id;
+        card.append(element('h5','',key.id?(key.label+(key.configured?' · Configured':' · Missing key')):'Add a named key'));
+        const name=doc.createElement('input');name.type='text';name.maxLength=60;name.className='tsh-key-label';name.defaultValue=key.label;name.placeholder='Key label';name.setAttribute('aria-label',key.id?'Label for '+key.label:provider.id+' new key label');name.disabled=!vaultReady;
+        const secret=doc.createElement('input');secret.type='password';secret.autocomplete='new-password';secret.maxLength=4096;secret.className='tsh-key-input';secret.placeholder=key.id?'Replacement key (optional)':'API key';secret.setAttribute('aria-label',key.id?'Replacement for '+key.label:provider.id+' new named API key');secret.disabled=!vaultReady;
+        const apply=button(key.id?'Save named key':'Add named key','tsh-save-named',async()=>{
+          if(!active||!vaultReady||!name.value.trim()||!key.id&&!secret.value.trim())return;
+          const current=vault,value=secret.value.trim(),label=name.value.trim();secret.value='';apply.disabled=true;
+          const ok=key.id?await current.setNamedKey(provider.id,key.id,label,value||undefined):await current.addNamedKey(provider.id,label,value);
+          if(!started||current!==vault||token!==generation)return;
+          if(!ok){apply.disabled=false;await reportKeyFailure(current,token,'Named key could not be saved. Enter it again and retry.');return;}
+          name.defaultValue=key.id?label:'';name.value=name.defaultValue;await announceVault();if(token===generation)renderKeys();
+        });apply.disabled=!vaultReady;
+        card.append(name,secret,apply);
+        if(key.id){const del=button('Delete named key','tsh-delete-named',async()=>{if(!active||!vaultReady)return;const current=vault;del.disabled=true;const ok=await current.deleteNamedKey(provider.id,key.id);if(!started||current!==vault||token!==generation)return;if(!ok){del.disabled=false;await reportKeyFailure(current,token,'Named key could not be deleted.');return;}secret.value='';name.value=name.defaultValue;await announceVault();if(token===generation)renderKeys();});del.disabled=!vaultReady||!key.configured;card.append(del);}
+        section.append(card);
+      }
+      section.append(element('h5','','Scripts with access'));
+      for(const entry of registry.entries().filter(entry=>!entry.credentialProviders||entry.credentialProviders.includes(provider.id))){
         const row=element('label','tsh-key-permission');const check=doc.createElement('input');check.type='checkbox';check.disabled=!vaultReady||!entry.credentialIdentity;
         check.checked=provider.permissions?.some(permission=>permission.scriptId===entry.id&&permission.fingerprint===entry.credentialIdentity?.fingerprint)||false;
         check.addEventListener('change',async()=>{if(!active||!vaultReady||registry.get(entry.id)?.instance!==entry.instance)return;check.disabled=true;const current=vault;const ok=check.checked?await current.grant(entry.id,provider.id,entry.credentialIdentity.publicJwk):await current.revoke(entry.id,provider.id);if(!started||current!==vault||token!==generation)return;check.disabled=registry.get(entry.id)?.instance!==entry.instance;if(!ok){check.checked=!check.checked;await reportKeyFailure(current,token,'This permission could not be saved.');return;}message('');emit('credential-changed',{providerId:provider.id,scriptId:entry.id});await announceVault();});
         row.append(check,icon(entry.icon),element('span','',entry.name));if(!entry.credentialIdentity)row.append(element('small','','Adapter update or script page needed'));section.append(row);
+        const select=doc.createElement('select');select.className='tsh-key-assignment';select.setAttribute('aria-label',provider.id+' key for '+entry.name);
+        for(const key of [{id:'global',label:'Global default'},...(provider.keys||[])]){const option=doc.createElement('option');option.value=key.id;option.textContent=key.label+(key.configured===false?' (missing)':'');select.append(option);}
+        const assigned=(provider.assignments||provider.permissions||[]).find(p=>p.scriptId===entry.id)?.keyId||'global';select.value=assigned;
+        if(!select.value){const missing=doc.createElement('option');missing.value=assigned;missing.textContent='Missing named key';select.append(missing);select.value=missing.value;}
+        const state=element('small','tsh-assignment-status');
+        const update=()=>{select.disabled=!vaultReady||!check.checked||!entry.credentialIdentity;const named=provider.keys?.find(k=>k.id===select.value);state.textContent=!check.checked?'No Hub access':select.value==='global'?(provider.configured?'Global key':'Global key missing'):named?.configured?'Assigned: '+named.label:provider.globalFallback&&provider.configured?'Using global fallback':'Assigned key missing — API paused';if(!entry.capabilities?.includes('hub-keys-v2'))state.textContent+=' · Adapter update needed for Hub-only enforcement';};assignmentUpdates.push(update);update();
+        check.addEventListener('change',()=>win.setTimeout(update,0));
+        select.addEventListener('change',async()=>{if(!active||!vaultReady)return;const current=vault;select.disabled=true;const ok=await current.assignKey(entry.id,provider.id,select.value);if(!started||current!==vault||token!==generation)return;if(!ok){await reportKeyFailure(current,token,'Key assignment could not be saved.');renderKeys();return;}update();await announceVault();});
+        const assignment=element('div','tsh-key-routing'),policy=policyStates.get(entry.id+'\n'+provider.id);assignment.dataset.script=entry.id;assignment.dataset.provider=provider.id;
+        assignment.append(select,state,element('small','tsh-policy-status',entry.capabilities?.includes('hub-keys-v2')?policyNote(entry,policy?.instance===entry.instance?policy.status:null):''));section.append(assignment);
       }
       panel.append(section);
     }
@@ -386,6 +429,7 @@ function createHubSettingsController(config) {
       const state=providers.find(item=>item.id==='script-settings');
       for(const entry of secretScripts){const row=element('label','tsh-key-permission');const check=doc.createElement('input');check.type='checkbox';check.disabled=!vaultReady;check.checked=state?.permissions?.some(p=>p.scriptId===entry.id&&p.fingerprint===entry.credentialIdentity.fingerprint)||false;check.addEventListener('change',async()=>{if(!active||!vaultReady||registry.get(entry.id)?.instance!==entry.instance)return;check.disabled=true;const current=vault;const ok=check.checked?await current.grant(entry.id,'script-settings',entry.credentialIdentity.publicJwk):await current.revoke(entry.id,'script-settings');if(!started||current!==vault||token!==generation)return;check.disabled=registry.get(entry.id)?.instance!==entry.instance;if(!ok){check.checked=!check.checked;await reportKeyFailure(current,token,'This permission could not be saved.');return;}message('');await announceVault();});row.append(check,element('span','',entry.name+' secret edits'));section.append(row);}panel.append(section);
     }
+    if(token===generation&&getDialog())getDialog().scrollTop=scroll;
   }
   function filterEntries(entries){
     const query=toolbar?.querySelector('.tsh-search')?.value.trim().toLowerCase()||'', category=toolbar?.querySelector('.tsh-category')?.value||'';
@@ -441,7 +485,11 @@ function createHubSettingsController(config) {
         #tsh-dialog .tsh-form-save{border-color:var(--tsh-accent)!important}
         #tsh-dialog .tsh-key-provider{padding:12px;border:1px solid #4b4b4b;border-radius:5px;margin:14px 0;background:#292929}
         #tsh-dialog .tsh-key-input{width:100%;margin-bottom:6px}
-        #tsh-dialog .tsh-key-permission{display:flex;gap:8px;align-items:center;min-height:36px;font-size:12px}
+        #tsh-dialog .tsh-named-key{padding:10px 0;border-top:1px solid var(--tsui-border,#555)}
+        #tsh-dialog .tsh-key-label,#tsh-dialog .tsh-key-assignment{width:100%;box-sizing:border-box;margin-bottom:6px;min-height:36px}
+        #tsh-dialog .tsh-key-routing{margin:0 0 12px 24px;min-width:0}#tsh-dialog .tsh-key-routing small{display:block;overflow-wrap:anywhere}
+        #tsh-dialog .tsh-hub-nav{flex-wrap:wrap}#tsh-dialog .tsh-key-permission{flex-wrap:wrap}
+        #tsh-dialog .tsh-key-permission,#tsh-dialog .tsh-fallback-setting{display:flex;gap:8px;align-items:center;min-height:36px;font-size:12px}
         #tsh-dialog .tsh-key-permission .tsh-icon{display:block;width:16px;height:16px;flex:none}
         #tsh-dialog .tsh-key-permission small{color:#bbb;margin-left:auto;font-size:10px}
         #tsh-dialog .tsh-discard-confirm{position:sticky;bottom:0;background:#222;border:1px solid var(--tsh-accent);padding:14px;z-index:3;border-radius:5px;margin:12px}
@@ -487,6 +535,7 @@ function createHubSettingsController(config) {
   function open(){refreshAppearance();if(view==='scripts'){toolbar.hidden=false;panel.hidden=true;}else if(view==='keys')renderKeys();else if(view==='themes'&&!form)showThemes();else if(!form){if(selected==='hub')showPreferences(true);else if(selected)openScript(selected,true);else renderDirectory();}}
   function start(){
     if(started)return;started=true;active=true;
+    doc.addEventListener(prefix+'credential-policy',onCredentialPolicy);
     doc.addEventListener(prefix+'rpc-result',onRpc);doc.addEventListener(prefix+'appearance-result',onRpc);doc.addEventListener(prefix+'secret-result',onSecretResult);doc.addEventListener(prefix+'credential-request',onCredentialRequest);doc.addEventListener(prefix+'credential-discover',onCredentialDiscover);
     if(themeAvailable){themeMedia?.addEventListener?.('change',refreshAppearance);win.addEventListener('storage',refreshAppearance);}
     storage=createHubCredentialStorage(getHubPlatformEnvironment(),'torn-hub-v2');vault=createHubCredentialVault({storage,crypto:globalThis.crypto});
@@ -495,12 +544,13 @@ function createHubSettingsController(config) {
   }
   function stop(){
     started=false;active=false;generation++;clearRequests();clearNewKeys();disposeForm();schemas.clear();vault?.destroy();vault=null;vaultReady=false;selected=null;view='scripts';vaultRecords.clear();refreshWork=null;
+    doc.removeEventListener(prefix+'credential-policy',onCredentialPolicy);policyStates.clear();
     for(const [url,timer]of exportUrls){clearTimeout(timer);URL.revokeObjectURL(url);}exportUrls.clear();
     doc.removeEventListener(prefix+'rpc-result',onRpc);doc.removeEventListener(prefix+'appearance-result',onRpc);doc.removeEventListener(prefix+'secret-result',onSecretResult);doc.removeEventListener(prefix+'credential-request',onCredentialRequest);doc.removeEventListener(prefix+'credential-discover',onCredentialDiscover);
     if(themeAvailable){themeMedia?.removeEventListener?.('change',refreshAppearance);win.removeEventListener('storage',refreshAppearance);doc.getElementById('tsh-theme-style')?.remove();}
     panel=nav=toolbar=null;
     doc.getElementById('tsh-settings-style')?.remove();
   }
-  function activity(value){if(active===value)return;active=value;if(!value)clearRequests();else{refreshAppearance();refreshVault().catch(()=>{vaultReady=false;});}}
+  function activity(value){if(active===value)return;active=value;if(!value){clearRequests();}else{refreshAppearance();refreshVault().catch(()=>{vaultReady=false;});}}
   return {mount,start,stop,open,refresh,allowLeave,cancelPrompt,filterEntries,pinButton,activity,openPage,saveWindow,isScriptView:()=>view==='scripts',preferences:()=>prefs};
 }

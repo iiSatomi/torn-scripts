@@ -24,7 +24,9 @@ function normalizeHubEntry(raw, origin) {
     version: typeof raw.version === 'string' ? raw.version.slice(0, 32) : '', url: url.href, actions,
   };
   if (typeof raw.category === 'string' && raw.category.length <= 40) entry.category = raw.category.trim();
-  if (Array.isArray(raw.capabilities)) entry.capabilities = [...new Set(raw.capabilities.filter(value => ['settings','credentials','secret-settings','appearance'].includes(value)))];
+  if (Array.isArray(raw.capabilities)) entry.capabilities = [...new Set(raw.capabilities.filter(value => ['settings','credentials','secret-settings','appearance','hub-keys-v2'].includes(value)))];
+  if(Array.isArray(raw.credentialProviders))entry.credentialProviders=[...new Set(raw.credentialProviders.filter(value=>['torn','tornstats','ffscouter'].includes(value)))];
+  if(['script','main'].includes(raw.credentialScope))entry.credentialScope=raw.credentialScope;
   if (Array.isArray(raw.pages) && raw.pages.length <= 20) {
     const pageIds = new Set();
     entry.pages = [];
