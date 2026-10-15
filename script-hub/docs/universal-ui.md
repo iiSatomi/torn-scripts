@@ -1,6 +1,6 @@
 # Universal script UI and themes
 
-Implementation: Script Hub 1.5.1, shared UI contract version 1.
+Implementation: Script Hub 1.5.0, shared UI contract version 1.
 
 **Stock Mgr** is the fourth selectable layout and palette. Use **Themes → Apply
 Stock Mgr defaults → Save theme** for the charcoal/teal compact preset. Layout,
@@ -15,7 +15,7 @@ options panel first. New Stock Mgr windows default to a compact 340 px desktop
 width; existing saved geometry wins. PDA windows retain maximized opening and
 44 px touch controls. Section footers reserve space above PDA floating controls.
 
-Payout 1.6.0 uses a calculator-owned footer for its original total, balance and
+Payout 1.6.1 uses a calculator-owned footer for its original total, balance and
 export controls plus navigation to the existing Pay members workflow. Stock Mgr
 keeps this footer visible while the form scrolls; other layouts restore the same
 nodes to their original homes. Switching themes never rebuilds input nodes,
