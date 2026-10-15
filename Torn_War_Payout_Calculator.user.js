@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.6.0
+// @version      1.6.1
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
 // @description  Standalone Script Hub calculator: enemy-only war payouts and cache-based per-hit estimates.
@@ -31,7 +31,7 @@
 (function () {
 'use strict';
 if (window.top !== window.self) return;
-const WAR_PAYOUT_RELEASE_VERSION = "1.6.0";
+const WAR_PAYOUT_RELEASE_VERSION = "1.6.1";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -262,8 +262,12 @@ function createTornScriptUI(options = {}) {
   let style = doc.querySelector('style[data-tsui-style="1"]');
   if (!style) {
     style = doc.createElement('style'); style.setAttribute('data-tsui-style', '1');
-    style.textContent = scriptUiKitCss(); (doc.head || doc.documentElement).append(style);
+    (doc.head || doc.documentElement).append(style);
   }
+  // Independently updated scripts can arrive in either order. Upgrade older
+  // shared CSS once, while leaving a future revision owned by a newer bundle.
+  const styleRevision=Number(style.getAttribute('data-tsui-style-revision'));
+  if(!Number.isSafeInteger(styleRevision)||styleRevision<2){style.textContent=scriptUiKitCss();style.setAttribute('data-tsui-style-revision','2');}
   let launcherTray = doc.querySelector('[data-tsui-launchers="1"]');
   if (!launcherTray) {
     launcherTray = doc.createElement('div'); launcherTray.className = 'tsui-launchers';
