@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Script Hub
 // @namespace    isatomi.torn.script-hub
-// @version      1.4.6
+// @version      1.5.0
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.
@@ -250,7 +250,7 @@ function normalizeScriptUiTheme(raw) {
     const input=record(own(record(own(raw,'colors')),mode));
     for(const role of roles){const value=own(input,role);if(typeof value==='string'&&/^#(?:[a-f\d]{3}|[a-f\d]{6})$/i.test(value))colors[mode][role]=(value.length===4?'#'+[...value.slice(1)].map(c=>c+c).join(''):value).toLowerCase();}
   }
-  return {version:1,layout:choice('layout',['frostbite','workbench','torn'],'frostbite'),palette:choice('palette',['frostbite','workbench','torn'],'frostbite'),
+  return {version:1,layout:choice('layout',['frostbite','workbench','torn','stock'],'frostbite'),palette:choice('palette',['frostbite','workbench','torn','stock'],'frostbite'),
     mode:choice('mode',['system','dark','light'],'system'),density:choice('density',['comfortable','compact'],'comfortable'),
     radius:bounded('radius',0,18,null),fontScale:bounded('fontScale',.85,1.35,1),colors};
 }
@@ -261,11 +261,13 @@ function resolveScriptUiTheme(raw, dark=false) {
   const bases={
     frostbite:{light:['#edf4fa','#ffffff','#e4edf6','#172b40','#4b6075','#bdcedd','#2563a8'],dark:['#0b1421','#111f31','#1a2c42','#e7f0fa','#a4b8cc','#3e546d','#69b5ff']},
     workbench:{light:['#e9e9f0','#ffffff','#f3f2f8','#302c40','#666078','#d3cede','#7051a2'],dark:['#202028','#2a2933','#34323f','#edeaf5','#b7b0c7','#4a4559','#c4a6f5']},
-    torn:{light:['#e9e9e9','#ffffff','#dddddd','#222222','#555555','#bbbbbb','#416c38'],dark:['#181818','#242424','#333333','#eeeeee','#bbbbbb','#555555','#91be71']}
+    torn:{light:['#e9e9e9','#ffffff','#dddddd','#222222','#555555','#bbbbbb','#416c38'],dark:['#181818','#242424','#333333','#eeeeee','#bbbbbb','#555555','#91be71']},
+    stock:{light:['#edf4f3','#ffffff','#ddeceb','#182d2d','#486363','#9bb8b6','#1a696a'],dark:['#101212','#191c1c','#203030','#e5ebeb','#a3b2b2','#3c5555','#68c3c5']}
   };
   const [background,surface,raised,text,muted,border,accent]=bases[theme.palette][mode];
   const states=mode==='dark'?{success:'#83d99a',warning:'#f4ca68',error:'#ff9696',focus:'#b3d8ff',selection:'#2e4866'}:{success:'#23743c',warning:'#865600',error:'#b42328',focus:'#175fc4',selection:'#c5ddf5'};
   const chart=mode==='dark'?['#78b6ff','#e8b86a','#b29bff','#6ad0bf','#ed99bb','#b1ce78']:['#2866ae','#946000','#7547b5','#187c70','#ad426f','#657c24'];
+  if(theme.palette==='stock'){states.focus=accent;states.selection=mode==='dark'?'#223b3b':'#c8e5e2';}
   const colors={background,surface,raised,text,muted,border,accent,...states,...Object.fromEntries(chart.map((value,i)=>['chart'+(i+1),value])),...theme.colors[mode]};
   const luminance=hex=>{const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};
   const ratio=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
@@ -280,7 +282,7 @@ function resolveScriptUiTheme(raw, dark=false) {
 function applyScriptUiTheme(node, raw, dark=false) {
   const resolved=resolveScriptUiTheme(raw,dark);
   for(const [role,value]of Object.entries(resolved.colors))node.style.setProperty('--tsui-'+role.replace(/[A-Z]/g,char=>'-'+char.toLowerCase()),value);
-  const defaults={frostbite:12,workbench:6,torn:3};
+  const defaults={frostbite:12,workbench:6,torn:3,stock:6};
   node.style.setProperty('--tsui-radius',(resolved.radius===null?defaults[resolved.layout]:resolved.radius)+'px');
   node.style.setProperty('--tsui-font-scale',String(resolved.fontScale));
   node.style.setProperty('--tsui-space',resolved.density==='compact'?'6px':'10px');
@@ -471,7 +473,7 @@ function renderHubThemes(config) {
   const urls = new Map(), disposers = [];
   const listen = (target, type, callback) => { target.addEventListener(type, callback); disposers.push(() => target.removeEventListener(type, callback)); };
   const button = (label, cls, callback) => { const node = element('button', cls, label); node.type = 'button'; listen(node, 'click', callback); return node; };
-  const names = { frostbite: 'Frostbite', workbench: 'Workbench', torn: 'Torn native' };
+  const names = { frostbite: 'Frostbite', workbench: 'Workbench', torn: 'Torn native', stock: 'Stock Mgr' };
   const roles = { background: 'Background', surface: 'Panels', raised: 'Headers and controls', text: 'Text', muted: 'Secondary text', border: 'Borders', accent: 'Accent', focus: 'Focus outline', selection: 'Selection', success: 'Success', warning: 'Warning', error: 'Error', chart1: 'Chart color 1', chart2: 'Chart color 2', chart3: 'Chart color 3', chart4: 'Chart color 4', chart5: 'Chart color 5', chart6: 'Chart color 6' };
   const heading = element('h3', '', 'Themes'), subtitle = element('p', 'tsh-subtitle', 'Preview your appearance. Save to apply it to scripts using the shared UI.');
   const status = element('p', 'tsh-theme-message'); status.setAttribute('role', 'status');
@@ -507,7 +509,7 @@ function renderHubThemes(config) {
     const pick = button('', 'tsh-theme-layout', () => { draft.layout = id; syncLayout(); preview(); });
     pick.dataset.layout = id;
     const diagram = element('span', 'tsh-theme-diagram'); diagram.setAttribute('aria-hidden', 'true'); diagram.append(element('span'), element('span'), element('span'));
-    pick.append(diagram, element('strong', '', label), element('small', '', id === 'frostbite' ? 'Navigation rail' : id === 'workbench' ? 'Tabs and inspector' : 'Compact tabs'));
+    pick.append(diagram, element('strong', '', label), element('small', '', id === 'frostbite' ? 'Navigation rail' : id === 'workbench' ? 'Tabs and inspector' : id === 'stock' ? 'Compact tool panel' : 'Compact tabs'));
     layoutButtons.set(id, pick); layouts.append(pick);
   }
   function syncLayout() { for (const [id, node] of layoutButtons) node.setAttribute('aria-pressed', String(draft.layout === id)); }
@@ -515,7 +517,7 @@ function renderHubThemes(config) {
   const choices = element('div', 'tsh-theme-fields');
   const palette = select('Color palette', Object.entries(names), draft.palette, value => { draft.palette = value; syncColors(); }, 'tsh-theme-palette');
   const mode = select('Appearance', [['system', 'Follow device'], ['dark', 'Dark'], ['light', 'Light']], draft.mode, value => { draft.mode = value; syncColors(); }, 'tsh-theme-mode');
-  choices.append(palette, mode); layoutSection.append(choices); form.append(layoutSection);
+  choices.append(palette, mode); layoutSection.append(choices,button('Apply Stock Mgr defaults','tsh-theme-stock-preset',()=>{draft=normalize({layout:'stock',palette:'stock',mode:'dark',density:'compact'});sync();preview();})); form.append(layoutSection);
   const colorSection = element('section', 'tsh-theme-section'); colorSection.append(element('h4', '', 'Custom colors'));
   const colorMode = element('p', 'tsh-subtitle'); colorSection.append(colorMode);
   const basicColors = element('div', 'tsh-theme-colors'), advanced = element('details', 'tsh-theme-advanced'), advancedColors = element('div', 'tsh-theme-colors');
@@ -764,6 +766,30 @@ function hubThemeStyles() {
     #tsh-dialog[data-tsui-layout] :is(.tsh-hub-nav button,.tsh-tile-controls button,.tsh-settings-script,.tsh-settings-page){min-height:44px}
   }
   @media(pointer:coarse){#tsh-dialog[data-tsui-layout][data-tsui-density] :is(.tsh-hub-nav button,.tsh-primary,.tsh-tile-controls button,.tsh-settings-script,.tsh-settings-page){min-height:44px}}
+  #tsh-dialog .tsh-theme-layouts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #tsh-dialog .tsh-theme-stock-preset{margin-top:12px}
+  #tsh-dialog [data-layout=stock] .tsh-theme-diagram{grid-template-columns:1fr;grid-template-rows:6px 1fr;border-radius:2px}
+  #tsh-dialog[data-tsui-layout=stock]{display:block;font-family:Arial,Helvetica,sans-serif}
+  #tsh-dialog[data-tsui-layout=stock] .tsui-theme-mark{display:none}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-header{position:relative;padding:24px 10px 7px;gap:7px;background:var(--tsui-raised);min-height:58px}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-header:before{content:'⠿ drag';position:absolute;left:0;right:0;top:0;height:18px;font:10px/18px Consolas,monospace;text-align:center;letter-spacing:2px;background:var(--tsui-selection);color:var(--tsui-muted);border-bottom:1px solid var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-header h2{font-size:13px;color:var(--tsui-accent);letter-spacing:0}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-count{font-size:10px;color:var(--tsui-muted)}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-window-button{font-size:0;width:30px;padding:4px;min-height:30px}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-window-lock:before{content:'◇';font-size:16px}#tsh-dialog[data-tsui-layout=stock] .tsh-window-reset:before{content:'↺';font-size:16px}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav{position:static;padding:0 10px;gap:14px;background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav button{border:0!important;border-bottom:2px solid transparent!important;border-radius:0;padding:9px 2px;color:var(--tsui-muted);background:transparent;font-size:12px}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav button[aria-selected=true]{border-bottom-color:var(--tsui-accent)!important;color:var(--tsui-accent);background:transparent}
+  #tsh-dialog[data-tsui-layout=stock]>.tsh-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;padding:12px}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-tile{border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);overflow:hidden;background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-primary{min-height:70px;padding:10px;border:0;display:grid;grid-template-columns:20px minmax(0,1fr);gap:5px 8px;text-align:left;align-content:center;background:transparent;box-shadow:none}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-primary .tsh-icon{width:20px;height:20px;grid-row:1/3}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-name{font-size:12px;font-weight:600}#tsh-dialog[data-tsui-layout=stock] .tsh-state{grid-column:2;font-size:10px}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-tile-controls{margin:0;gap:0;border-top:1px solid var(--tsui-border)}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-tile-controls button{margin:0;border:0;border-radius:0;background:var(--tsui-background)}
+  #tsh-dialog[data-tsui-layout=stock] :is(.tsh-settings-view,.tsh-actions){padding:12px}
+  #tsh-dialog[data-tsui-layout=stock] .tsh-settings-script{padding:9px;border-radius:var(--tsui-radius);background:var(--tsui-surface)}
+  @media(max-width:600px),(max-height:500px){#tsh-dialog[data-tsui-layout=stock]>.tsh-header{padding-top:8px;min-height:52px}#tsh-dialog[data-tsui-layout=stock]>.tsh-header:before{display:none}#tsh-dialog[data-tsui-layout=stock] .tsh-window-button{width:44px;min-height:44px}#tsh-dialog[data-tsui-layout=stock]>.tsh-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav{gap:5px;padding:0 7px}#tsh-dialog[data-tsui-layout=stock]>.tsh-hub-nav button{padding:8px 4px;min-height:44px;gap:4px}}
   @media(prefers-reduced-motion:reduce){#tsh-dialog[data-tsui-layout] *{scroll-behavior:auto;transition:none}}
   `;
 }

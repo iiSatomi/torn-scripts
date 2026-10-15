@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.5.4
+// @version      1.6.0
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
 // @description  Standalone Script Hub calculator: enemy-only war payouts and cache-based per-hit estimates.
@@ -31,7 +31,7 @@
 (function () {
 'use strict';
 if (window.top !== window.self) return;
-const WAR_PAYOUT_RELEASE_VERSION = "1.5.4";
+const WAR_PAYOUT_RELEASE_VERSION = "1.6.0";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -45,7 +45,7 @@ function normalizeScriptUiTheme(raw) {
     const input=record(own(record(own(raw,'colors')),mode));
     for(const role of roles){const value=own(input,role);if(typeof value==='string'&&/^#(?:[a-f\d]{3}|[a-f\d]{6})$/i.test(value))colors[mode][role]=(value.length===4?'#'+[...value.slice(1)].map(c=>c+c).join(''):value).toLowerCase();}
   }
-  return {version:1,layout:choice('layout',['frostbite','workbench','torn'],'frostbite'),palette:choice('palette',['frostbite','workbench','torn'],'frostbite'),
+  return {version:1,layout:choice('layout',['frostbite','workbench','torn','stock'],'frostbite'),palette:choice('palette',['frostbite','workbench','torn','stock'],'frostbite'),
     mode:choice('mode',['system','dark','light'],'system'),density:choice('density',['comfortable','compact'],'comfortable'),
     radius:bounded('radius',0,18,null),fontScale:bounded('fontScale',.85,1.35,1),colors};
 }
@@ -56,11 +56,13 @@ function resolveScriptUiTheme(raw, dark=false) {
   const bases={
     frostbite:{light:['#edf4fa','#ffffff','#e4edf6','#172b40','#4b6075','#bdcedd','#2563a8'],dark:['#0b1421','#111f31','#1a2c42','#e7f0fa','#a4b8cc','#3e546d','#69b5ff']},
     workbench:{light:['#e9e9f0','#ffffff','#f3f2f8','#302c40','#666078','#d3cede','#7051a2'],dark:['#202028','#2a2933','#34323f','#edeaf5','#b7b0c7','#4a4559','#c4a6f5']},
-    torn:{light:['#e9e9e9','#ffffff','#dddddd','#222222','#555555','#bbbbbb','#416c38'],dark:['#181818','#242424','#333333','#eeeeee','#bbbbbb','#555555','#91be71']}
+    torn:{light:['#e9e9e9','#ffffff','#dddddd','#222222','#555555','#bbbbbb','#416c38'],dark:['#181818','#242424','#333333','#eeeeee','#bbbbbb','#555555','#91be71']},
+    stock:{light:['#edf4f3','#ffffff','#ddeceb','#182d2d','#486363','#9bb8b6','#1a696a'],dark:['#101212','#191c1c','#203030','#e5ebeb','#a3b2b2','#3c5555','#68c3c5']}
   };
   const [background,surface,raised,text,muted,border,accent]=bases[theme.palette][mode];
   const states=mode==='dark'?{success:'#83d99a',warning:'#f4ca68',error:'#ff9696',focus:'#b3d8ff',selection:'#2e4866'}:{success:'#23743c',warning:'#865600',error:'#b42328',focus:'#175fc4',selection:'#c5ddf5'};
   const chart=mode==='dark'?['#78b6ff','#e8b86a','#b29bff','#6ad0bf','#ed99bb','#b1ce78']:['#2866ae','#946000','#7547b5','#187c70','#ad426f','#657c24'];
+  if(theme.palette==='stock'){states.focus=accent;states.selection=mode==='dark'?'#223b3b':'#c8e5e2';}
   const colors={background,surface,raised,text,muted,border,accent,...states,...Object.fromEntries(chart.map((value,i)=>['chart'+(i+1),value])),...theme.colors[mode]};
   const luminance=hex=>{const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};
   const ratio=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
@@ -75,7 +77,7 @@ function resolveScriptUiTheme(raw, dark=false) {
 function applyScriptUiTheme(node, raw, dark=false) {
   const resolved=resolveScriptUiTheme(raw,dark);
   for(const [role,value]of Object.entries(resolved.colors))node.style.setProperty('--tsui-'+role.replace(/[A-Z]/g,char=>'-'+char.toLowerCase()),value);
-  const defaults={frostbite:12,workbench:6,torn:3};
+  const defaults={frostbite:12,workbench:6,torn:3,stock:6};
   node.style.setProperty('--tsui-radius',(resolved.radius===null?defaults[resolved.layout]:resolved.radius)+'px');
   node.style.setProperty('--tsui-font-scale',String(resolved.fontScale));
   node.style.setProperty('--tsui-space',resolved.density==='compact'?'6px':'10px');
@@ -236,7 +238,7 @@ ${scope}[data-tsui-layout=torn] .tsui-theme-mark{width:22px;height:22px}
 
 /** Shared, framework-free native script surfaces. No network or storage is owned here.
  * createTornScriptUI({doc,win,id,title,surface,mount,applyTheme,theme,themeClient,
- *   ownsThemeClient:false,sections:[{id,label,node,render(host,ui)}],settings,inspector,
+ *   ownsThemeClient:false,sections:[{id,label,node,footer,headerAction,render(host,ui)}],settings,inspector,
  *   onVisibilityChange(active),onSelect(id),onClose(),onDestroy(),autoDestroyOnDetach:true,
  *   readLayout(),writeLayout({version:1,desktop,mobile})}).
  * Layout adapters are optional, may be async, and receive only a bounded geometry
@@ -280,7 +282,8 @@ function createTornScriptUI(options = {}) {
   function clearPdaTimer() { if (pdaTimer !== null) { win.clearTimeout(pdaTimer); pdaTimer = null; } }
   let currentTheme = {}, explicitDark;
   let themeQueued = false, nextTask = 0;
-  const initial = { x: 24, y: 40, width: 760, height: 540 };
+  const firstTheme=options.theme||(options.themeClient?.get?options.themeClient.get():{});
+  const initial = { x: 24, y: 40, width: firstTheme?.layout==='stock'?340:760, height: firstTheme?.layout==='stock'?760:540 };
   let rect = { ...initial }, previousRect = null;
   let booting = true, visibilityQueued = false, writingLayout = false, persistQueued = false, pendingLayout = null;
   let layoutLoading = floating && typeof options.readLayout === 'function';
@@ -354,12 +357,14 @@ function createTornScriptUI(options = {}) {
   root.dataset.tsuiSurface = floating ? 'floating' : 'embedded';
   root.setAttribute('aria-label', String(options.title || 'Script tool').slice(0, 200));
   root.tabIndex = -1;
+  const dragStrip=node('div','tsui-drag-strip','⠿ drag');dragStrip.tabIndex=0;dragStrip.setAttribute('role','button');dragStrip.setAttribute('aria-label','Move '+(options.title||'Script tool'));
   const header = node('header', 'tsui-header');
   const title = node('div', 'tsui-title', options.title || 'Script tool');
   title.tabIndex = 0;
   title.setAttribute('aria-label', 'Move ' + (options.title || 'Script tool'));
   title.title = 'Drag to move. Focus and use arrow keys to move; Shift + arrows resize. Escape cancels a drag.';
   const controls = node('div', 'tsui-controls');
+  const headerActions=node('div','tsui-header-actions');controls.append(headerActions);
   header.append(title, controls);
   if(typeof appendScriptUiHeaderArt==='function')appendScriptUiHeaderArt(doc,header);
   const body = node('div', 'tsui-body');
@@ -375,8 +380,9 @@ function createTornScriptUI(options = {}) {
   const notices = node('div', 'tsui-notices'); notices.setAttribute('aria-live', 'polite');
   const taskList = node('div', 'tsui-tasks');
   footer.append(statusNode, notices, taskList);
+  const sectionFooters=node('div','tsui-section-footers');
   const resize = node('div', 'tsui-resize'); resize.setAttribute('aria-hidden', 'true');
-  root.append(header, body, footer, resize);
+  root.append(dragStrip,header, body,sectionFooters, footer, resize);
   const launcher = button(options.title || 'Script tool', 'Restore ' + (options.title || 'Script tool'), () => { restore(); focus(); });
   launcher.className = 'tsui-launcher'; launcher.hidden = true;
   const mount = options.mount || doc.body || doc.documentElement;
@@ -444,8 +450,9 @@ function createTornScriptUI(options = {}) {
   function update() {
     if (destroyed) return;
     root.hidden = !shown || minimized; launcherHost.hidden = launcher.hidden = !shown || !minimized;
-    body.hidden = collapsed; footer.hidden = collapsed;
-    root.dataset.tsuiCollapsed = String(collapsed); root.dataset.tsuiLocked = String(locked);
+    body.hidden = collapsed; footer.hidden = collapsed;sectionFooters.hidden=collapsed;
+    if(!shown||minimized||collapsed)closeWindowOptions();
+    root.dataset.tsuiCollapsed = String(collapsed); root.dataset.tsuiLocked = String(locked);root.dataset.tsuiMaximized=String(maximized);root.dataset.tsuiPda=String(pdaOpening());
     collapseButton.textContent = collapsed ? 'Expand' : 'Collapse'; collapseButton.setAttribute('aria-expanded', String(!collapsed));
     lockButton.textContent = locked ? 'Unlock' : 'Lock'; lockButton.setAttribute('aria-pressed', String(locked));
     resize.hidden = !floating || locked || maximized || collapsed;
@@ -485,14 +492,20 @@ function createTornScriptUI(options = {}) {
     root.classList.add('tsui-gesturing'); event.preventDefault();
   }
   const collapseButton = button('Collapse', 'Collapse or expand', () => collapse(), controls);
-  const lockButton = button('Lock', 'Lock or unlock position', () => setLocked(!locked), controls);
-  button('Reset', 'Reset window position', reset, controls);
+  const optionsToggle=button('⋯','Window options',()=>{const open=optionsToggle.getAttribute('aria-expanded')!=='true';optionsToggle.setAttribute('aria-expanded',String(open));windowOptions.dataset.open=String(open);if(open)windowOptions.querySelector('button')?.focus();},controls);
+  optionsToggle.className='tsui-window-options-toggle';optionsToggle.setAttribute('aria-expanded','false');
+  const windowOptions=node('div','tsui-window-options');windowOptions.setAttribute('role','group');windowOptions.setAttribute('aria-label','Window controls');controls.append(windowOptions);
+  function closeWindowOptions(){optionsToggle.setAttribute('aria-expanded','false');windowOptions.dataset.open='false';}
+  const lockButton = button('Lock', 'Lock or unlock position', () => setLocked(!locked), windowOptions);
+  button('Reset', 'Reset window position', reset, windowOptions);
   if (floating) {
-    button('Minimize', 'Minimize window', minimize, controls);
-    button('Maximize', 'Maximize or restore window', () => maximized ? restore() : maximize(), controls);
+    button('Minimize', 'Minimize window', minimize, windowOptions);
+    button('Maximize', 'Maximize or restore window', () => maximized ? restore() : maximize(), windowOptions);
   } else { lockButton.hidden = true; controls.querySelector('[aria-label="Reset window position"]').hidden = true; }
   button('×', 'Close window', close, controls);
+  listen(doc,'pointerdown',event=>{if(!controls.contains(event.target))closeWindowOptions();});
   listen(title, 'pointerdown', event => beginGesture(event, 'move'));
+  listen(dragStrip,'pointerdown',event=>beginGesture(event,'move'));
   listen(resize, 'pointerdown', event => beginGesture(event, 'resize'));
   listen(win, 'pointermove', event => {
     if (!gesture || event.pointerId !== gesture.pointerId) return;
@@ -505,21 +518,24 @@ function createTornScriptUI(options = {}) {
   listen(win, 'pointercancel', () => endGesture(true));
   listen(win, 'blur', () => endGesture(true));
   listen(title, 'lostpointercapture', () => endGesture(true));
+  listen(dragStrip,'lostpointercapture',()=>endGesture(true));
   listen(resize, 'lostpointercapture', () => endGesture(true));
-  listen(title, 'keydown', event => {
+  function moveKey(event) {
     if (!floating || locked || maximized || !/^Arrow(Left|Right|Up|Down)$/.test(event.key)) return;
     const delta = /Left|Up/.test(event.key) ? -10 : 10;
     const horizontal = /Left|Right/.test(event.key);
     rect[event.shiftKey ? horizontal ? 'width' : 'height' : horizontal ? 'x' : 'y'] += delta;
     fit(); rememberLayout(); event.preventDefault();
-  });
+  }
+  listen(title,'keydown',moveKey);listen(dragStrip,'keydown',moveKey);
   listen(root, 'pointerdown', focus);
   listen(root, 'focusin', focus);
   listen(doc, 'keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented) return;
     const top = floatingRoots().at(-1);
     if (top !== root) return;
-    if (gesture) endGesture(true);
+    if(optionsToggle.getAttribute('aria-expanded')==='true'){closeWindowOptions();optionsToggle.focus();}
+    else if (gesture) endGesture(true);
     else if (maximized) restore();
     else collapse();
     event.preventDefault();
@@ -550,6 +566,7 @@ function createTornScriptUI(options = {}) {
   }
   function setTheme(theme, dark) {
     if (destroyed) return;
+    closeWindowOptions();
     currentTheme = theme || {}; explicitDark = dark;
     const effectiveDark = typeof dark === 'boolean' ? dark : !!(win.matchMedia && win.matchMedia('(prefers-color-scheme: dark)').matches);
     options.applyTheme(root, currentTheme, effectiveDark);
@@ -578,6 +595,8 @@ function createTornScriptUI(options = {}) {
     selected = id;
     for (const [key, section] of sections) {
       section.host.hidden = key !== id; section.button.setAttribute('aria-current', key === id ? 'page' : 'false');
+      if(section.footer)section.footer.hidden=key!==id;
+      if(section.headerButton)section.headerButton.setAttribute('aria-pressed',String(key===id));
     }
     if (changed && !booting) rememberLayout(false);
     if (changed && typeof options.onSelect === 'function') options.onSelect(id);
@@ -650,7 +669,10 @@ function createTornScriptUI(options = {}) {
     const host = node('div', 'tsui-page');
     const navButton = button(section.label || id, section.label || id, () => select(id), nav);
     if (section.node) host.append(section.node);
-    content.append(host); sections.set(id, { host, button: navButton });
+    let footerHost=null,headerButton=null;
+    if(section.footer){footerHost=node('div','tsui-section-footer');footerHost.append(section.footer);sectionFooters.append(footerHost);}
+    if(typeof section.headerAction==='string'){navButton.dataset.tsuiHeaderAction='true';headerButton=button(section.headerAction.slice(0,4),section.label||id,()=>select(id),headerActions);headerButton.setAttribute('aria-pressed','false');}
+    content.append(host); sections.set(id, { host, button: navButton,footer:footerHost,headerButton });
     if (typeof section.render === 'function') { const cleanup = section.render(host, api); if (typeof cleanup === 'function') cleanups.push(cleanup); }
   }
   if (sections.size) select(sections.keys().next().value);
@@ -692,6 +714,7 @@ function scriptUiKitCss() {
 .tsui-root[data-tsui-surface=embedded]{position:relative;width:100%;min-height:220px;max-height:80dvh}
 .tsui-header{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:var(--tsui-space,10px);background:var(--tsui-raised,#242d3c);border-bottom:1px solid var(--tsui-border,#506076);flex:none}
 .tsui-title{font-weight:750;flex:1;min-width:90px;cursor:move;touch-action:none;padding:6px}.tsui-controls{display:flex;flex-wrap:wrap;gap:4px}
+.tsui-drag-strip,.tsui-header-actions,.tsui-root .tsui-window-options-toggle{display:none}.tsui-window-options{display:contents}.tsui-section-footers{flex:none;max-height:44%;overflow:auto}.tsui-section-footers:empty,.tsui-section-footers:not(:has(.tsui-section-footer:not([hidden]))){display:none}.tsui-section-footer{border-top:1px solid var(--tsui-border);background:var(--tsui-raised);padding:10px}
 .tsui-root button,.tsui-launcher{font:inherit;cursor:pointer;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,6px);padding:6px 10px;min-height:var(--tsui-control-height,34px)}
 .tsui-root button:hover{background:var(--tsui-selection,#38455b)}.tsui-root :focus-visible,.tsui-launcher:focus-visible{outline:2px solid var(--tsui-focus,#8fbcff);outline-offset:2px}
 .tsui-root input,.tsui-root select,.tsui-root textarea{font:inherit;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:4px;padding:8px;max-width:100%}
@@ -714,6 +737,28 @@ function scriptUiKitCss() {
 @media(min-width:850px){.tsui-root[data-tsui-layout=workbench] .tsui-body:has(.tsui-inspector:not(:empty)){grid-template-columns:minmax(0,1fr) 180px}.tsui-root[data-tsui-layout=workbench] .tsui-nav{grid-column:1/-1}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:2;grid-row:2/4;border-left:1px solid var(--tsui-border,#506076)}}
 @media(max-width:600px),(pointer:coarse){.tsui-root button,.tsui-launcher{min-height:44px}.tsui-root input,.tsui-root select,.tsui-root textarea{font-size:16px}.tsui-header{gap:4px;padding:6px}.tsui-controls{width:100%;overflow:auto;flex-wrap:nowrap}.tsui-controls button{flex:1;padding:4px;font-size:12px}.tsui-root .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto auto;align-content:start}.tsui-root .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);padding:6px;grid-row:auto}.tsui-root .tsui-content{padding:10px;grid-column:1;overflow:visible}.tsui-root .tsui-settings,.tsui-root .tsui-inspector{grid-column:1;grid-row:auto}.tsui-resize{display:none}.tsui-title{touch-action:auto;cursor:default}.tsui-task{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){.tsui-root *{animation:none!important;transition:none!important}}
+.tsui-root[data-tsui-layout=stock]{font-family:Arial,Helvetica,sans-serif;font-size:calc(13px * var(--tsui-font-scale,1))}
+.tsui-root[data-tsui-layout=stock] .tsui-theme-mark{display:none}
+.tsui-root[data-tsui-layout=stock][data-tsui-surface=floating]:not([data-tsui-maximized=true]) .tsui-drag-strip{display:block;background:var(--tsui-selection);color:var(--tsui-muted);font:10px/18px Consolas,monospace;letter-spacing:2px;text-align:center;cursor:move;touch-action:none;border-bottom:1px solid var(--tsui-border);flex:none}
+.tsui-root[data-tsui-layout=stock] .tsui-header{padding:7px 10px;gap:6px;flex-wrap:nowrap;background:var(--tsui-raised);z-index:3}
+.tsui-root[data-tsui-layout=stock] .tsui-title{font-size:1em;font-weight:600;color:var(--tsui-accent);padding:3px 0;min-width:60px;overflow-wrap:anywhere}
+.tsui-root[data-tsui-layout=stock] .tsui-controls{width:auto;flex-wrap:nowrap;overflow:visible;gap:4px;flex:none}
+.tsui-root[data-tsui-layout=stock] .tsui-header-actions{display:flex;gap:4px}.tsui-root[data-tsui-layout=stock] .tsui-header-actions:empty{display:none}
+.tsui-root[data-tsui-layout=stock] .tsui-controls>button,.tsui-root[data-tsui-layout=stock] .tsui-header-actions>button{width:30px;min-height:30px;padding:3px;border-radius:3px;color:var(--tsui-accent)}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options-toggle{display:block}
+.tsui-root[data-tsui-layout=stock] .tsui-controls>[aria-label="Collapse or expand"]{font-size:0}.tsui-root[data-tsui-layout=stock] .tsui-controls>[aria-label="Collapse or expand"]:before{content:'▴';font-size:16px}
+.tsui-root[data-tsui-layout=stock][data-tsui-collapsed=true] .tsui-controls>[aria-label="Collapse or expand"]:before{content:'▾'}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options{display:none;position:absolute;right:8px;top:calc(100% + 3px);width:190px;max-height:min(250px,60dvh);overflow:auto;padding:6px;background:var(--tsui-surface);border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);box-shadow:0 6px 20px #0006}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options[data-open=true]{display:flex;flex-direction:column;gap:4px}.tsui-root[data-tsui-layout=stock] .tsui-window-options button{text-align:left}
+.tsui-root[data-tsui-layout=stock] .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto;overflow:hidden}
+.tsui-root[data-tsui-layout=stock] .tsui-content{grid-column:1;padding:12px;overflow:auto;scrollbar-gutter:auto}
+.tsui-root[data-tsui-layout=stock] .tsui-nav{flex-direction:row;flex-wrap:wrap;grid-row:auto;border-right:0;border-bottom:1px solid var(--tsui-border);padding:0 10px;gap:16px;background:var(--tsui-surface)}
+.tsui-root[data-tsui-layout=stock] .tsui-nav button{background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:9px 2px;color:var(--tsui-muted);font-size:.95em}
+.tsui-root[data-tsui-layout=stock] .tsui-nav button[aria-current=page]{border-bottom-color:var(--tsui-accent);color:var(--tsui-accent)}
+.tsui-root[data-tsui-layout=stock] .tsui-nav [data-tsui-header-action=true]{display:none}.tsui-root[data-tsui-layout=stock] .tsui-settings,.tsui-root[data-tsui-layout=stock] .tsui-inspector{grid-column:1}
+.tsui-root[data-tsui-layout=stock] input,.tsui-root[data-tsui-layout=stock] select{background:var(--tsui-background)}
+.tsui-root[data-tsui-layout=stock][data-tsui-pda=true] .tsui-section-footers{padding-bottom:max(48px,env(safe-area-inset-bottom));background:var(--tsui-raised)}
+@media(max-width:600px),(pointer:coarse){.tsui-root[data-tsui-layout=stock] .tsui-controls>button,.tsui-root[data-tsui-layout=stock] .tsui-header-actions>button{width:44px;min-height:44px}.tsui-root[data-tsui-layout=stock] .tsui-body{grid-template-rows:auto minmax(0,1fr) auto auto;align-content:stretch}.tsui-root[data-tsui-layout=stock] .tsui-content{overflow:auto}.tsui-root[data-tsui-layout=stock] .tsui-nav button{min-height:44px}.tsui-root[data-tsui-layout=stock] .tsui-title{font-size:13px}}
 `;
 }
 
@@ -2475,10 +2520,25 @@ function mountWarPayoutShell({staging,themeClient,onClose,onSelect,onVisibilityC
   const warSection=$('war').closest('section');
   const warDetails=details('War details',$('coverage'));warDetails.id='twpc-war-details';warDetails.querySelector('summary').id='twpc-war-counts';warSection.append(warDetails);
   $('list-wars').textContent='Sync wars';$('load').textContent='Refresh';$('load').title='Scan this war again. Saved counts are replaced only after a successful scan.';
+  const stockFooter=make('div');stockFooter.className='twpc-stock-footer';
+  const stockTotals=make('div');stockTotals.className='twpc-stock-totals';
+  const stockActions=make('div');stockActions.className='twpc-stock-actions';
+  const review=make('button','Review payouts →');review.id='twpc-review';review.type='button';review.className='twpc-primary';
+  stockActions.append(review);stockFooter.append(stockTotals,stockActions);
+  const movable=[$('total').parentElement,$('balance').parentElement,$('csv'),$('copy')].map(node=>{const home=doc.createComment('payout control home');node.before(home);return {node,home};});
+  let stockMode=null,releaseTheme=null;
+  function syncStockLayout(theme){
+    const stock=theme?.layout==='stock';if(stockMode===stock)return;stockMode=stock;
+    movable.forEach(({node,home},index)=>{if(stock)(index<2?stockTotals:stockActions).append(node);else home.after(node);});
+    if(stock)stockActions.append(review);
+  }
   const ui=createTornScriptUI({doc,win,id:'war-payout-calculator',title:'War payout calculator',surface:'floating',applyTheme:applyScriptUiTheme,
-    themeClient,ownsThemeClient:false,readLayout,writeLayout,onSelect,onClose,onVisibilityChange,onDestroy,
-    sections:[{id:'calculator',label:'Calculate',node:calculator},{id:'credits',label:'Pay members',node:credits},{id:'settings',label:'Settings',node:settings}],
+    themeClient,ownsThemeClient:false,readLayout,writeLayout,onSelect,onClose,onVisibilityChange,onDestroy(){releaseTheme?.();onDestroy?.();},
+    sections:[{id:'calculator',label:'Calculate',node:calculator,footer:stockFooter},{id:'credits',label:'Pay members',node:credits},{id:'settings',label:'Settings',node:settings,headerAction:'⚙'}],
   });
+  review.addEventListener('click',()=>ui.select('credits'));
+  syncStockLayout(themeClient?.get?.());
+  if(themeClient?.subscribe)releaseTheme=themeClient.subscribe(syncStockLayout);
   const root=ui.root;root.id='twpc-dialog';
   const navButtons=Array.from(ui.nav.children);
   for(const [index,id]of ['twpc-tab-calculator','twpc-tab-credits','twpc-settings-toggle'].entries()){
@@ -2493,7 +2553,7 @@ function mountWarPayoutShell({staging,themeClient,onClose,onSelect,onVisibilityC
 
 function warPayoutShellCss(){return `
 #twpc-dialog{--twpc-bg:var(--tsui-background);--twpc-surface:var(--tsui-surface);--twpc-line:var(--tsui-border);--twpc-accent:var(--tsui-accent);--twpc-text:var(--tsui-text);--twpc-muted:var(--tsui-muted)}
-#twpc-dialog .tsui-title{font-size:15px}#twpc-dialog .tsui-controls button{padding:5px 7px;font-size:12px}#twpc-dialog .tsui-content{container-type:inline-size}
+#twpc-dialog .tsui-title{font-size:15px}#twpc-dialog:not([data-tsui-layout=stock]) .tsui-controls button{padding:5px 7px;font-size:12px}#twpc-dialog .tsui-content{container-type:inline-size}
 #twpc-dialog .twpc-content{padding:0}#twpc-dialog .twpc-content>section,#twpc-dialog #twpc-credit-panel>section{padding:14px;background:var(--tsui-surface);border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);margin-bottom:12px}
 #twpc-dialog h3{font-size:12px;letter-spacing:.7px;text-transform:uppercase;color:var(--tsui-accent);margin:0 0 12px}#twpc-dialog p{color:var(--tsui-muted);font-size:.92em;margin:8px 0;overflow-wrap:anywhere}
 #twpc-dialog label{display:flex;flex-direction:column;gap:6px;font-size:.92em;color:var(--tsui-text);min-width:0}#twpc-dialog input,#twpc-dialog select{width:100%;min-width:0;min-height:38px;font-variant-numeric:tabular-nums}
@@ -2509,6 +2569,32 @@ function warPayoutShellCss(){return `
 #twpc-dialog .twpc-warning,#twpc-dialog #twpc-balance.twpc-warning,#twpc-dialog #twpc-validation{color:var(--tsui-error)}#twpc-dialog #twpc-validation:empty,#twpc-dialog #twpc-status:empty{display:none}#twpc-dialog #twpc-credit-summary{color:var(--tsui-accent)}#twpc-dialog #twpc-credit-next{white-space:normal}
 @container(max-width:500px){#twpc-dialog .twpc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#twpc-dialog .twpc-cache-row{grid-template-columns:1fr 1fr}#twpc-dialog .twpc-cache-row label:first-child{grid-column:1/-1}}
 @media(max-width:600px){#twpc-dialog input,#twpc-dialog select{font-size:16px;min-height:44px}#twpc-dialog summary{min-height:44px}#twpc-dialog .twpc-content>section,#twpc-dialog #twpc-credit-panel>section{padding:10px}#twpc-dialog .twpc-grid{gap:8px}}
+#twpc-dialog:not([data-tsui-layout=stock]) .tsui-section-footers{display:none}
+#twpc-dialog[data-tsui-layout=stock] .tsui-title{font-size:13px}
+#twpc-dialog[data-tsui-layout=stock] .twpc-content>section,#twpc-dialog[data-tsui-layout=stock] #twpc-credit-panel>section{border:0;border-bottom:1px solid var(--tsui-border);border-radius:0;background:transparent;padding:0 0 12px;margin:0 0 12px}
+#twpc-dialog[data-tsui-layout=stock] h3{font-size:10px;letter-spacing:1.2px;color:var(--tsui-muted);margin-bottom:10px}
+#twpc-dialog[data-tsui-layout=stock] label{font-size:11px;gap:5px}
+#twpc-dialog[data-tsui-layout=stock] input,#twpc-dialog[data-tsui-layout=stock] select{font-size:13px;min-height:36px;padding:7px}
+#twpc-dialog[data-tsui-layout=stock] .twpc-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+#twpc-dialog[data-tsui-layout=stock] .twpc-actions{gap:6px;margin:8px 0}
+#twpc-dialog[data-tsui-layout=stock] p{font-size:11px;line-height:1.5}
+#twpc-dialog[data-tsui-layout=stock] summary{font-size:11px;min-height:28px;font-weight:400}
+#twpc-dialog[data-tsui-layout=stock] .twpc-summary{padding:9px 10px;margin:10px 0;border-left:2px solid var(--tsui-success);background:var(--tsui-surface);grid-template-columns:1fr}
+#twpc-dialog[data-tsui-layout=stock] .twpc-summary>div:has(#twpc-summary-profit),#twpc-dialog[data-tsui-layout=stock] .twpc-summary>div:has(#twpc-summary-cut){display:none}
+#twpc-dialog[data-tsui-layout=stock] .twpc-summary>div:has(#twpc-pool){display:flex;justify-content:space-between;align-items:center;gap:10px}
+#twpc-dialog[data-tsui-layout=stock] #twpc-pool{font:13px Consolas,monospace;color:var(--tsui-success)}
+#twpc-dialog[data-tsui-layout=stock] .twpc-stock-totals{display:flex;align-items:start;justify-content:space-between;gap:12px;margin-bottom:10px}
+#twpc-dialog[data-tsui-layout=stock] .twpc-stock-totals small{display:block;color:var(--tsui-muted);font-size:10px;margin-bottom:4px}
+#twpc-dialog[data-tsui-layout=stock] .twpc-stock-totals strong{font:21px/1.2 Consolas,monospace;color:var(--tsui-accent);overflow-wrap:anywhere}
+#twpc-dialog[data-tsui-layout=stock] .twpc-stock-totals>div:last-child{text-align:right}
+#twpc-dialog[data-tsui-layout=stock] .twpc-stock-totals>div:last-child strong{font-size:16px}
+#twpc-dialog[data-tsui-layout=stock] .twpc-stock-actions{display:flex;flex-wrap:wrap;gap:6px}
+#twpc-dialog[data-tsui-layout=stock] .twpc-stock-actions button{font-size:11px;padding:6px;min-height:36px}
+#twpc-dialog[data-tsui-layout=stock] #twpc-review{flex:1}
+#twpc-dialog[data-tsui-layout=stock] #twpc-csv{font-size:0}#twpc-dialog[data-tsui-layout=stock] #twpc-csv:after{content:'Export';font-size:11px}
+#twpc-dialog[data-tsui-layout=stock] #twpc-copy{font-size:0}#twpc-dialog[data-tsui-layout=stock] #twpc-copy:after{content:'Copy';font-size:11px}
+#twpc-dialog[data-tsui-layout=stock] th,#twpc-dialog[data-tsui-layout=stock] td{font-size:11px;padding:9px 6px}
+@media(max-width:600px),(pointer:coarse){#twpc-dialog[data-tsui-layout=stock] input,#twpc-dialog[data-tsui-layout=stock] select{font-size:16px;min-height:44px}#twpc-dialog[data-tsui-layout=stock] summary,#twpc-dialog[data-tsui-layout=stock] .twpc-stock-actions button{min-height:44px}#twpc-dialog[data-tsui-layout=stock] .twpc-stock-totals strong{font-size:23px}}
 `;}
 
 // Runs entirely in this userscript's private closure. The Hub only opens its menu.
