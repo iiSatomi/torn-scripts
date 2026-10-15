@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.7.0
+// @version      1.8.0
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
 // @description  Standalone Script Hub war payouts, saved reports, cache estimates and secure weighted raffles.
@@ -31,7 +31,7 @@
 (function () {
 'use strict';
 if (window.top !== window.self) return;
-const WAR_PAYOUT_RELEASE_VERSION = "1.7.0";
+const WAR_PAYOUT_RELEASE_VERSION = "1.8.0";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -930,6 +930,8 @@ const HUB_CREDENTIAL_PROVIDERS = 20;
 const HUB_CREDENTIAL_GRANTS = 200;
 const HUB_CREDENTIAL_HISTORY = 256;
 const HUB_CREDENTIAL_PENDING = 128;
+const HUB_CREDENTIAL_KEYS = 20;
+const hubCredentialLabel = value => typeof value === 'string' && value.trim().length > 0 && value.length <= 60 && !/[\u0000-\u001f\u007f]/.test(value);
 const hubCredentialClone = value => JSON.parse(JSON.stringify(value));
 const hubCredentialBytes = value => new TextEncoder().encode(value);
 const hubCredentialHex = value => Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join('');
@@ -998,6 +1000,14 @@ function hubCredentialValidatedVaultState(stored) {
     if (!p || !hubCredentialId(p.id) || providerIds.has(p.id) || !(p.value === null || typeof p.value === 'string' && p.value.length <= 4096) ||
         !Number.isSafeInteger(p.revision) || p.revision < 0) throw new Error('Unavailable');
     providerIds.add(p.id);
+    if (p.globalFallback !== undefined && typeof p.globalFallback !== 'boolean') throw new Error('Unavailable');
+    if (p.keys !== undefined && (!Array.isArray(p.keys) || p.keys.length > HUB_CREDENTIAL_KEYS)) throw new Error('Unavailable');
+    const ids = new Set();
+    for (const key of p.keys || []) {
+      if (!key || !hubCredentialId(key.id) || key.id === 'global' || ids.has(key.id) || !hubCredentialLabel(key.label) ||
+          !(key.value === null || typeof key.value === 'string' && key.value.length > 0 && key.value.length <= 4096)) throw new Error('Unavailable');
+      ids.add(key.id);
+    }
   }
   const grantIds = new Set();
   for (const g of stored.grants) {
@@ -1005,6 +1015,8 @@ function hubCredentialValidatedVaultState(stored) {
     const key = g.scriptId + '\n' + g.providerId;
     if (grantIds.has(key)) throw new Error('Unavailable');
     grantIds.add(key);
+    if (g.keyId !== undefined && !hubCredentialId(g.keyId)) throw new Error('Unavailable');
+    if (g.allowed !== undefined && typeof g.allowed !== 'boolean') throw new Error('Unavailable');
   }
   return hubCredentialClone(stored);
 }
@@ -1064,7 +1076,53 @@ function createHubCredentialVault({ storage, crypto } = {}) {
   async function status() {
     if (!await ready()) return [];
     return state.providers.map(p => ({ id: p.id, configured: typeof p.value === 'string' && p.value.length > 0, revision: p.revision,
-      permissions: state.grants.filter(g => g.providerId === p.id).map(g => ({ scriptId: g.scriptId, fingerprint: g.fingerprint })) }));
+      globalFallback: p.globalFallback === true,
+      keys: (p.keys || []).map(key => ({id:key.id,label:key.label,configured:!!key.value})),
+      assignments: state.grants.filter(g=>g.providerId===p.id).map(g=>({scriptId:g.scriptId,keyId:g.keyId||'global'})),
+      permissions: state.grants.filter(g => g.providerId === p.id && g.allowed!==false).map(g => ({ scriptId: g.scriptId, fingerprint: g.fingerprint, keyId:g.keyId || 'global' })) }));
+  }
+  function editProvider(providerId, edit) {
+    return ordered(async () => {
+      if (!await ready() || !hubCredentialId(providerId) || providerId === 'script-settings') return false;
+      const next = hubCredentialClone(state), provider = next.providers.find(p => p.id === providerId);
+      if (!provider || provider.revision >= Number.MAX_SAFE_INTEGER || !edit(provider, next)) return false;
+      provider.revision++;
+      return save(next);
+    });
+  }
+  async function addNamedKey(providerId, label, value) {
+    if (!await ready() || !hubCredentialLabel(label) || typeof value !== 'string' || !value.length || value.length > 4096) return false;
+    const id = 'key-' + hubCredentialHex(crypto.getRandomValues(new Uint8Array(12)));
+    return await editProvider(providerId, provider => {
+      provider.keys ||= [];
+      if (provider.keys.length >= HUB_CREDENTIAL_KEYS) return false;
+      provider.keys.push({id,label:label.trim(),value});return true;
+    }) ? id : false;
+  }
+  function setNamedKey(providerId, keyId, label, value) {
+    if (!hubCredentialLabel(label) || !(value === undefined || typeof value === 'string' && value.length > 0 && value.length <= 4096)) return Promise.resolve(false);
+    return editProvider(providerId, provider => {
+      const key = provider.keys?.find(k => k.id === keyId);if (!key) return false;
+      key.label = label.trim();if (value !== undefined) key.value = value;return true;
+    });
+  }
+  function deleteNamedKey(providerId, keyId) {
+    return editProvider(providerId, provider => {
+      const key = provider.keys?.find(k => k.id === keyId);if (!key) return false;
+      key.value = null;return true;
+    });
+  }
+  function setGlobalFallback(providerId, value) {
+    if (typeof value !== 'boolean') return Promise.resolve(false);
+    return editProvider(providerId, provider => {provider.globalFallback=value;return true;});
+  }
+  function assignKey(scriptId, providerId, keyId) {
+    if (!hubCredentialId(scriptId) || !hubCredentialId(keyId)) return Promise.resolve(false);
+    return editProvider(providerId, (provider, next) => {
+      const grant = next.grants.find(g => g.scriptId === scriptId && g.providerId === providerId);
+      if (!grant || keyId !== 'global' && !provider.keys?.some(k => k.id === keyId)) return false;
+      grant.keyId=keyId;return true;
+    });
   }
   function setCredential(providerId, value) {
     return ordered(async () => {
@@ -1104,7 +1162,7 @@ function createHubCredentialVault({ storage, crypto } = {}) {
         next.providers.push({ id: providerId, value: null, revision: 0 });
       }
       const existing = next.grants.find(g => g.scriptId === scriptId && g.providerId === providerId);
-      if (existing) existing.fingerprint = fingerprint;
+      if (existing) {existing.fingerprint = fingerprint;existing.allowed=true;}
       else {
         if (next.grants.length >= HUB_CREDENTIAL_GRANTS) return false;
         next.grants.push({ scriptId, providerId, fingerprint });
@@ -1116,7 +1174,8 @@ function createHubCredentialVault({ storage, crypto } = {}) {
     return ordered(async () => {
       if (!await ready() || !hubCredentialId(scriptId) || !hubCredentialId(providerId)) return false;
       const next = hubCredentialClone(state);
-      next.grants = next.grants.filter(g => g.scriptId !== scriptId || g.providerId !== providerId);
+      const grant=next.grants.find(g=>g.scriptId===scriptId&&g.providerId===providerId);
+      if(grant)grant.allowed=false;
       return save(next);
     });
   }
@@ -1130,8 +1189,8 @@ function createHubCredentialVault({ storage, crypto } = {}) {
         const fingerprint = await hubCredentialFingerprint(crypto, publicJwk);
         const permission = state.grants.find(g => g.scriptId === route.scriptId && g.providerId === route.providerId);
         const provider = state.providers.find(p => p.id === route.providerId);
-        if (!permission || permission.fingerprint !== fingerprint || !provider) return { status: 'denied' };
-        const payload = payloadForProvider(provider);
+        if (!permission || permission.allowed===false || permission.fingerprint !== fingerprint || !provider) return { status: 'denied' };
+        const payload = payloadForProvider(provider, permission);
         if (typeof payload !== 'string' || !payload.length || hubCredentialBytes(payload).length > 32768) return { status: 'denied' };
         hubCredentialPrune(seen);
         const requestKey = hubCredentialRequestKey(route);
@@ -1146,11 +1205,20 @@ function createHubCredentialVault({ storage, crypto } = {}) {
     });
     return result || { status: 'unavailable' };
   }
-  function respond(request) { return encryptedResponse(request, provider => provider.value); }
+  function respond(request) {
+    return encryptedResponse(request, (provider, permission) => {
+      const assigned=permission.keyId || 'global';
+      let keyId=assigned,value=assigned==='global'?provider.value:provider.keys?.find(k=>k.id===assigned)?.value || null;
+      const fallback=!value && assigned!=='global' && provider.globalFallback===true && !!provider.value;
+      if(fallback){keyId='global';value=provider.value;}
+      return request.pageId==='credential-context-v2'
+        ? JSON.stringify({version:2,value:value || null,keyId,fallback,managed:true}) : value;
+    });
+  }
   // Internal hub UI only; same consent and routing checks as credential deliveries.
   function encryptMessage(request, payloadString) { return encryptedResponse(request, () => payloadString); }
   function destroy() { destroyed = true; disable(); }
-  return { ready, publicIdentity, refresh, setCredential, deleteCredential, status, grant, revoke, respond, encryptMessage, destroy };
+  return { ready, publicIdentity, refresh, setCredential, deleteCredential, addNamedKey, setNamedKey, deleteNamedKey, setGlobalFallback, assignKey, status, grant, revoke, respond, encryptMessage, destroy };
 }
 
 function createHubCredentialClient({ storage, crypto, scriptId } = {}) {
@@ -1165,7 +1233,8 @@ function createHubCredentialClient({ storage, crypto, scriptId } = {}) {
       try {
         if (!hubCredentialId(scriptId) || !storage?.eligible || !hubCredentialCryptoAvailable(crypto)) return false;
         const stored = await storage.get(storageKey);
-        if (!storage.eligible || destroyed || stored && (stored.version !== 1 || !stored.identity || !(stored.hubFingerprint === null || /^[a-f0-9]{64}$/.test(stored.hubFingerprint)))) return false;
+        if (!storage.eligible || destroyed || stored && (stored.version !== 1 || !stored.identity || !(stored.hubFingerprint === null || /^[a-f0-9]{64}$/.test(stored.hubFingerprint)) ||
+          stored.managedProviders !== undefined && (!Array.isArray(stored.managedProviders) || stored.managedProviders.length > 20 || !stored.managedProviders.every(hubCredentialId)))) return false;
         const loaded = stored || { version: 1, hubFingerprint: null };
         const keys = await hubCredentialIdentity(crypto, loaded.identity);
         if (destroyed) return false;
@@ -1234,7 +1303,18 @@ function createHubCredentialClient({ storage, crypto, scriptId } = {}) {
     } catch (_) { return null; }
   }
   function destroy() { destroyed = true; disable(); }
-  return { ready, publicIdentity, pinHub, createRequest, consumeReply, destroy };
+  function isManaged(providerId) { return state?.managedProviders?.includes(providerId) === true; }
+  function rememberManaged(providerId) {
+    const result=queue.then(async()=>{
+      if(!await ready() || !hubCredentialId(providerId))return false;
+      if(isManaged(providerId))return true;
+      const managedProviders=[...(state.managedProviders || []),providerId];if(managedProviders.length>20)return false;
+      const next={...state,managedProviders};
+      if(!await storage.set(storageKey,next) || destroyed || !storage.eligible){disable();return false;}
+      state=next;return true;
+    }).catch(()=>{disable();return false;});queue=result.then(()=>undefined);return result;
+  }
+  return { ready, publicIdentity, pinHub, createRequest, consumeReply, isManaged, rememberManaged, destroy };
 }
 
 // Capture granted APIs from the userscript scope; managers need not put them on
@@ -1262,6 +1342,7 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
   const seen = new Set();
   const requests = new Map();
   const preparedSecrets = new Map();
+  const credentialContexts = new Map();
   let changeTimer = null;
   let credentialIdentity = null;
   let pairedHub = null;
@@ -1275,7 +1356,7 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
   function send(name, value) {
     try { doc.dispatchEvent(new CustomEvent(prefix + name, { detail: JSON.stringify(value) })); } catch (_) {}
   }
-  function announce() { send('register', { ...metadata, instance, ...(credentialIdentity ? {credentialIdentity} : {}) }); }
+  function announce() { send('register', { ...metadata, credentialScope:features.credentialScope==='script'?'script':'main', credentialProviders:features.credentialClient?sharedProviders:[], capabilities:[...new Set([...(metadata.capabilities||[]),...(features.credentialContext?['hub-keys-v2']:[])])], instance, ...(credentialIdentity ? {credentialIdentity} : {}) }); }
   const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(value);
   const safeField = value => typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$/.test(value)&&!['__proto__','constructor','prototype'].includes(value);
   function decode(event, limit = 65536) {
@@ -1369,7 +1450,25 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
     const item = requests.get(reply.requestId);
     if (!item) return;
     requests.delete(reply.requestId); clearTimeout(item.timer);
-    try{const value=await features.credentialClient.consumeReply(reply,item.request);item.resolve(usable()?value:null);}catch(_){item.resolve(null);}
+    try{
+      let value=await features.credentialClient.consumeReply(reply,item.request);
+      if(item.request.pageId==='credential-context-v2' && value!==null){
+        const context=JSON.parse(value);
+        if(context?.version!==2||context.managed!==true||typeof context.fallback!=='boolean'||!(context.value===null||typeof context.value==='string'&&context.value.length<=4096)||
+          !(context.keyId==='global'||/^key-[a-f0-9]{24}$/.test(context.keyId)))throw new Error('Unavailable');
+        if(!usable())throw new Error('Unavailable');
+        if(!await features.credentialClient.rememberManaged(reply.providerId)){
+          send('credential-policy',{scriptId:metadata.id,instance,providerId:reply.providerId,status:'failed'});
+          features.onCredentialPolicyFailure?.(reply.providerId);throw new Error('Unavailable');
+        }
+        if(!usable())throw new Error('Unavailable');
+        features.onHubManagementChange?.(reply.providerId,true);
+        send('credential-policy',{scriptId:metadata.id,instance,providerId:reply.providerId,status:'saved'});
+        credentialContexts.set(reply.providerId,context);value=context.value;
+        features.onCredentialContext?.(reply.providerId,{keyId:context.keyId,fallback:context.fallback});
+      }else if(value===null)credentialContexts.delete(reply.providerId);
+      item.resolve(usable()?value:null);
+    }catch(_){credentialContexts.delete(reply.providerId);item.resolve(null);}
   }
   async function onSecretSettings(event){
     const message=decode(event,131072),request=message?.request;
@@ -1415,7 +1514,7 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
     if (!usable() || !features.credentialClient || !sharedProviders.includes(providerId) || requests.size >= 10) return null;
     const requestId = 'key-' + Date.now() + '-' + Math.random().toString(36).slice(2);
     try {
-      const request = await features.credentialClient.createRequest(providerId,instance,requestId);
+      const request = await features.credentialClient.createRequest(providerId,instance,requestId,features.credentialContext?{pageId:'credential-context-v2'}:{});
       if (!request || !usable()) return null;
       return await new Promise(resolve => {
         const timer = setTimeout(() => {requests.delete(requestId);resolve(null);},2000);
@@ -1475,6 +1574,7 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
     doc.removeEventListener(prefix + 'credential-reply', onCredentialReply);
     doc.removeEventListener(prefix + 'credential-changed',onCredentialChanged);
     doc.removeEventListener(prefix + 'secret-settings',onSecretSettings);
+    credentialContexts.clear();
     clearCredentialWork();
     send('unregister', { id: metadata.id, instance });
     hook('onDetach');
@@ -1519,6 +1619,8 @@ function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
   dispose.instance = instance;
   if (features.credentialClient) {
     Promise.resolve().then(() => features.credentialClient.ready()).then(async ready => {
+      if(disposed)return;
+      features.onCredentialPolicyReady?.(ready,providerId=>features.credentialClient.isManaged?.(providerId)===true);
       if (!ready || !usable()) return;
       credentialIdentity = await features.credentialClient.publicIdentity();
       if (usable() && credentialIdentity) {announce();send('credential-discover',{});}
@@ -2922,13 +3024,14 @@ function installWarPayoutCalculator() {
   let creditUI=null, raffleUI=null, shell=null, selectedTab='calculator';
   let disposed = false, attached = false, pdaActive = true, current = null, estimate = null, generation = 0, draftEdited = false;
   let localKeyRevision = 0;
+  let keyPolicyReady=false,hubManaged=false,hubFallback=false;
   let keyPersistence = Promise.resolve();
   let exportUrl = null, exportTimer = null, savedPrefs = null;
   let cacheReady = null, cacheLoaded = false, cacheIssue = '', reportSource = '';
   const $ = name => dialog?.querySelector('#twpc-' + name);
   const money = value => '$' + Number(value).toLocaleString('en-US');
   const awake = () => !disposed && attached && document.visibilityState !== 'hidden' && pdaActive && (!shell || shell.ui.getState().active);
-  const key = () => sharedKey || personalKey;
+  const key = () => sharedKey || (keyPolicyReady&&!hubManaged?personalKey:'');
   const number = (name, allowBlank = false) => {
     const raw = $(name)?.value.trim();
     if (allowBlank && !raw) return undefined;
@@ -3008,8 +3111,8 @@ function installWarPayoutCalculator() {
     catch(error){if(!disposed){cacheIssue=WarPayoutCache.message(error);status(cacheIssue);renderWars();}}
   }
   function connection() {
-    if ($('key-state')) $('key-state').textContent=sharedKey?'Approved Hub Torn key available.':personalKey?'Personal fallback configured.':'No key configured. Use Hub API Keys or enter a personal fallback.';
-    if ($('remember-key')) $('remember-key').disabled=!privateStore.eligible;
+    if ($('key-state')) $('key-state').textContent=hubManaged?(sharedKey?(hubFallback?'Using global fallback from Hub.':'Using assigned Hub key.'):'Managed by Hub. API paused: configure an approved key in Hub API Keys.'):sharedKey?'Approved Hub Torn key available.':personalKey?'Standalone key configured.':'Configure a key in Hub API Keys or use a standalone key before enrolling.';
+    for(const name of ['key','use-key','remember-key'])if($(name))$(name).disabled=hubManaged||!keyPolicyReady||(name==='remember-key'&&!privateStore.eligible);
     if ($('storage-note')) $('storage-note').textContent=privateStore.eligible?'Saved personal keys use this script\u2019s manager/native storage.':'Private persistent key storage is unavailable here. A personal key can be used for this page only.';
   }
   function readRates() { return Object.fromEntries(metrics.map(metric=>[metric,number('rate-'+metric)])); }
@@ -3222,6 +3325,7 @@ function installWarPayoutCalculator() {
     });
   }
   async function useKey() {
+    if(hubManaged||!keyPolicyReady){status('Manage this connection in Hub API Keys.');return;}
     const value=$('key').value.trim();$('key').value='';
     if(!/^[A-Za-z0-9]{16}$/.test(value)){status('Enter a 16-character Torn API key.');return;}
     cancel();personalKey=value;revision++;const localRevision=++localKeyRevision;resetConnectionData();
@@ -3343,11 +3447,15 @@ function installWarPayoutCalculator() {
   const apiPage={id:'connection',title:'API connection',sections:[{id:'key',title:'Torn connection',fields:[{id:'sharedPresent',type:'checkbox',label:'Approved Hub Torn key available',readOnly:true},{id:'personalPresent',type:'checkbox',label:'Personal fallback configured',readOnly:true},{id:'personalApiKey',type:'secret',label:'Replace personal fallback',minLength:16,maxLength:16}]}]};
   let appearanceAdapter=null;
   const adapter=registerTornScriptMenu(document,window,{id,name:'War Payout Calculator',version:WAR_PAYOUT_RELEASE_VERSION,icon:'war',category:'Faction',url:'https://www.torn.com/factions.php?step=your&type=1',actions:[{id:'open',label:'Open calculator'},{id:'credits',label:'Payout members'},{id:'raffle',label:'War raffle'},{id:'settings',label:'API connection'}],pages:[{id:'connection',title:'API connection'}],capabilities:['settings','credentials','secret-settings','appearance']},{open:()=>open('calculator'),credits:()=>open('credits'),raffle:()=>open('raffle'),settings:()=>{open('settings');shell?.showSettings();}}, {
-    credentialClient, sharedProviders:['torn'],
+    credentialClient, sharedProviders:['torn'],credentialContext:true,credentialScope:'script',
+    onCredentialPolicyReady(ready,isManaged){keyPolicyReady=ready;hubManaged ||= isManaged('torn');connection();},
+    onHubManagementChange(provider,managed){if(provider==='torn'&&managed){hubManaged=true;connection();}},
+    onCredentialPolicyFailure(provider){if(provider==='torn'){keyPolicyReady=false;cancel('Hub enrollment could not be saved. Reload to retry.');connection();}},
+    onCredentialContext(provider,context){if(provider==='torn'){hubFallback=context.fallback;connection();}},
     onSharedCredentialChange(provider,value){if(provider!=='torn')return;const previous=key();sharedKey=typeof value==='string'&&/^[A-Za-z0-9]{16}$/.test(value)?value:null;revision++;if(previous!==key()){cancel('API connection changed. Reload war data.');resetConnectionData();}connection();},
-    describePage:()=>apiPage, readSettings:()=>({values:{sharedPresent:!!sharedKey,personalPresent:!!personalKey},revision:String(revision)}),
+    describePage:()=>hubManaged?{...apiPage,description:'Managed by Hub. Configure keys and assignments in API Keys.',sections:apiPage.sections.map(section=>({...section,fields:section.fields.filter(field=>field.id!=='personalApiKey')}))}:apiPage, readSettings:()=>({values:{sharedPresent:!!sharedKey,personalPresent:!!personalKey},revision:String(revision)}),
     saveSettings:()=>({values:{sharedPresent:!!sharedKey,personalPresent:!!personalKey},revision:String(revision)}),
-    async saveSecrets(page,patch){if(page!=='connection'||Object.keys(patch).some(name=>name!=='personalApiKey')||!/^[A-Za-z0-9]{16}$/.test(patch.personalApiKey))throw new Error('Unavailable');const localRevision=++localKeyRevision;if(!await persistPersonalKey(patch.personalApiKey))throw new Error('Unavailable');if(localRevision!==localKeyRevision||disposed)return;cancel();personalKey=patch.personalApiKey;revision++;resetConnectionData();connection();},
+    async saveSecrets(page,patch){if(hubManaged||!keyPolicyReady||page!=='connection'||Object.keys(patch).some(name=>name!=='personalApiKey')||!/^[A-Za-z0-9]{16}$/.test(patch.personalApiKey))throw new Error('Unavailable');const localRevision=++localKeyRevision;if(!await persistPersonalKey(patch.personalApiKey))throw new Error('Unavailable');if(localRevision!==localKeyRevision||disposed)return;cancel();personalKey=patch.personalApiKey;revision++;resetConnectionData();connection();},
     onAttach:attach,onDetach:detach,onDispose(){appearanceAdapter?.dispose();detach();disposed=true;shell?.ui.destroy();creditUI?.destroy();raffleUI?.destroy();dialog?.remove();style?.remove();snapshot=null;wars=[];current=null;personalKey='';sharedKey=null;},
   });
   if(typeof createScriptUiAppearanceAdapter==='function'){
