@@ -26,8 +26,12 @@ function createTornScriptUI(options = {}) {
   let style = doc.querySelector('style[data-tsui-style="1"]');
   if (!style) {
     style = doc.createElement('style'); style.setAttribute('data-tsui-style', '1');
-    style.textContent = scriptUiKitCss(); (doc.head || doc.documentElement).append(style);
+    (doc.head || doc.documentElement).append(style);
   }
+  // Independently updated scripts can arrive in either order. Upgrade older
+  // shared CSS once, while leaving a future revision owned by a newer bundle.
+  const styleRevision=Number(style.getAttribute('data-tsui-style-revision'));
+  if(!Number.isSafeInteger(styleRevision)||styleRevision<2){style.textContent=scriptUiKitCss();style.setAttribute('data-tsui-style-revision','2');}
   let launcherTray = doc.querySelector('[data-tsui-launchers="1"]');
   if (!launcherTray) {
     launcherTray = doc.createElement('div'); launcherTray.className = 'tsui-launchers';

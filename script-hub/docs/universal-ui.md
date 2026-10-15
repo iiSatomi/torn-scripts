@@ -1,6 +1,6 @@
 # Universal script UI and themes
 
-Implementation: Script Hub 1.5.0, shared UI contract version 1.
+Implementation: Script Hub 1.5.1, shared UI contract version 1.
 
 **Stock Mgr** is the fourth selectable layout and palette. Use **Themes → Apply
 Stock Mgr defaults → Save theme** for the charcoal/teal compact preset. Layout,
@@ -189,6 +189,9 @@ footer and `headerAction: '⚙'` for a Stock Mgr header shortcut. The section la
 is the shortcut's accessible name. Its original navigation button remains for
 other layouts. Footer nodes mount once, follow selection/collapse, and are
 removed with the owning window. Scripts continue to own their footer actions.
+Shared UI styles carry a revision marker. New bundles upgrade an older installed
+stylesheet once, so an older script loading first cannot hide Stock Mgr controls.
+They preserve a newer revision installed by a future bundle.
 Geometry adapters store only versioned desktop/mobile position, size, lock,
 collapse, and selected section. They support promises; initial UI mounting does
 not wait for storage. Initial reads have a 1.5-second bound. Writes wait for that

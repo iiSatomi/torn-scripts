@@ -23,12 +23,15 @@ async function main() {
       two.hide();
     });
     await page.evaluate(()=>{
+      const legacyStyle=document.querySelector('style[data-tsui-style="1"]');
+      legacyStyle.textContent=legacyStyle.textContent.split('\n.tsui-root[data-tsui-layout=stock]')[0];legacyStyle.removeAttribute('data-tsui-style-revision');
       const footer=document.createElement('div');footer.textContent='Stable footer';
       window.stockFooter=footer;
       window.stockTool=kit.createTornScriptUI({doc:document,win:window,id:'stock-contract',title:'Stock tool',theme:{layout:'stock'},applyTheme:(node,value)=>node.dataset.tsuiLayout=value.layout,
         sections:[{id:'main',label:'Main',footer},{id:'settings',label:'Settings',headerAction:'⚙'}]});
     });
     assert.equal(await page.locator('[data-tsui-id="stock-contract"] .tsui-section-footer').textContent(),'Stable footer','base mounts the original section footer');
+    assert.equal(await page.locator('[data-tsui-id="stock-contract"] .tsui-header-actions').isVisible(),true,'Stock Mgr upgrades styles installed by an older bundled script');
     await page.locator('[data-tsui-id="stock-contract"]').getByRole('button',{name:'Settings',exact:true}).click();
     assert.equal(await page.evaluate(()=>stockTool.getState().selected),'settings','compact header action selects its owned section');
     assert.equal(await page.locator('[data-tsui-id="stock-contract"] .tsui-section-footer').isVisible(),false,'footer follows the selected section');
@@ -44,6 +47,9 @@ async function main() {
     assert.equal(await page.evaluate(()=>stockTool.getState().collapsed),false,'Escape first closes window options');
     await page.evaluate(()=>{stockTool.setTheme({layout:'frostbite'});stockTool.setTheme({layout:'stock'});});
     assert.equal(await page.evaluate(()=>stockFooter===stockTool.root.querySelector('.tsui-section-footer').firstChild),true,'theme switches preserve footer node identity');
+    await page.evaluate(()=>{const style=document.querySelector('style[data-tsui-style="1"]');window.currentSharedCss=style.textContent;style.setAttribute('data-tsui-style-revision','9');style.textContent+='\n.tsui-root{--future-style-marker:7}';window.futureStyleTool=kit.createTornScriptUI({doc:document,win:window,applyTheme:()=>{}});});
+    assert.equal(await page.evaluate(()=>getComputedStyle(futureStyleTool.root).getPropertyValue('--future-style-marker')),'7','older bundled runtime preserves a newer shared stylesheet');
+    await page.evaluate(()=>{futureStyleTool.destroy();const style=document.querySelector('style[data-tsui-style="1"]');style.setAttribute('data-tsui-style-revision','2');style.textContent=currentSharedCss;});
     await page.evaluate(()=>stockTool.destroy());
     await page.evaluate(() => two.select('settings'));
     assert.deepEqual(await page.evaluate(() => selections), ['home', 'settings'], 'consumer is notified of section changes');
