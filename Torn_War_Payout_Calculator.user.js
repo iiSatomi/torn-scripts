@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.6.1
+// @version      1.7.0
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
-// @description  Standalone Script Hub calculator: enemy-only war payouts and cache-based per-hit estimates.
+// @description  Standalone Script Hub war payouts, saved reports, cache estimates and secure weighted raffles.
 // @author       iSatomi
 // @match        https://www.torn.com/*
 // @run-at       document-end
@@ -31,7 +31,7 @@
 (function () {
 'use strict';
 if (window.top !== window.self) return;
-const WAR_PAYOUT_RELEASE_VERSION = "1.6.1";
+const WAR_PAYOUT_RELEASE_VERSION = "1.7.0";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -2508,13 +2508,319 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
   return {panel,show,hide,pause,refresh:render,resetReview(){find('reviewed').checked=false;},isActive:()=>active&&owner&&!disposed&&isOpen(),destroy(){pause();disposed=true;win.removeEventListener('blur',blur);panel.remove();}};
 }
 
+'use strict';
+
+// Local weighted draws. Only aggregate counts and immutable draw facts cross storage.
+const WarPayoutRaffle = (() => {
+  const KEY='twpc-raffle-draws-v1',MAX_ROWS=1000,MAX_DRAWS=50,MAX_BYTES=2*1024*1024;
+  const metrics=['hits','losses','assists','stalemates','defends'],weightKeys=[...metrics,'flat'];
+  const max=BigInt(Number.MAX_SAFE_INTEGER),range=1n<<53n;
+  const copy=value=>JSON.parse(JSON.stringify(value));
+  const fail=message=>{throw new Error(message);};
+  function integer(value,label,positive=false){
+    if(!Number.isSafeInteger(value)||value<(positive?1:0))fail(`${label} must be a ${positive?'positive':'nonnegative'} safe whole number.`);
+    return value;
+  }
+  function safe(value,label){if(value<0n||value>max)fail(`${label} exceeds safe whole-number limits.`);return Number(value);}
+  function object(value,label){if(!value||typeof value!=='object'||Array.isArray(value))fail(`${label} must be an object.`);return value;}
+  function weight(value){
+    if(typeof value!=='string'&&typeof value!=='number')fail('Weights require nonnegative decimals with at most four decimal places.');
+    const text=String(value).trim();
+    if(text.length>24||! /^(?:\d+(?:\.\d{0,4})?|\.\d{1,4})$/.test(text))fail('Weights require nonnegative decimals with at most four decimal places.');
+    const [whole,fraction='']=text.split('.'),units=BigInt(whole||'0')*10000n+BigInt(fraction.padEnd(4,'0'));
+    if(units>max*10000n)fail('Weight exceeds safe limits.');
+    const trailing=String(units%10000n).padStart(4,'0').replace(/0+$/,'');
+    return {units,text:String(units/10000n)+(trailing?'.'+trailing:'')};
+  }
+  function normalize(input={}){
+    object(input,'Raffle settings');
+    const raw=object(input.weights??{losses:1},'Weights');
+    const weights=Object.fromEntries(weightKeys.map(key=>[key,weight(raw[key]??0).text]));
+    const cap=integer(input.cap??0,'Ticket cap'),min=integer(input.min??1,'Minimum tickets'),winners=integer(input.winners??1,'Winner count',true);
+    if(winners>MAX_ROWS)fail('Winner count exceeds the member limit.');
+    return {weights,cap,min,winners};
+  }
+  const name=(value,id)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,'').slice(0,100)||`Player ${id}`:`Player ${id}`;
+  function pool(rows,input={}){
+    if(!Array.isArray(rows)||rows.length>MAX_ROWS)fail('Raffle rows must contain at most 1,000 members.');
+    const settings=normalize(input),units=Object.fromEntries(weightKeys.map(key=>[key,weight(settings.weights[key]).units]));
+    const seen=new Set(),entries=[];let total=0n;
+    for(const row of rows){
+      const id=integer(row?.id,'Player ID',true);if(seen.has(id))fail('Duplicate raffle member ID.');seen.add(id);
+      const counts=Object.fromEntries(metrics.map(key=>[key,integer(row[key],`${key} count`)]));
+      let tickets=(metrics.reduce((sum,key)=>sum+BigInt(counts[key])*units[key],units.flat))/10000n;
+      if(settings.cap&&tickets>BigInt(settings.cap))tickets=BigInt(settings.cap);
+      const count=safe(tickets,'Member tickets');
+      if(!count||count<settings.min)continue;
+      entries.push({id,name:name(row.name,id),tickets:count,counts});total+=tickets;
+    }
+    return {entries,total:safe(total,'Total tickets'),settings};
+  }
+  function randomValues(crypto,array){
+    if(typeof crypto?.getRandomValues!=='function')fail('Secure randomness is unavailable.');
+    try{crypto.getRandomValues(array);}catch(_){fail('Secure randomness could not be generated.');}
+  }
+  function randomBelow(total,crypto){
+    integer(total,'Ticket pool',true);
+    const bound=BigInt(total),limit=range-range%bound,words=new Uint32Array(2);
+    for(let attempt=0;attempt<128;attempt++){
+      randomValues(crypto,words);
+      // Exactly 53 random bits, including all safe integer ticket boundaries.
+      const candidate=(BigInt(words[0]&0x1fffff)<<32n)|BigInt(words[1]);
+      if(candidate<limit)return Number(candidate%bound);
+    }
+    fail('Secure randomness exceeded the rejection limit.');
+  }
+  function cleanScope(input,createdAt){
+    object(input,'War scope');
+    const scope=Object.fromEntries(['warId','factionId','opponentId','start','end'].map(key=>[key,integer(input[key],`Scope ${key}`,true)]));
+    if(scope.factionId===scope.opponentId||scope.end<scope.start||scope.end>Math.floor(createdAt/1000))fail('A completed war scope is required.');
+    return scope;
+  }
+  function freeze(value){for(const child of Object.values(value))if(child&&typeof child==='object')freeze(child);return Object.freeze(value);}
+  function winnerAt(entries,ticket){
+    let lower=0;
+    for(const entry of entries){if(ticket<lower+entry.tickets)return entry;lower+=entry.tickets;}
+    fail('Winning ticket is outside the remaining pool.');
+  }
+  function draw(snapshot,settings,crypto,now=Date.now){
+    if(snapshot?.live!==false)fail('Draws require a completed, nonlive war snapshot.');
+    const createdAt=integer(now(),'Draw time',true),scope=cleanScope(snapshot.scope,createdAt),result=pool(snapshot.rows,settings);
+    if(result.settings.winners>result.entries.length)fail('Winner count exceeds eligible members.');
+    const remaining=[...result.entries],winners=[];let poolTickets=result.total;
+    for(let rank=1;rank<=result.settings.winners;rank++){
+      const winningTicket=randomBelow(poolTickets,crypto),entry=winnerAt(remaining,winningTicket);
+      winners.push({rank,id:entry.id,name:entry.name,tickets:entry.tickets,poolTickets,winningTicket});
+      remaining.splice(remaining.indexOf(entry),1);poolTickets-=entry.tickets;
+    }
+    const bytes=new Uint8Array(16);randomValues(crypto,bytes);
+    const id=createdAt.toString(36)+'-'+Array.from(bytes,byte=>byte.toString(16).padStart(2,'0')).join('');
+    return freeze({version:1,id,scope,createdAt,coverageStatus:'unverified',settings:result.settings,entries:result.entries,total:result.total,winners});
+  }
+  function cleanRecord(input){
+    object(input,'Draw record');
+    if(input.version!==1||input.coverageStatus!=='unverified')fail('Invalid draw version or coverage status.');
+    const createdAt=integer(input.createdAt,'Draw time',true),scope=cleanScope(input.scope,createdAt);
+    if(typeof input.id!=='string'||!new RegExp('^'+createdAt.toString(36)+'-[a-f0-9]{32}$').test(input.id))fail('Invalid draw ID.');
+    if(!Array.isArray(input.entries)||!input.entries.length||input.entries.length>MAX_ROWS)fail('Invalid draw entries.');
+    object(input.settings,'Original raffle settings');object(input.settings.weights,'Original raffle weights');
+    if(weightKeys.some(key=>!Object.hasOwn(input.settings.weights,key))||['cap','min','winners'].some(key=>!Object.hasOwn(input.settings,key)))fail('Original raffle settings are incomplete.');
+    for(const key of weightKeys)weight(input.settings.weights[key]);
+    for(const key of ['cap','min','winners'])integer(input.settings[key],`Original ${key}`,key==='winners');
+    const rows=input.entries.map(entry=>{object(entry?.counts,'Entrant counts');return {id:entry.id,name:entry.name,...Object.fromEntries(metrics.map(key=>[key,entry.counts[key]]))};});
+    const result=pool(rows,input.settings);
+    if(result.total!==integer(input.total,'Total tickets',true)||result.entries.length!==input.entries.length||result.entries.some((entry,index)=>entry.tickets!==input.entries[index].tickets))fail('Draw tickets do not match the original counts and settings.');
+    if(!Array.isArray(input.winners)||input.winners.length!==result.settings.winners||input.winners.length>result.entries.length)fail('Invalid winner count.');
+    const remaining=[...result.entries],winners=[];let poolTickets=result.total;
+    for(let index=0;index<input.winners.length;index++){
+      const winner=input.winners[index],ticket=integer(winner?.winningTicket,'Winning ticket');
+      if(ticket>=poolTickets)fail('Winning ticket is outside the remaining pool.');
+      const entry=winnerAt(remaining,ticket),rank=index+1;
+      if(winner.rank!==rank||winner.id!==entry.id||winner.name!==entry.name||winner.tickets!==entry.tickets||winner.poolTickets!==poolTickets)fail('Winner sequence does not match the original ticket pool.');
+      winners.push({rank,id:entry.id,name:entry.name,tickets:entry.tickets,poolTickets,winningTicket:ticket});
+      remaining.splice(remaining.indexOf(entry),1);poolTickets-=entry.tickets;
+    }
+    return {version:1,id:input.id,scope,createdAt,coverageStatus:'unverified',settings:result.settings,entries:result.entries,total:result.total,winners};
+  }
+  function encode(value){const encoded=JSON.stringify(value);if(new TextEncoder().encode(encoded).length>MAX_BYTES)fail('Raffle archive is full (2 MiB limit).');return encoded;}
+  function archive(value){
+    if(value==null)return {version:1,records:[]};
+    if(typeof value==='string'){
+      if(new TextEncoder().encode(value).length>MAX_BYTES)fail('Raffle archive exceeds its size limit.');
+      try{value=JSON.parse(value);}catch(_){fail('Raffle archive data is malformed; saved data was kept.');}
+    }
+    if(value?.version!==1||!Array.isArray(value.records)||value.records.length>MAX_DRAWS)fail('Invalid raffle archive or draw limit exceeded.');
+    const records=value.records.map(cleanRecord),seen=new Set();
+    for(const record of records){if(seen.has(record.id))fail('Duplicate draw ID in archive.');seen.add(record.id);}
+    const result={version:1,records};encode(result);return result;
+  }
+  function createArchive(env={}){
+    const native=env.PDA_storage,usesNative=typeof native?.get==='function'&&typeof native?.set==='function';
+    const gmGet=typeof env.GM_getValue==='function'?env.GM_getValue.bind(env):env.GM?.getValue?.bind(env.GM);
+    const gmSet=typeof env.GM_setValue==='function'?env.GM_setValue.bind(env):env.GM?.setValue?.bind(env.GM);
+    const get=usesNative?native.get.bind(native):gmGet,set=usesNative?native.set.bind(native):gmSet,locks=env.locks??globalThis.navigator?.locks;
+    let state={version:1,records:[]},loading=null,writes=Promise.resolve();
+    const isActive=active=>(typeof env.isActive!=='function'||env.isActive()===true)&&active()===true;
+    const checkActive=active=>{if(!isActive(active))fail('Raffle archive save paused while inactive.');};
+    async function fetchValue(getter){try{return await getter(KEY,null);}catch(_){fail('Raffle archive could not be read; saved data was kept.');}}
+    async function save(encoded){try{await set(KEY,encoded);}catch(_){fail('Raffle archive could not be saved; previous records were kept.');}}
+    async function read(migrate=false,active=()=>true){
+      if(!get)fail('Raffle archive storage is unavailable.');
+      let value=await fetchValue(get);
+      if(usesNative&&value==null&&gmGet){
+        const old=await fetchValue(gmGet);
+        if(old!=null){const valid=archive(old);if(migrate){checkActive(active);await save(encode(valid));}value=valid;}
+      }
+      return archive(value);
+    }
+    function list(){return copy(state.records);}
+    function load(active=()=>true){
+      if(!loading){
+        const locked=typeof locks?.request==='function';
+        loading=(locked?locks.request(KEY,{mode:'exclusive'},()=>read(true,active)):read()).then(value=>{state=value;return list();}).catch(error=>{loading=null;throw error;});
+      }
+      return loading.then(()=>list());
+    }
+    async function append(input,{active=()=>true,previousDrawId=null}={}){
+      // Capture immutable facts before any delayed storage/lock operation.
+      const record=cleanRecord(input);
+      const operation=writes.then(async()=>{
+        checkActive(active);
+        if(typeof locks?.request!=='function')fail('Raffle archive changes require storage locking.');
+        if(!set)fail('Raffle archive storage is unavailable.');
+        await load(active);checkActive(active);
+        return locks.request(KEY,{mode:'exclusive'},async()=>{
+          checkActive(active);
+          const base=await read();checkActive(active);
+          // A valid locked read refreshes local history even if this append is
+          // refused, so the user can review a draw saved by another tab. Failed
+          // or malformed reads leave the previous in-memory history intact.
+          state=base;
+          if(base.records.some(saved=>saved.id===record.id))fail('Duplicate raffle draw ID.');
+          const latest=[...base.records].reverse().find(saved=>saved.scope.factionId===record.scope.factionId&&saved.scope.warId===record.scope.warId);
+          if((latest?.id??null)!==previousDrawId)fail('Raffle history changed. Review the latest saved draw and confirm New draw again.');
+          if(base.records.length>=MAX_DRAWS)fail('Raffle archive is full (50 draw limit).');
+          const next={version:1,records:[...base.records,record]},encoded=encode(next);
+          checkActive(active);
+          await save(encoded);
+          state=next;return copy(record);
+        });
+      });
+      writes=operation.catch(()=>{});return operation;
+    }
+    return {load,append,list};
+  }
+  function oddsCsv(input){
+    const cell=value=>{let text=String(value);if(/^[\s]*[=+@-]/.test(text))text="'"+text;return '"'+text.replace(/"/g,'""')+'"';};
+    const rows=[['Player ID','Player','Tickets','First-pick chance (%)']];
+    integer(input?.total,'Total tickets');
+    if(!Array.isArray(input.entries)||input.entries.length>MAX_ROWS)fail('Invalid odds entries.');
+    for(const entry of input.entries)rows.push([entry.id,entry.name,entry.tickets,input.total?(entry.tickets/input.total*100).toFixed(6):'0.000000']);
+    return rows.map(row=>row.map(cell).join(',')).join('\r\n');
+  }
+  return {pool,randomBelow,draw,createArchive,oddsCsv};
+})();
+
+// Local raffle UI: owns its draw archive and exports, never payment state.
+function createWarPayoutRaffleUI({doc,env,readSnapshot,isActive}) {
+  const R=WarPayoutRaffle,win=doc.defaultView,archive=R.createArchive(env);
+  const fields=['hits','losses','assists','stalemates','defends','flat'];
+  const labels={hits:'Per war hit',losses:'Per loss to enemy',assists:'Per assist',stalemates:'Per stalemate',defends:'Per successful defend',flat:'Per counted participant'};
+  const presets={losses:{losses:1},hits:{hits:1},balanced:{hits:1,losses:1,assists:1,defends:1},equal:{flat:1}};
+  const el=(tag,text)=>{const node=doc.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
+  const panel=el('div');panel.id='twpc-raffle-panel';panel.className='twpc-content';
+  panel.innerHTML=`<section><h3>War raffle</h3><p>Tickets use the loaded enemy-only war counts. Losses mean enemy attacks that defeated your members.</p><label for="twpc-raffle-preset">Ticket preset<select id="twpc-raffle-preset"><option value="losses">Loss raffle</option><option value="hits">War hits</option><option value="balanced">Balanced activity</option><option value="equal">Equal entries</option><option value="custom">Custom weights</option></select></label>
+  <details><summary>Ticket weights</summary><div class="twpc-grid twpc-two">${fields.map(field=>`<label for="twpc-raffle-weight-${field}">${labels[field]}<input id="twpc-raffle-weight-${field}" data-raffle-weight="${field}" type="number" min="0" max="1000000" step="0.0001" inputmode="decimal" value="${field==='losses'?1:0}"></label>`).join('')}</div><p>Weights can use up to four decimal places. Each member\u2019s total is rounded down, then capped. Equal entries include only participants represented in the loaded counts.</p></details>
+  <div class="twpc-grid twpc-two"><label for="twpc-raffle-winners">Winners<input id="twpc-raffle-winners" type="number" min="1" max="1000" step="1" value="1" inputmode="numeric"></label><label for="twpc-raffle-cap">Tickets per member cap<input id="twpc-raffle-cap" type="number" min="0" step="1" value="0" inputmode="numeric"></label><label for="twpc-raffle-min">Minimum tickets<input id="twpc-raffle-min" type="number" min="0" step="1" value="1" inputmode="numeric"></label></div><p>Cap 0 means unlimited. Zero-ticket members are excluded.</p>
+  <p id="twpc-raffle-summary" aria-live="polite"></p><div class="twpc-actions"><button id="twpc-raffle-draw" class="twpc-primary" disabled>Draw winners</button><button id="twpc-raffle-new" disabled>New draw</button></div><p id="twpc-raffle-note" role="status"></p></section>
+  <section><h3>Saved draw</h3><label for="twpc-raffle-saved">Draw history<select id="twpc-raffle-saved"><option value="">No saved draws</option></select></label><p id="twpc-raffle-context"></p><ol id="twpc-raffle-results" class="twpc-raffle-results" aria-live="polite"></ol><div class="twpc-actions"><button id="twpc-raffle-copy" disabled>Copy results</button><button id="twpc-raffle-export" disabled>Export draw</button></div></section>
+  <details><summary>Entrants and first-pick odds</summary><p>These are chances on the first pick. Each winner\u2019s tickets are removed before the next pick.</p><div class="twpc-table-scroll"><table id="twpc-raffle-odds"><thead><tr><th>Participant</th><th>Tickets</th><th>First pick</th></tr></thead><tbody></tbody></table></div><button id="twpc-raffle-csv" disabled>Export odds CSV</button></details>
+  <details><summary>Randomness and saved records</summary><p>Draws use Web Crypto random values with rejection sampling, weighted by tickets, without replacement. Secure randomness must be available to draw. Each draw saves its original entrants, settings and ranked winners before displaying results.</p><p>Records stay separate from payout receipts. This is a local draw record, not an externally verified public lottery. Available-log completeness remains unverified. Up to 50 draws / 2 MiB are retained without automatic deletion.</p></details>`;
+  const $=name=>panel.querySelector('#twpc-raffle-'+name);
+  let active=false,disposed=false,ready=false,busy=false,loading=null,records=[],selectedId='',newFor='',newAfter=null,scopeKey='',revision=0;
+  let currentPool=null,currentResult=null,exportUrl=null,exportTimer=null;
+  const key=scope=>scope?`${scope.factionId}:${scope.warId}`:'';
+  const foreground=()=>!disposed&&active&&isActive()&&doc.visibilityState!=='hidden';
+  function note(text){$('note').textContent=text;}
+  function releaseExport(){clearTimeout(exportTimer);exportTimer=null;if(exportUrl)win.URL.revokeObjectURL(exportUrl);exportUrl=null;}
+  function settings(){
+    const number=name=>{const raw=$(name).value.trim();if(!raw)throw Error('Enter a whole number for '+name+'.');return Number(raw);};
+    return {weights:Object.fromEntries(fields.map(field=>[field,$('weight-'+field).value.trim()])),cap:number('cap'),min:number('min'),winners:number('winners')};
+  }
+  function syncSelection(snapshot){
+    const nextKey=key(snapshot?.scope);
+    if(nextKey!==scopeKey){scopeKey=nextKey;newFor='';newAfter=null;selectedId=records.find(record=>key(record.scope)===nextKey)?.id||'';revision++;}
+    if(!selectedId&&scopeKey)selectedId=records.find(record=>key(record.scope)===scopeKey)?.id||'';
+  }
+  function render(){
+    if(disposed||!active)return;
+    const snapshot=readSnapshot();records=archive.list().reverse();syncSelection(snapshot);
+    $('saved').replaceChildren();
+    for(const record of records)$('saved').append(new win.Option(`War #${record.scope.warId} · faction ${record.scope.factionId} · ${new Date(record.createdAt).toLocaleString()}`,record.id));
+    if(!records.length)$('saved').append(new win.Option('No saved draws',''));
+    $('saved').value=selectedId;$('saved').disabled=!ready||busy;
+    currentResult=records.find(record=>record.id===selectedId)||null;
+    $('results').replaceChildren();$('context').textContent='';
+    if(currentResult){
+      $('context').textContent=`War #${currentResult.scope.warId} · faction ${currentResult.scope.factionId} · ${new Date(currentResult.createdAt).toLocaleString()} · ${currentResult.entries.length} entrants / ${currentResult.total.toLocaleString()} tickets. Saved settings and counts; API-log completeness unverified.`;
+      for(const winner of currentResult.winners){const row=el('li'),name=el('strong',`${winner.name} [${winner.id}]`);row.append(name,el('span',` · ${winner.tickets.toLocaleString()} tickets`));$('results').append(row);}
+    }
+    for(const name of ['copy','export'])$(name).disabled=!currentResult;
+    const prior=records.some(record=>key(record.scope)===scopeKey);
+    $('new').disabled=!ready||busy||!snapshot||!prior||snapshot.live||newFor===scopeKey;
+    $('draw').disabled=true;$('csv').disabled=true;currentPool=null;
+    $('odds').querySelector('tbody').replaceChildren();
+    if(!ready){$('summary').textContent='Loading saved draws…';note('The calculator stays available while records load.');return;}
+    if(!snapshot){$('summary').textContent='Load a war from Calculate to preview tickets.';note('Saved draws remain available in history.');return;}
+    try{
+      const pool=R.pool(snapshot.rows,settings());currentPool=pool;
+      $('summary').textContent=`${pool.entries.length} eligible members · ${pool.total.toLocaleString()} tickets${snapshot.live?' · live preview':''}`;
+      const body=$('odds').querySelector('tbody');
+      for(const entry of pool.entries){const row=el('tr');row.append(el('td',`${entry.name} [${entry.id}]`),el('td',String(entry.tickets)),el('td',(100*entry.tickets/pool.total).toFixed(2)+'%'));body.append(row);}
+      $('csv').disabled=!pool.entries.length;
+      if(snapshot.live){note('Live war: odds preview only. Load completed counts before drawing.');return;}
+      if(!pool.entries.length){note('No member meets these ticket rules. Set a positive weight or lower the minimum.');return;}
+      if(pool.settings.winners>pool.entries.length){note('Winner count exceeds eligible members. Lower the number of winners.');return;}
+      if(typeof env.crypto?.getRandomValues!=='function'){note('Secure random generation is unavailable. Draws are disabled.');return;}
+      if(prior&&newFor!==scopeKey){note('A draw is already saved for this war. New draw keeps the earlier result and asks for confirmation.');return;}
+      $('draw').disabled=busy||!foreground();note(busy?'Drawing and saving…':'Ready. One draw selects the chosen number of unique winners and saves the result.');
+    }catch(error){$('summary').textContent='Check ticket settings.';note(error.message);}
+  }
+  function init(){
+    if(!loading)loading=archive.load(foreground).then(()=>{ready=true;if(!disposed)render();}).catch(()=>{loading=null;ready=false;if(!disposed&&active){$('summary').textContent='Saved draws unavailable.';note('Saved raffle records could not be read. Existing data was kept; drawing is disabled. Reopen Raffle to retry.');}});
+    return loading;
+  }
+  function trusted(event){return event.isTrusted&&event.detail<=1&&!busy&&foreground();}
+  async function draw(event){
+    if(!trusted(event)||!ready||$('draw').disabled)return;
+    const snapshot=readSnapshot(),selection=settings(),token=++revision,previousDrawId=newFor===scopeKey?newAfter:null;
+    const stillCurrent=()=>foreground()&&revision===token&&readSnapshot()===snapshot;
+    busy=true;render();
+    try{
+      if(!stillCurrent())throw Error('The selected war changed. Review it before drawing.');
+      const record=R.draw(snapshot,selection,env.crypto);
+      await archive.append(record,{active:stillCurrent,previousDrawId});
+      records=archive.list();
+      if(!stillCurrent())return;
+      selectedId=record.id;newFor='';newAfter=null;render();note('Draw saved. Results stay fixed until you deliberately start a new draw.');
+    }catch(error){if(!disposed&&active){const latest=archive.list().filter(record=>key(record.scope)===key(snapshot?.scope)).at(-1);if(latest&&latest.id!==previousDrawId){newFor='';newAfter=null;selectedId=latest.id;}render();note(error.message||'The draw could not be saved. Earlier records were kept.');}}
+    finally{busy=false;if(!disposed&&active){const message=$('note').textContent;render();note(message);}}
+  }
+  function newDraw(event){
+    if(!trusted(event)||!readSnapshot()||readSnapshot().live)return;
+    if(!win.confirm('Start another raffle for this war? The previous saved draw will remain in history.'))return;
+    newFor=scopeKey;newAfter=records.find(record=>key(record.scope)===scopeKey)?.id||null;revision++;render();
+  }
+  async function copy(){
+    if(!currentResult)return;
+    const record=currentResult,text=`War raffle #${record.scope.warId} · faction ${record.scope.factionId}\n${new Date(record.createdAt).toISOString()}\nDraw ${record.id}\n${record.entries.length} entrants · ${record.total} tickets\n${record.winners.map(winner=>`${winner.rank}. ${winner.name} [${winner.id}] · ${winner.tickets} tickets`).join('\n')}\nWeb Crypto · weighted without replacement. API-log completeness unverified.`;
+    try{if(typeof env.GM_setClipboard==='function')await env.GM_setClipboard(text);else if(typeof GM_setClipboard==='function')await GM_setClipboard(text);else if(typeof env.GM?.setClipboard==='function')await env.GM.setClipboard(text);else await win.navigator.clipboard.writeText(text);note('Raffle results copied.');}catch(_){note('Could not copy. Export the draw instead.');}
+  }
+  async function download(text,name,type){
+    try{
+      if(env.flutter_inappwebview?.callHandler){await env.__PDA_platformReadyPromise;const bytes=new TextEncoder().encode(text);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);await env.flutter_inappwebview.callHandler('shareFile',{base64Data:win.btoa(binary),fileName:name});}
+      else{releaseExport();exportUrl=win.URL.createObjectURL(new Blob([text],{type}));const link=el('a');link.href=exportUrl;link.download=name;panel.append(link);link.click();link.remove();exportTimer=setTimeout(releaseExport,1000);}
+      note('Raffle export prepared.');
+    }catch(_){note('Could not export the raffle. Try Copy results.');}
+  }
+  $('draw').addEventListener('click',draw);$('new').addEventListener('click',newDraw);
+  for(const name of ['draw','new'])$(name).addEventListener('keydown',event=>{if(event.repeat)event.preventDefault();});
+  $('copy').addEventListener('click',copy);
+  $('export').addEventListener('click',()=>{if(currentResult)download(JSON.stringify(currentResult,null,2),'war-raffle-'+currentResult.scope.warId+'-'+currentResult.id+'.json','application/json');});
+  $('csv').addEventListener('click',()=>{if(currentPool)download(R.oddsCsv(currentPool),'war-raffle-'+readSnapshot().scope.warId+'-odds.csv','text/csv;charset=utf-8');});
+  $('saved').addEventListener('change',()=>{selectedId=$('saved').value;render();});
+  $('preset').addEventListener('change',()=>{const preset=presets[$('preset').value];if(preset)for(const field of fields)$('weight-'+field).value=preset[field]??0;revision++;render();});
+  panel.addEventListener('input',event=>{if(event.target.matches('input')){if(event.target.dataset.raffleWeight)$('preset').value='custom';revision++;render();}});
+  return {panel,refresh:render,show(){if(disposed)return;active=true;render();init();},hide(){active=false;revision++;releaseExport();},destroy(){disposed=true;active=false;revision++;releaseExport();panel.remove();}};
+}
+
 // Payout-specific composition. Window behavior belongs to the shared UI factory;
 // calculation fields and reviewed credit operations remain owned by the script.
 function mountWarPayoutShell({staging,themeClient,onClose,onSelect,onVisibilityChange,onDestroy,readLayout,writeLayout}) {
   const doc=staging.ownerDocument,win=doc.defaultView,$=id=>staging.querySelector('#twpc-'+id);
   const make=(tag,text)=>{const element=doc.createElement(tag);if(text!==undefined)element.textContent=text;return element;};
   const details=(title,...children)=>{const element=make('details');element.append(make('summary',title),...children.filter(Boolean));return element;};
-  const calculator=$('calculator-panel'),credits=$('credit-panel'),settings=make('div');
+  const calculator=$('calculator-panel'),credits=$('credit-panel'),raffle=$('raffle-panel'),settings=make('div');
   settings.id='twpc-settings-panel';settings.className='twpc-settings';
   const rates=$('rate-hits').closest('section'),connection=$('connection');
   settings.append(connection,rates.querySelector('details'),$('remember-rates'));
@@ -2538,14 +2844,14 @@ function mountWarPayoutShell({staging,themeClient,onClose,onSelect,onVisibilityC
   }
   const ui=createTornScriptUI({doc,win,id:'war-payout-calculator',title:'War payout calculator',surface:'floating',applyTheme:applyScriptUiTheme,
     themeClient,ownsThemeClient:false,readLayout,writeLayout,onSelect,onClose,onVisibilityChange,onDestroy(){releaseTheme?.();onDestroy?.();},
-    sections:[{id:'calculator',label:'Calculate',node:calculator,footer:stockFooter},{id:'credits',label:'Pay members',node:credits},{id:'settings',label:'Settings',node:settings,headerAction:'⚙'}],
+    sections:[{id:'calculator',label:'Calculate',node:calculator,footer:stockFooter},{id:'credits',label:'Pay members',node:credits},{id:'settings',label:'Settings',node:settings,headerAction:'⚙'},{id:'raffle',label:'Raffle',node:raffle}],
   });
   review.addEventListener('click',()=>ui.select('credits'));
   syncStockLayout(themeClient?.get?.());
   if(themeClient?.subscribe)releaseTheme=themeClient.subscribe(syncStockLayout);
   const root=ui.root;root.id='twpc-dialog';
   const navButtons=Array.from(ui.nav.children);
-  for(const [index,id]of ['twpc-tab-calculator','twpc-tab-credits','twpc-settings-toggle'].entries()){
+  for(const [index,id]of ['twpc-tab-calculator','twpc-tab-credits','twpc-settings-toggle','twpc-tab-raffle'].entries()){
     navButtons[index].id=id;
     const page=ui.content.children[index];page.id='twpc-page-'+index;navButtons[index].setAttribute('aria-controls',page.id);
   }
@@ -2571,6 +2877,7 @@ function warPayoutShellCss(){return `
 #twpc-dialog .twpc-cache-row{display:grid;grid-template-columns:2fr 1fr 2fr auto;gap:8px;align-items:end;margin:8px 0}#twpc-dialog .twpc-cache-state{padding:8px;border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);color:var(--tsui-accent)}#twpc-dialog .twpc-cache-state.twpc-live{color:var(--tsui-warning)}
 #twpc-dialog .twpc-table-scroll{max-width:100%;max-height:320px;overflow:auto;border:1px solid var(--tsui-border);border-radius:var(--tsui-radius)}#twpc-dialog table{font-variant-numeric:tabular-nums}#twpc-dialog th,#twpc-dialog td{white-space:nowrap;text-align:right;font-size:12px;padding:9px}#twpc-dialog th:first-child,#twpc-dialog td:first-child{text-align:left}#twpc-dialog th{position:sticky;top:0;background:var(--tsui-raised);color:var(--tsui-muted)}#twpc-dialog tbody tr:nth-child(even){background:var(--tsui-raised)}#twpc-dialog .twpc-pay{color:var(--tsui-accent);font-weight:bold}
 #twpc-dialog .twpc-warning,#twpc-dialog #twpc-balance.twpc-warning,#twpc-dialog #twpc-validation{color:var(--tsui-error)}#twpc-dialog #twpc-validation:empty,#twpc-dialog #twpc-status:empty{display:none}#twpc-dialog #twpc-credit-summary{color:var(--tsui-accent)}#twpc-dialog #twpc-credit-next{white-space:normal}
+#twpc-dialog .twpc-raffle-results{padding-left:26px;margin:12px 0}#twpc-dialog .twpc-raffle-results li{padding:8px 4px;color:var(--tsui-muted);overflow-wrap:anywhere}#twpc-dialog .twpc-raffle-results strong{color:var(--tsui-accent)}#twpc-dialog #twpc-raffle-summary{font-weight:bold;color:var(--tsui-accent)}#twpc-dialog #twpc-raffle-draw{flex:1;min-width:130px}
 @container(max-width:500px){#twpc-dialog .twpc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#twpc-dialog .twpc-cache-row{grid-template-columns:1fr 1fr}#twpc-dialog .twpc-cache-row label:first-child{grid-column:1/-1}}
 @media(max-width:600px){#twpc-dialog input,#twpc-dialog select{font-size:16px;min-height:44px}#twpc-dialog summary{min-height:44px}#twpc-dialog .twpc-content>section,#twpc-dialog #twpc-credit-panel>section{padding:10px}#twpc-dialog .twpc-grid{gap:8px}}
 #twpc-dialog:not([data-tsui-layout=stock]) .tsui-section-footers{display:none}
@@ -2612,7 +2919,7 @@ function installWarPayoutCalculator() {
   const metrics = ['hits', 'losses', 'assists', 'stalemates', 'defends'];
   const labels = {hits:'War hits', losses:'Losses to enemy', assists:'Assists', stalemates:'Stalemates', defends:'Successful defends'};
   let dialog, style, opener, snapshot = null, wars = [], job = null, sharedKey = null, personalKey = '', revision = 0;
-  let creditUI=null, shell=null, selectedTab='calculator';
+  let creditUI=null, raffleUI=null, shell=null, selectedTab='calculator';
   let disposed = false, attached = false, pdaActive = true, current = null, estimate = null, generation = 0, draftEdited = false;
   let localKeyRevision = 0;
   let keyPersistence = Promise.resolve();
@@ -2641,6 +2948,7 @@ function installWarPayoutCalculator() {
     for (const name of ['list-wars','load','war']) $(name).disabled=value||(name==='load'&&!$('war').value);
     $('cancel-load').hidden=!value;
     dialog.setAttribute('aria-busy',String(value));
+    raffleUI?.refresh();
   }
   function clearSnapshot() { snapshot=null;current=null;reportSource='';updateCoverage();recalculate(); }
   function resetCacheRows() {
@@ -2790,6 +3098,7 @@ function installWarPayoutCalculator() {
       $('copy').disabled=!canExport;$('csv').disabled=!canExport;
     } catch (error) { $('validation').textContent=error.message; }
     creditUI?.refresh();
+    raffleUI?.refresh();
   }
   function addCache(cache = {}) {
     if ($('cache-rows').children.length>=12) {status('Use the estimated total for more than 12 cache types.');return;}
@@ -2966,12 +3275,13 @@ function installWarPayoutCalculator() {
       if(!snapshot||!current||$('mode').value!=='actual')return null;
       return {scope:snapshot.scope,live:snapshot.live,mode:'actual',coverage:'unverified',result:current.result};
     }});
+    raffleUI=createWarPayoutRaffleUI({doc:document,env,readSnapshot:()=>snapshot,isActive:()=>awake()&&selectedTab==='raffle'&&!job});dialog.append(raffleUI.panel);
     shell=mountWarPayoutShell({staging:dialog,themeClient:appearanceAdapter?.client,onClose:close,onSelect:sectionChanged,onVisibilityChange:surfaceActivity,
       readLayout:()=>readUiValue('twpc-ui-layout-v1'),writeLayout:value=>writeUiValue('twpc-ui-layout-v1',value),
-      onDestroy(){cancel();releaseExport();creditUI?.destroy();creditUI=null;shell=null;dialog=null;style?.remove();style=null;},
+      onDestroy(){cancel();releaseExport();creditUI?.destroy();raffleUI?.destroy();creditUI=null;raffleUI=null;shell=null;dialog=null;style?.remove();style=null;},
     });
     dialog=shell.root;
-    const calculatorInput=event=>!event.target.closest?.('#twpc-credit-panel')&&event.target!==$('key')&&event.target!==$('remember-key');
+    const calculatorInput=event=>!event.target.closest?.('#twpc-credit-panel,#twpc-raffle-panel')&&event.target!==$('key')&&event.target!==$('remember-key');
     dialog.addEventListener('input',event=>{if(!calculatorInput(event))return;draftEdited=true;updateMode();});
     dialog.addEventListener('change',event=>{if(!calculatorInput(event))return;draftEdited=true;if(event.target===$('war')){cancel();resetCacheRows();clearSnapshot();if($('war').value)loadWar();}updateMode();});
     const actions={'list-wars':listWars,'load':()=>loadWar(true),'cancel-load':()=>cancel(),'use-key':useKey,'forget-key':async()=>{cancel();personalKey='';revision++;const localRevision=++localKeyRevision;resetConnectionData();connection();const ok=await persistPersonalKey(null);if(localRevision===localKeyRevision&&!disposed)status(ok?'Personal fallback removed.':'Personal fallback cleared for this page. Stored-key removal is unavailable; clear it in your userscript manager or PDA storage.');},'add-cache':()=>{addCache();recalculate();},'apply-rate':()=>{if(estimate?.rate!==null&&estimate?.shortfall===0){$('rate-hits').value=estimate.rate;draftEdited=true;recalculate();}},'remember-rates':rememberRates,'csv':download,'copy':copy};
@@ -2997,28 +3307,29 @@ function installWarPayoutCalculator() {
   function sectionChanged(name){
     selectedTab=name;if(!shell||!creditUI)return;
     if(name==='credits'&&awake())creditUI.show();else creditUI.hide();
+    if(name==='raffle'&&awake())raffleUI?.show();else raffleUI?.hide();
     if(name!=='settings'&&$('key'))$('key').value='';
   }
   function selectTab(name){shell?.ui.select(name);}
   function surfaceActivity(active){
-    if(!active){cancel('Loading paused while the calculator is inactive. Refresh when ready.');creditUI?.pause();releaseExport();if($('key'))$('key').value='';}
-    else if(selectedTab==='credits')creditUI?.show();
+    if(!active){cancel('Loading paused while the calculator is inactive. Refresh when ready.');creditUI?.pause();raffleUI?.hide();releaseExport();if($('key'))$('key').value='';}
+    else if(selectedTab==='credits')creditUI?.show();else if(selectedTab==='raffle')raffleUI?.show();
   }
   function open(tab='calculator') {
     if(disposed||!document.body)return false;
     if(!dialog)build();opener=document.activeElement;
     if(shell.ui.getState().minimized)shell.ui.restore();else{shell.ui.show();shell.ui.collapse(false);}
-    selectTab(['calculator','credits','settings'].includes(tab)?tab:'calculator');
+    selectTab(['calculator','credits','settings','raffle'].includes(tab)?tab:'calculator');
     sectionChanged(selectedTab);showSavedWars();
     shell.ui.nav.querySelector('[aria-current="page"]')?.focus();return true;
   }
   function close() {
-    cancel();releaseExport();creditUI?.hide();if($('key'))$('key').value='';shell?.ui.hide();
+    cancel();releaseExport();creditUI?.hide();raffleUI?.hide();if($('key'))$('key').value='';shell?.ui.hide();
     const target=opener?.isConnected&&opener.getClientRects().length?opener:document.getElementById('tsh-launcher');target?.focus();
   }
   function activity(event) {
     if(event?.type==='tornpda:tabState'){const detail=event.detail;if(typeof detail?.isActiveTab!=='boolean'||typeof detail?.isWebViewVisible!=='boolean')return;pdaActive=detail.isActiveTab&&detail.isWebViewVisible;}
-    if(!awake()){cancel('Loading stopped while this tab is inactive. Load again when ready.');creditUI?.pause();if($('key'))$('key').value='';}
+    if(!awake()){cancel('Loading stopped while this tab is inactive. Load again when ready.');creditUI?.pause();raffleUI?.hide();if($('key'))$('key').value='';}else if(selectedTab==='raffle')raffleUI?.show();
   }
   function attach() {
     if(attached||disposed)return;attached=true;
@@ -3031,13 +3342,13 @@ function installWarPayoutCalculator() {
   function route() {close();}
   const apiPage={id:'connection',title:'API connection',sections:[{id:'key',title:'Torn connection',fields:[{id:'sharedPresent',type:'checkbox',label:'Approved Hub Torn key available',readOnly:true},{id:'personalPresent',type:'checkbox',label:'Personal fallback configured',readOnly:true},{id:'personalApiKey',type:'secret',label:'Replace personal fallback',minLength:16,maxLength:16}]}]};
   let appearanceAdapter=null;
-  const adapter=registerTornScriptMenu(document,window,{id,name:'War Payout Calculator',version:WAR_PAYOUT_RELEASE_VERSION,icon:'war',category:'Faction',url:'https://www.torn.com/factions.php?step=your&type=1',actions:[{id:'open',label:'Open calculator'},{id:'credits',label:'Payout members'},{id:'settings',label:'API connection'}],pages:[{id:'connection',title:'API connection'}],capabilities:['settings','credentials','secret-settings','appearance']},{open:()=>open('calculator'),credits:()=>open('credits'),settings:()=>{open('settings');shell?.showSettings();}}, {
+  const adapter=registerTornScriptMenu(document,window,{id,name:'War Payout Calculator',version:WAR_PAYOUT_RELEASE_VERSION,icon:'war',category:'Faction',url:'https://www.torn.com/factions.php?step=your&type=1',actions:[{id:'open',label:'Open calculator'},{id:'credits',label:'Payout members'},{id:'raffle',label:'War raffle'},{id:'settings',label:'API connection'}],pages:[{id:'connection',title:'API connection'}],capabilities:['settings','credentials','secret-settings','appearance']},{open:()=>open('calculator'),credits:()=>open('credits'),raffle:()=>open('raffle'),settings:()=>{open('settings');shell?.showSettings();}}, {
     credentialClient, sharedProviders:['torn'],
     onSharedCredentialChange(provider,value){if(provider!=='torn')return;const previous=key();sharedKey=typeof value==='string'&&/^[A-Za-z0-9]{16}$/.test(value)?value:null;revision++;if(previous!==key()){cancel('API connection changed. Reload war data.');resetConnectionData();}connection();},
     describePage:()=>apiPage, readSettings:()=>({values:{sharedPresent:!!sharedKey,personalPresent:!!personalKey},revision:String(revision)}),
     saveSettings:()=>({values:{sharedPresent:!!sharedKey,personalPresent:!!personalKey},revision:String(revision)}),
     async saveSecrets(page,patch){if(page!=='connection'||Object.keys(patch).some(name=>name!=='personalApiKey')||!/^[A-Za-z0-9]{16}$/.test(patch.personalApiKey))throw new Error('Unavailable');const localRevision=++localKeyRevision;if(!await persistPersonalKey(patch.personalApiKey))throw new Error('Unavailable');if(localRevision!==localKeyRevision||disposed)return;cancel();personalKey=patch.personalApiKey;revision++;resetConnectionData();connection();},
-    onAttach:attach,onDetach:detach,onDispose(){appearanceAdapter?.dispose();detach();disposed=true;shell?.ui.destroy();creditUI?.destroy();dialog?.remove();style?.remove();snapshot=null;wars=[];current=null;personalKey='';sharedKey=null;},
+    onAttach:attach,onDetach:detach,onDispose(){appearanceAdapter?.dispose();detach();disposed=true;shell?.ui.destroy();creditUI?.destroy();raffleUI?.destroy();dialog?.remove();style?.remove();snapshot=null;wars=[];current=null;personalKey='';sharedKey=null;},
   });
   if(typeof createScriptUiAppearanceAdapter==='function'){
     const appearanceKey='twpc-ui-appearance-v1';
