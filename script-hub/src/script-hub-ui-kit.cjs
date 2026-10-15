@@ -38,6 +38,8 @@ function createTornScriptUI(options = {}) {
   const tasks = new Map();
   const sections = new Map();
   const floating = options.surface !== 'embedded';
+  // PDA capabilities are independent of viewport size; desktop touch stays desktop.
+  function pdaOpening() { return floating && (typeof PDA_storage !== 'undefined' && !!PDA_storage || typeof win.PDA_getTabState === 'function' || typeof win.PDA_httpGet === 'function'); }
   let destroyed = false, shown = true, collapsed = false, minimized = false, maximized = false, locked = false;
   let pdaActive = typeof win.PDA_getTabState !== 'function', pageActive = true, pdaRevision = 0, lastActive, gesture = null, selected = null, returnFocus = null;
   let pdaTimer = null;
@@ -82,7 +84,8 @@ function createTornScriptUI(options = {}) {
   function applyProfile(value) {
     const normalized = normalizeProfile(value);
     rect = { x: normalized.x, y: normalized.y, width: normalized.width, height: normalized.height };
-    locked = normalized.locked; collapsed = normalized.collapsed;
+    locked = normalized.locked; collapsed = maximized ? false : normalized.collapsed;
+    if (maximized) previousRect = { ...rect };
     if (normalized.selected && sections.has(normalized.selected)) {
       const wasBooting = booting; booting = true; select(normalized.selected); booting = wasBooting;
     }
@@ -92,7 +95,7 @@ function createTornScriptUI(options = {}) {
     const nextProfile = profileName();
     if (nextProfile !== currentProfile) {
       profiles[currentProfile] = snapshotProfile(); currentProfile = nextProfile;
-      maximized = false; applyProfile(profiles[currentProfile]);
+      applyProfile(profiles[currentProfile]);
     } else fit();
   }
   function node(tag, className, text) {
@@ -214,16 +217,18 @@ function createTornScriptUI(options = {}) {
     resize.hidden = !floating || locked || maximized || collapsed;
     fit(); visibility(); stackLaunchers();
   }
-  function show() { if (destroyed) return; shown = true; update(); focus(); }
+  function show() { if (destroyed) return; shown = true; if (pdaOpening()) maximize(false); else update(); focus(); }
   function hide() { if (destroyed) return; shown = false; update(); }
   function close() { if (destroyed || !shown) return; hide(); if (typeof options.onClose === 'function') options.onClose(); }
   function collapse(value = !collapsed) { if (destroyed || collapsed === !!value) return; collapsed = !!value; update(); rememberLayout(); }
   function minimize() { if (destroyed) return; returnFocus = doc.activeElement; minimized = true; update(); launcher.focus(); }
-  function maximize() { if (destroyed || !floating) return; if (!maximized) previousRect = { ...rect }; maximized = true; minimized = collapsed = false; update(); rememberLayout(); }
+  function maximize(remember = true) { if (destroyed || !floating) return; if (!maximized) previousRect = { ...rect }; maximized = true; minimized = collapsed = false; update(); if (remember) rememberLayout(); }
   function restore() {
     if (destroyed) return;
+    const reopening = minimized || !shown;
     if (maximized && previousRect) rect = { ...previousRect };
     maximized = minimized = collapsed = false; shown = true; update();
+    if (reopening && pdaOpening()) maximize(false);
     if (returnFocus && root.contains(returnFocus)) returnFocus.focus(); else title.focus();
     returnFocus = null;
     rememberLayout();
@@ -421,7 +426,8 @@ function createTornScriptUI(options = {}) {
     const observer = new win.MutationObserver(() => { if (!root.isConnected) destroy(); });
     observer.observe(doc.documentElement, { childList: true, subtree: true }); cleanups.push(() => observer.disconnect());
   }
-  update(); focus();
+  if (pdaOpening()) maximize(false); else update();
+  focus();
   booting = false;
   if (floating && typeof options.readLayout === 'function') {
     let timer;

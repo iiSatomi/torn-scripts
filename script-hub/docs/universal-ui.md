@@ -1,6 +1,6 @@
 # Universal script UI and themes
 
-Implementation: Script Hub 1.4.5, shared UI contract version 1.
+Implementation: Script Hub 1.4.6, shared UI contract version 1.
 
 ## User controls
 
@@ -37,7 +37,17 @@ Palettes provide separate light/dark colors. Custom colors cover surfaces, text,
 accents, focus, selection, semantic statuses, and six chart categories. Spacing,
 corner radius, and text scale are separate preferences.
 
-Opening a script keeps the Hub open. Shared floating tools and declared legacy
+Opening a script keeps the Hub open on desktop. On Torn PDA, a successful menu
+launch dismisses the Hub without moving focus away from the opened tool. Failed
+launches retain the Hub and its error message; unsaved drafts keep their guard.
+Shared floating tools open maximized on PDA, including reopen and minimized
+restore. They stay fitted after rotation. The normal restore control still
+restores the saved rectangle, and embedded/legacy native content keeps its own
+placement. PDA detection uses native storage/tab-state/HTTP capabilities rather
+than screen width, so desktop touch and narrow browser windows retain desktop
+opening behavior.
+
+Shared floating tools and declared legacy
 floating menus cooperate on window order; interacting with a window brings it
 forward. Fixed modal backdrops move with their menu. Embedded content keeps its
 page placement. Escape applies to the foreground window. Navigation to another

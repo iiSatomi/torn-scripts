@@ -217,6 +217,8 @@ function onResult(event) {
     const target=declared.find(node=>node.contains(document.activeElement))||declared.at(-1)||focused;
     if(target&&target!==dialog){target.setAttribute('data-tsui-stack-window','1');focusScriptUiWindow(document,target);}
     else {const opened=scriptUiFloatingWindows(document).filter(node=>node!==dialog&&!request.windows.has(node));if(opened.length)focusScriptUiWindow(document,opened.at(-1));}
+    const platform=getHubPlatformEnvironment();
+    if(platform.PDA_storage||typeof platform.PDA_getTabState==='function'||typeof platform.PDA_httpGet==='function')closeHub(false);
     if(!dialog?.hidden)say(owner.name+' opened.'); return;
   }
   if (result.status === 'navigate' && !request.isPending) { navigate(registry.get(request.id), request.action); return; }

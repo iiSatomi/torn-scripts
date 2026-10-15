@@ -210,6 +210,21 @@ async function main() {
       originals.forEach(restore => restore()); window.MutationObserver = NativeObserver;
     });
     assert.deepEqual(await page.evaluate(() => [detachDestroyed, ownedListenerCount, ownedObserverCount, sharedStopCount]), [true, 0, 0, 0]);
+    await page.evaluate(() => {
+      window.PDA_httpGet=()=>{};
+      window.pdaFit=kit.createTornScriptUI({doc:document,win:window,applyTheme:()=>{},readLayout:()=>new Promise(resolve=>window.finishPdaLayout=resolve)});
+      pdaFit.show();
+    });
+    assert.equal(await page.evaluate(()=>pdaFit.getState().maximized),true,'PDA floating base opens maximized without a Hub');
+    await page.evaluate(()=>finishPdaLayout({version:1,desktop:{x:120,y:80,width:620,height:420,collapsed:true},mobile:{x:20,y:24,width:330,height:300,collapsed:true}}));
+    await page.waitForFunction(()=>pdaFit.getState().maximized&&!pdaFit.getState().collapsed);
+    await page.evaluate(()=>pdaFit.restore());
+    assert.deepEqual(await page.evaluate(()=>{const state=pdaFit.getState();return[state.maximized,state.rect.width,state.rect.height];}),[false,620,420],'manual restore retains hydrated normal geometry');
+    await page.evaluate(()=>{pdaFit.hide();pdaFit.show();});
+    assert.equal(await page.evaluate(()=>pdaFit.getState().maximized),true,'PDA reopen maximizes');
+    await page.evaluate(()=>{pdaFit.restore();pdaFit.minimize();pdaFit.restore();});
+    assert.equal(await page.evaluate(()=>pdaFit.getState().maximized),true,'PDA minimized reopen maximizes');
+    await page.evaluate(()=>{pdaFit.destroy();delete window.PDA_httpGet;});
     await page.evaluate(async () => {
       let resolveState; window.startupStates = [];
       window.PDA_getTabState = () => new Promise(resolve => { resolveState = resolve; });
