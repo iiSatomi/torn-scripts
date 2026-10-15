@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Script Hub
 // @namespace    isatomi.torn.script-hub
-// @version      1.4.5
+// @version      1.4.6
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.
@@ -2290,6 +2290,8 @@ function onResult(event) {
     const target=declared.find(node=>node.contains(document.activeElement))||declared.at(-1)||focused;
     if(target&&target!==dialog){target.setAttribute('data-tsui-stack-window','1');focusScriptUiWindow(document,target);}
     else {const opened=scriptUiFloatingWindows(document).filter(node=>node!==dialog&&!request.windows.has(node));if(opened.length)focusScriptUiWindow(document,opened.at(-1));}
+    const platform=getHubPlatformEnvironment();
+    if(platform.PDA_storage||typeof platform.PDA_getTabState==='function'||typeof platform.PDA_httpGet==='function')closeHub(false);
     if(!dialog?.hidden)say(owner.name+' opened.'); return;
   }
   if (result.status === 'navigate' && !request.isPending) { navigate(registry.get(request.id), request.action); return; }
