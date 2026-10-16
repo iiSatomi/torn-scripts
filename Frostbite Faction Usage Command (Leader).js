@@ -4,13 +4,13 @@
 // @version      3.0.0
 // @description  Faction-wide usage tracking with daily / weekly / monthly windows. Pulls public personal stats straight from Torn — no spies, no TornStats.
 // @author       Frostbite
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      script.google.com
 // @connect      script.googleusercontent.com
 // @run-at       document-idle
-// @license      All Rights Reserved
 // ==/UserScript==
 
 (function () {

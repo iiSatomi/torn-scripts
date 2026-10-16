@@ -4,6 +4,7 @@
 // @version      0.8.0
 // @description  Rental manager for Torn properties — see every lease, what it earns, when it expires, and what a fair renewal price actually is. Prices from the live rental market, outliers removed.
 // @author       iSatomi (3580191)
+// @license      GPL-3.0
 // @match        https://www.torn.com/properties.php*
 // @grant        GM_setValue
 // @grant        GM_getValue

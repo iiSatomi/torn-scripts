@@ -14,6 +14,7 @@ const metadata = `// ==UserScript==
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.
 // @author       iSatomi
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @run-at       document-end
 // @grant        GM_getValue

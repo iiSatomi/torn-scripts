@@ -4,6 +4,7 @@
 // @version      3.37
 // @description  Gym gains calculator, happy jump planner, and logger for Torn City
 // @author       iSatomi [3580191]
+// @license      GPL-3.0
 // @match        https://www.torn.com/gym.php*
 // @grant        GM_getValue
 // @grant        GM_setValue

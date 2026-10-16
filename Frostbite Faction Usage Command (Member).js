@@ -4,6 +4,7 @@
 // @version      1.0.0
 // @description  Reads YOUR OWN personal stats (your key can only ever read your own data — this never touches anyone else's account) and submits them to your faction's shared sheet.
 // @author       Frostbite
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest

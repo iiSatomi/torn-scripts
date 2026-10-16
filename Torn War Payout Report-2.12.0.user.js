@@ -4,6 +4,7 @@
 // @version      2.12.0
 // @description  Per-member ranked war breakdown: hits, losses (all attackers + enemy-only), defends held, stalemates, assists and respect — plus a FACTION DRUG ANALYZER that ties Xanax taken from the armoury to hits actually landed, per war, and a MULTI-WAR SWEEP that runs the same check across every war at once to surface repeat offenders. Loops faction/attacks across the war window (handles the 100-record cap), classifies every hit, and exports as an aligned table, Discord block, TSV, CSV or a standalone HTML report.
 // @author       iSatomi [3580191]
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest

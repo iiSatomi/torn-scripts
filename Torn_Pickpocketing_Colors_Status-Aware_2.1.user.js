@@ -5,12 +5,37 @@
 // @description  Inline target guide, optional Torn UI, status-aware history, skill/outcome charts, observed target comparisons, and mobile-safe CSV/JSON backups.
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
 // @author       Korbrm [2931507] (status logic added per TheChase00's note; tiers/best-target/live-updates added by request)
-// @license      MIT License
+// @license      GPL-3.0
 // @match        https://www.torn.com/loader.php?sid=crimes*
 // @match        https://www.torn.com/page.php?sid=crimes*
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
+
+/*
+ * Upstream Pickpocketing code attribution: Korbrm [2931507].
+ * The upstream MIT permission notice is retained alongside this derivative's GPL-3.0 metadata.
+ *
+ * Copyright (c) Korbrm [2931507]
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
 
 /*
  * 2.0 — Inline Targets / Insights / Settings, evidence-limited advice,

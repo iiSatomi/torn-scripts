@@ -4,6 +4,7 @@
 // @version      3.2.1
 // @description  Request money from your faction bankers — from the armoury panel or by typing @banker in faction chat. Requests are marked PAID automatically when the money lands, and if a member fronted it out of pocket the faction is told to correct their balance.
 // @author       iSatomi (3580191)
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @grant        GM_xmlHttpRequest
 // @grant        GM_xmlhttpRequest

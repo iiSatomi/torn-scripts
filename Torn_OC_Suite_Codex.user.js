@@ -4,6 +4,7 @@
 // @version      3.37.0-codex11
 // @description  Full Organised Crime management for Torn faction leaders — fill slots by CPR, track loaned items and armory gaps, and see exactly who got paid what.
 // @author       iSatomi (3580191)
+// @license      GPL-3.0
 // @match        https://www.torn.com/factions.php*
 // @grant        GM_setValue
 // @grant        GM_getValue

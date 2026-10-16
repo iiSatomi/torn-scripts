@@ -4,6 +4,7 @@
 // @version      2.0.0
 // @description  EV-optimal Blackjack advisor for Torn (8-deck S17, late surrender, split-vs-separate-dealer, 6-Card Charlie, BJ pays 2.5x). OC Suite-themed panel, reload/SPA hardened, optional Hi-Lo bet ramp. Rebuilt from Advisor 1.3.0 by iSatomi.
 // @author       iSatomi [3580191]
+// @license      GPL-3.0
 // @match        https://www.torn.com/page.php?sid=blackjack*
 // @match        https://www.torn.com/loader.php?sid=blackjack*
 // @grant        none

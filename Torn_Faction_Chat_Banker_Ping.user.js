@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Torn Faction Chat – Banker Ping to Discord
 // @namespace    torn-faction-banker-ping
-// @version      1.4.0
-// @license None (All Rights Reserved)
+// @version      1.4.1
 // @description  Watches Faction Chat for @banker mentions and forwards them to a Discord webhook. Scrolling back through history no longer re-posts old messages.
+// @author       iSatomi
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_xmlHttpRequest
@@ -11,6 +12,9 @@
 // @connect      discord.com
 // @downloadURL https://update.greasyfork.org/scripts/588179/Torn%20Faction%20Chat%20%E2%80%93%20Banker%20Ping%20to%20Discord.user.js
 // @updateURL https://update.greasyfork.org/scripts/588179/Torn%20Faction%20Chat%20%E2%80%93%20Banker%20Ping%20to%20Discord.meta.js
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
 // ==/UserScript==
 //
 // v1.4.0 — FIXED: scrolling up in chat re-posted old messages to Discord.
@@ -73,10 +77,23 @@
 (() => {
     'use strict';
 
-    // 🔧 EDIT THIS — Discord webhook URL for your #bank-requests channel
-    // Discord: right-click channel → Edit Channel → Integrations → Webhooks
-    // → New Webhook → Copy Webhook URL
-    const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1529636040627716200/wh5aCKvf3KBadNUHhOo9tkEVhnOHYqJ2_D3IgjJjEZ2UN6aQoIYLZD5AfgTrA_vMZf8N';
+    // Configure the destination through the userscript manager menu; never paste it into source.
+    // PRIVATE WEBHOOK SETTINGS START
+    const DISCORD_WEBHOOK_SETTING = 'torn-banker-ping:discord-webhook';
+    const validDiscordWebhook = value => typeof value === 'string' && new RegExp('^https://discord[.]com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+$').test(value);
+    let savedWebhook = '';
+    try { if (typeof GM_getValue === 'function') savedWebhook = GM_getValue(DISCORD_WEBHOOK_SETTING, ''); } catch (_) {}
+    let DISCORD_WEBHOOK_URL = validDiscordWebhook(savedWebhook) ? savedWebhook : '';
+    if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand('Configure Discord webhook', () => {
+        const entered = window.prompt('Paste your Discord webhook URL. Leave blank to disable forwarding.');
+        if (entered === null) return;
+        const value = entered.trim();
+        if (value && !validDiscordWebhook(value)) { window.alert('Enter an HTTPS discord.com webhook URL.'); return; }
+        if (typeof GM_setValue !== 'function') { window.alert('Userscript settings storage is unavailable.'); return; }
+        try { GM_setValue(DISCORD_WEBHOOK_SETTING, value); DISCORD_WEBHOOK_URL = value; }
+        catch (_) { window.alert('The webhook setting could not be saved.'); }
+    });
+    // PRIVATE WEBHOOK SETTINGS END
 
     // Trigger phrase — case-insensitive, matches "@banker" or "@ banker"
     const TRIGGER_PATTERN = /@\s?banker/i;

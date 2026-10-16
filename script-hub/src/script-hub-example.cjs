@@ -5,6 +5,8 @@ const metadata = `// ==UserScript==
 // @namespace    torn-script-hub
 // @version      1.0.0
 // @description  Optional local examples of script-labeled settings and write-only synthetic controls.
+// @author       iSatomi
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue

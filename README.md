@@ -26,10 +26,7 @@ Run syntax and focused tests with Node.js. Some browser tests require a local si
 
 ## Licensing
 
-The downloaded Greasy Fork scripts retain their own metadata and licenses. Some local files have different provenance; do not assume one repository-wide license covers them all.
-
-
-
+Actively maintained userscripts use GPL-3.0, matching the published OC Suite. See [LICENSE](LICENSE) for the GPLv3 terms. Keep complete Greasy Fork headers in script sources and generator templates. Original upstream copyright and license notices remain included; archived originals and downloaded historical snapshots retain their recorded licenses.
 
 ## Managed Script Hub and War Payout Calculator
 

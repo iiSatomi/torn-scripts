@@ -4,6 +4,7 @@
 // @version      1.0.0
 // @description  Un-greys the permission-locked tabs on the faction Control page so they can be clicked. IMPORTANT: this only removes the CLIENT-SIDE block. Each tab's content is fetched from Torn's server with a permission check, so locked tabs will still load EMPTY / access-denied — enabling them cannot bypass a server-side permission. This just lets you click through and see what (if anything) renders.
 // @author       iSatomi (3580191)
+// @license      GPL-3.0
 // @match        https://www.torn.com/factions.php*
 // @grant        none
 // ==/UserScript==

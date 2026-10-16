@@ -5,6 +5,8 @@ const metadata = `// ==UserScript==
 // @namespace    torn-script-hub
 // @version      1.1.0
 // @description  Local demonstration of shared native script windows, themes, tables, drafts and task controls.
+// @author       iSatomi
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @grant        GM_getValue
 // @grant        GM_setValue

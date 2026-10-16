@@ -4,7 +4,7 @@
 // @version      3.9.1
 // @description  War-page command center: live hospital/travel/jail countdowns, hospital-first sorting, status highlighting, and a per-enemy 📢 callout button that sends customizable, timer-aware messages to faction chat in one tap. FFScouter stat-estimate integration ({stats}/{ff} placeholders + inline badges). Unified ⚙ settings panel. TornPDA-safe (GM_xmlhttpRequest transport).
 // @author       iSatomi [3580191]
-// @license      MIT
+// @license      GPL-3.0
 // @match        https://www.torn.com/factions.php*
 // @grant        GM_addStyle
 // @grant        GM_setValue
