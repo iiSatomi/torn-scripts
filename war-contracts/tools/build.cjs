@@ -13,6 +13,7 @@ const metadata=`// ==UserScript==
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/war-contracts/dist/Torn_War_Contracts_Hub.user.js
 // @description  Find manageable med-out partners, coordinate contact, protect manual contracts and review the faction's current deals through Torn Script Hub.
 // @author       iSatomi
+// @license      GPL-3.0
 // @match        https://www.torn.com/*
 // @run-at       document-end
 // @noframes

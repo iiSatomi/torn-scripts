@@ -10,6 +10,7 @@ This release is in testing. Keep using a copy of your contracts workbook until y
 - `war-contracts/README.md`: features, matching assumptions, privacy and development instructions.
 - `war-contracts/service/README.md`: sheet layout, deployment and service details.
 - Source, tests and the shared modules needed to rebuild this version.
+- `war-contracts/LICENSE`: the GPLv3 license terms, matching the OC Suite's GPL-3.0 license.
 
 The ZIP contains no account configuration, service address, workbook ID or working API keys. Do not paste a key into a source file or share one in a contract note.
 

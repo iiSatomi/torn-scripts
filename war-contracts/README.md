@@ -2,6 +2,8 @@
 
 A separate member userscript using the existing Torn Script Hub adapter, shared window, themes and permissioned API-key manager. It does not change OC Suite or other installed tools.
 
+[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.0.3.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
+
 ## Install
 
 1. [Install War Contracts](https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/war-contracts/dist/Torn_War_Contracts_Hub.user.js) alongside **[Torn Script Hub 1.6.0 or later](https://greasyfork.org/en/scripts/600221-torn-script-hub)**. Replace any manually installed War Contracts entry instead of keeping duplicate copies. The 1.5.0 key manager cannot supply this script's Hub credential context; update Hub from its existing official release before connecting.
@@ -61,3 +63,7 @@ GitHub installs check the sibling `.meta.js` feed and download the generated `.u
 This first public release is in testing. Authenticated service reads, automatic war detection and manual duplicate blocking were verified with the test workbook. Full live recommendations still require an unpaired member; simulated browser tests cover the matching and confirmation flow. Publishing does not switch the configured service from the test workbook to the live sheet.
 
 For rollback, restore the last verified source, increase the package version and republish a verified build at the same paths. Do not lower versions or change its namespace. Disable the script while investigating any unexpected reservation or write behavior.
+
+## License
+
+Copyright 2026 iSatomi. War Contracts is distributed under the GNU General Public License version 3, matching the OC Suite's `GPL-3.0` metadata. See [LICENSE](LICENSE) for the full terms.
