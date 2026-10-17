@@ -12,7 +12,7 @@ function installWarContractsHub(){
   let board=null,member=null,enemies=[],deal=null,dealId=null,draftDealId=null,uncertain=false,loaded=false;
   let ui=null,themeClient=null,adapter=null,credentialClient=null,ready=false,disposed=false,busy=false,generation=0;
   let keyPolicyReady=false,hubManaged=false;
-  let autoAttempted=false;
+  let autoAttempted=false,landingPending=false,selectedMatchId=null;
   let pdaActive=typeof window.PDA_getTabState!=='function',selected='find',reviewing=false;
   let writeQueue=Promise.resolve();
   const validKey=k=>typeof k==='string'&&/^[A-Za-z0-9]{16}$/.test(k);
@@ -35,13 +35,15 @@ function installWarContractsHub(){
   function ownPageId(){const anchor=document.querySelector('a[aria-label^="Name:"][href*="profiles.php"]');try{const n=Number(new URL(anchor.href).searchParams.get('XID'));return Number.isSafeInteger(n)&&n>0?n:null;}catch(_){return null;}}
   function say(text,error=false){if(!refs.status)return;refs.status.textContent=text;refs.status.dataset.error=String(error);}
   function cancel(){generation++;http.abort();busy=false;loaded=false;autoAttempted=false;update();}
-  function resetAccount(){cancel();verified=null;board=null;member=null;enemies=[];deal=null;dealId=null;sessionFF='';uncertain=false;reviewing=false;if(refs.message)refs.message.value='';if(refs['ff-key'])refs['ff-key'].value='';render();}
+  function resetAccount(){cancel();verified=null;board=null;member=null;enemies=[];deal=null;dealId=null;selectedMatchId=null;sessionFF='';uncertain=false;reviewing=false;if(refs.message)refs.message.value='';if(refs['ff-key'])refs['ff-key'].value='';render();}
   function update(){
     if(!ui)return;
     refs.connect.disabled=busy||!ready||!keyPolicyReady;refs.refresh.disabled=busy||!verified;refs.load.disabled=busy||!verified||uncertain;
     refs['torn-key'].disabled=hubManaged||!keyPolicyReady;
     refs.keyStatus.textContent=!keyPolicyReady?'Checking credential storage…':validKey(sharedKey)?'Approved Hub Torn key available.':hubManaged?'Managed by Hub. Approve an assigned key in Hub API Keys to reconnect.':validKey(sessionKey)?'Personal Torn key available for this page.':'Enter a personal key or approve access in Hub API Keys.';
-    refs.context.textContent=board?board.context.opponentName+' · '+D.warDetails(board.context).state+' · '+D.warDetails(board.context).startLabel+' · up to '+board.context.maxHits+' hits':'Your saved connection loads the war and current contracts automatically.';
+    refs.context.textContent=board?'vs '+board.context.opponentName+' · '+D.warDetails(board.context).state+' · '+D.warDetails(board.context).startLabel+' · '+board.context.maxHits+'-hit cap':'Checking your faction sheet and ranked war';
+    refs.context.dataset.connected=String(!!board);
+    refs.loadoutWrap.hidden=!member;refs.load.hidden=!!deal;
     refs.identity.textContent=verified?'Verified member: '+verified.name+' ['+verified.id+']':'No member connected';
     const war=D.warDetails(board?.context);
     refs.connectionState.textContent=busy?'Checking connection…':board?'Connected to your faction sheet':verified?'Member verified · sheet not loaded':'Ready to connect';
@@ -91,6 +93,7 @@ function installWarContractsHub(){
     deal=board.contracts.find(r=>r.source==='script'&&activeStatuses.has(r.status)&&Number(r.ourId)===verified.id)||board.contracts.find(r=>activeStatuses.has(r.status)&&(Number(r.ourId)===verified.id||D.normalizeName(r.ourName)===D.normalizeName(verified.name)))||null;
     if((deal?.id||null)!==dealId){dealId=deal?.id||null;draftDealId=null;reviewing=false;if(refs.message)refs.message.value='';}
     uncertain=false;render();
+    if(landingPending){landingPending=false;if(deal&&selected==='find')ui.select('mine');}
   }
   async function refresh(current){const data=await call('board');if(!current())return false;accept(data);return true;}
   async function torn(path){
@@ -191,17 +194,25 @@ function installWarContractsHub(){
     const matches=D.recommend(member,enemies,board.contracts,{});
     refs.matches.append(node('p',matches.length+' suitable, unbooked opponents. Baseline estimates exclude chain, faction and other situational bonuses.','wch-muted'));
     if(!matches.length){refs.matches.append(note('No suitable unbooked matches with usable estimates. Refresh later or arrange a deal manually.'));return;}
-    for(const result of matches.slice(0,20)){
-      const m=result.enemy,card=node('article',undefined,'wch-match'),head=node('div',undefined,'wch-row');head.append(profileLink(m.name,m.id),node('span','Level '+m.level,'wch-muted'),node('span',result.fit,'wch-tag'));card.append(head);
-      const metrics=node('div',undefined,'wch-metrics');for(const [value,label] of [[result.respect.toFixed(2),'estimated respect / hit'],[result.ff.toFixed(2),'fair fight'],[result.confidence,'estimate freshness']]){const e=node('div',undefined,'wch-metric');e.append(node('strong',value),node('span',label));metrics.append(e);}card.append(metrics,node('p',result.reason,'wch-muted'));
-      const claim=button('Reserve and prepare message',()=>reserve(m),'tsui-primary');claim.dataset.wchAction='reserve';card.append(claim);refs.matches.append(card);
+    const shown=matches.slice(0,20),chosen=shown.find(r=>r.enemy.id===selectedMatchId)||shown[0];selectedMatchId=chosen.enemy.id;
+    const table=node('table',undefined,'wch-match-table'),thead=node('thead'),heading=node('tr'),tbody=node('tbody');table.setAttribute('aria-label','Available med-out partners');
+    for(const [label,cls] of [['Partner',''],['Respect / hit',''],['Fit','wch-fit-col'],['Review','']]){const th=node('th',label,cls);th.scope='col';heading.append(th);}thead.append(heading);
+    for(const result of shown){
+      const m=result.enemy,row=node('tr',undefined,'wch-match');row.dataset.selected=String(m.id===selectedMatchId);
+      const person=node('td');person.append(profileLink(m.name,m.id),node('span','Lv '+m.level,'wch-level'));
+      const respect=node('td',result.respect.toFixed(2),'wch-number'),fit=node('td',result.fit,'wch-fit-col'),action=node('td');
+      const review=button(m.id===selectedMatchId?'Selected':'Review',()=>{selectedMatchId=m.id;renderMatches();refs.matches.querySelector('[data-wch-review="'+m.id+'"]').focus();});review.setAttribute('aria-label','Review '+m.name);review.setAttribute('aria-pressed',String(m.id===selectedMatchId));review.dataset.wchReview=String(m.id);action.append(review);row.append(person,respect,fit,action);tbody.append(row);
     }
+    table.append(thead,tbody);refs.matches.append(table);
+    const result=chosen,m=result.enemy,detail=node('section',undefined,'wch-match-detail'),head=node('div',undefined,'wch-row'),identity=node('div');identity.append(profileLink(m.name,m.id),node('p',result.fit+' · estimate '+result.confidence,'wch-muted'));
+    const claim=button('Reserve and prepare message',()=>reserve(m),'tsui-primary');claim.dataset.wchAction='reserve';head.append(identity,claim);
+    const why=node('details'),summary=node('summary','Why this match? · Fair fight '+result.ff.toFixed(2));why.append(summary,node('p',result.reason,'wch-muted'));detail.append(head,why);refs.matches.append(detail);
     update();
   }
   function renderMine(){
     refs.dealSummary.textContent=deal?verified.name+' ↔ '+deal.enemyName+' · '+labels[deal.status]:'No current deal. Find a suitable partner to begin.';
     const pending=deal&&deal.source==='script'&&['reserved','contacted'].includes(deal.status);
-    refs.contact.hidden=!pending;refs.agreement.hidden=!pending||!reviewing;
+    refs.contact.hidden=!pending||reviewing;refs.agreement.hidden=!pending||!reviewing;
     refs.recovered.hidden=deal?.confirmationPending!==true;
     if(deal&&(deal.status==='confirmed'||deal.source==='manual'))refs.dealDetails.textContent=[deal.hits?deal.hits+' hits':'',deal.time?'Time: '+deal.time+' TCT':'',deal.warlord?'Warlord: '+deal.warlord:'',deal.notes||''].filter(Boolean).join('\n');else refs.dealDetails.textContent='';
     const projection=deal?.source==='script'&&deal.status==='confirmed'&&typeof deal.mainSheetSynced==='boolean';
@@ -223,8 +234,9 @@ function installWarContractsHub(){
     const rows=board.contracts.filter(r=>r.status!=='cancelled'&&D.normalizeName([r.ourName,r.enemyName,r.notes,labels[r.status]].join(' ')).includes(query));
     refs.contracts.append(node('p',rows.length+' current contracts · checked '+new Date(board.at).toLocaleTimeString()+' · manual values are preserved','wch-muted'));
     for(const r of rows.slice(0,200)){
-      const card=node('article',undefined,'wch-contract'),head=node('div',undefined,'wch-row');head.append(profileLink(r.ourName,r.ourId),node('span','↔'),profileLink(r.enemyName,r.enemyId),node('span',labels[r.status],'wch-tag'));
-      card.append(head,node('p',[r.hits?r.hits+' hits':'',r.onlineWindow?'Online: '+r.onlineWindow+' TCT':'',r.time?'Time: '+r.time+' TCT':'',r.warlord?'Warlord: '+r.warlord:''].filter(Boolean).join(' · '),'wch-muted'));
+      const card=node('details',undefined,'wch-contract'),head=node('summary'),pair=node('span',undefined,'wch-contract-pair');pair.append(node('span',r.ourName),node('span',' ↔ ','wch-muted'),node('span',r.enemyName));
+      const brief=node('span',[r.hits?r.hits+' hits':'',r.time?r.time+' TCT':''].filter(Boolean).join(' · '),'wch-muted');head.append(pair,brief,node('span',labels[r.status],'wch-tag'));
+      const links=node('div',undefined,'wch-row');links.append(profileLink(r.ourName,r.ourId),node('span','↔'),profileLink(r.enemyName,r.enemyId));card.append(head,links,node('p',[r.onlineWindow?'Online: '+r.onlineWindow+' TCT':'',r.warlord?'Warlord: '+r.warlord:''].filter(Boolean).join(' · '),'wch-muted'));
       if(r.notes)card.append(node('p',r.notes));refs.contracts.append(card);
       if(r.source==='script'&&r.status==='confirmed'&&r.mainSheetSynced===false)card.append(node('p','Main sheet update pending','wch-muted'));
     }
@@ -234,25 +246,28 @@ function installWarContractsHub(){
   function build(){
     if(ui)return;
     const find=node('div',undefined,'wch-page'),mine=node('div',undefined,'wch-page'),contracts=node('div',undefined,'wch-page'),connection=node('div',undefined,'wch-page');
-    refs.context=node('p',undefined,'wch-note');refs.load=button('Find my matches',loadMatches,'tsui-primary');refs.loadout=node('p',undefined,'wch-muted');refs.loadout.style.whiteSpace='pre-wrap';
+    refs.context=node('p',undefined,'wch-context');refs.load=button('Find my matches',loadMatches,'tsui-primary');refs.loadout=node('p',undefined,'wch-muted');refs.loadout.style.whiteSpace='pre-wrap';
     refs.weapon=node('select');refs.weapon.id='wch-weapon';refs.weaponWrap=field('Weapon planned for these hits',refs.weapon);refs.matches=node('div',undefined,'wch-list');
-    find.append(node('h2','Find your med-out partner'),refs.context,refs.load,refs.loadout,refs.weaponWrap,note('Recommendations assume the opponent removes weapons and armor. Gear helps estimate difficulty; a match rating is not a guaranteed win.'),refs.matches);
+    refs.loadoutWrap=node('details',undefined,'wch-loadout');refs.loadoutWrap.append(node('summary','Your stats & gear'),refs.loadout);
+    const findToolbar=node('div',undefined,'wch-toolbar');findToolbar.append(node('h2','Available partners'),refs.load);
+    find.append(findToolbar,refs.weaponWrap,refs.loadoutWrap,refs.matches,node('p','Stripped-opponent estimates, not win guarantees. Paired players stay hidden.','wch-muted'));
     refs.weapon.addEventListener('change',()=>{if(member){member.weapon=member.weapons.find(w=>w.uid===refs.weapon.value)||member.weapon;renderMatches();}});
     refs.dealSummary=node('h2');refs.dealDetails=node('p',undefined,'wch-summary');refs.contact=node('div',undefined,'wch-form');refs.template=node('select');
     for(const [value,label] of [['invite','Med-out invitation'],['short','Short invitation'],['followup','Follow-up']]){const option=node('option',label);option.value=value;refs.template.append(option);}
     refs.message=node('textarea');refs.message.id='wch-message';refs.message.maxLength=2000;refs.copy=button('Copy message',copyMessage);refs.sent=button('Message sent',()=>transition('sent'));refs.release=button('Release pending contact',()=>transition('release'));refs.review=button('Review agreement',()=>{reviewing=true;renderMine();preview();refs.hits.focus();});
-    refs.template.addEventListener('change',draftMessage);refs.contact.append(field('Quick message',refs.template),field('Edit before copying',refs.message),refs.copy,node('p','Send the message yourself. Mark it sent only after sending.','wch-muted'),refs.sent,refs.review,refs.release);
+    refs.template.addEventListener('change',draftMessage);const contactActions=node('div',undefined,'wch-actions');contactActions.append(refs.copy,refs.sent,refs.review,refs.release);refs.contact.append(field('Quick message',refs.template),field('Edit before copying',refs.message),node('p','Send the message yourself. Copying does not mark it sent.','wch-muted'),contactActions);
     refs.agreement=node('div',undefined,'wch-form');refs.hits=input('number','hits');refs.hits.min='1';refs.hits.step='1';refs.online=input('text','online');refs.online.maxLength=120;refs.time=input('text','time');refs.time.maxLength=80;refs.warlord=input('checkbox','warlord');refs.notes=node('textarea');refs.notes.id='wch-notes';refs.notes.maxLength=1000;
     refs.agreed=input('checkbox','agreed');refs.finalReview=input('checkbox','final-review');refs.preview=node('p',undefined,'wch-note wch-summary');refs.confirm=button('Confirm and save deal',confirm,'tsui-primary');
     const grid=node('div',undefined,'wch-grid');grid.append(field('Agreed hits',refs.hits),field('Online window (TCT)',refs.online),field('Coordinated time (TCT)',refs.time),check('Warlord needed',refs.warlord));
-    refs.agreement.append(node('h3','Review the agreed deal'),grid,field('Notes / deal terms',refs.notes),check('The other player agreed to strip for my hits.',refs.agreed),refs.preview,check('I reviewed these exact terms and both players agreed.',refs.finalReview),refs.confirm);
+    const agreementHeading=node('div',undefined,'wch-toolbar');agreementHeading.append(node('h3','Review the agreed deal'),button('Back to message',()=>{reviewing=false;renderMine();refs.review.focus();}));
+    refs.agreement.append(agreementHeading,grid,field('Notes / deal terms',refs.notes),check('The other player agreed to strip for my hits.',refs.agreed),refs.preview,check('I reviewed these exact terms and both players agreed.',refs.finalReview),refs.confirm);
     for(const e of [refs.hits,refs.online,refs.time,refs.warlord,refs.notes])e.addEventListener('input',preview);
     refs.agreed.addEventListener('change',update);refs.finalReview.addEventListener('change',update);
     refs.recovered=note('Previous save terms recovered. Review and retry this exact agreement, or release the pending contact to start different terms.');refs.recovered.hidden=true;
     refs.syncStatus=note('');refs.syncStatus.hidden=true;refs.syncMain=button('Retry main sheet sync',retryMain);refs.syncMain.hidden=true;
     mine.append(refs.dealSummary,refs.dealDetails,refs.syncStatus,refs.syncMain,refs.recovered,refs.contact,refs.agreement);
     refs.refresh=button('Refresh contracts',()=>run(async current=>{if(await refresh(current))say('Current contracts refreshed from the sheet.');}));refs.search=input('search','search');refs.search.placeholder='Search member, opponent, status or notes';refs.search.addEventListener('input',renderContracts);refs.contracts=node('div',undefined,'wch-list');
-    contracts.append(node('h2','Current contracts'),refs.refresh,field('Search contracts',refs.search),refs.contracts);
+    const contractToolbar=node('div',undefined,'wch-toolbar');contractToolbar.append(field('Search contracts',refs.search),refs.refresh);contracts.append(contractToolbar,refs.contracts);
     refs.endpoint=input('url','endpoint');refs.endpoint.placeholder='https://script.google.com/macros/s/.../exec';refs.endpoint.value=settings.endpoint;
     refs['torn-key']=input('password','torn-key');refs['torn-key'].maxLength=16;refs['torn-key'].autocomplete='new-password';refs['ff-key']=input('password','ff-key');refs['ff-key'].maxLength=16;refs['ff-key'].autocomplete='new-password';
     refs.identity=node('p',undefined,'wch-muted');refs.keyStatus=node('p',undefined,'wch-muted');refs.connect=button('Save and reconnect',connect,'tsui-primary');
@@ -268,15 +283,16 @@ function installWarContractsHub(){
     connection.append(node('h2','Connection'),node('p','Your saved faction sheet and ranked war are checked automatically when you open this tool.','wch-muted'),state,warCard,refs.connectionSettings,privacy);
     refs.status=node('p','Configure Connection to begin.','wch-status');refs.status.setAttribute('role','status');refs.status.setAttribute('aria-live','polite');refs.recovery=button('Check saved state',()=>run(async current=>{if(await refresh(current))say('Saved state checked. Review My Deal and Current Contracts before continuing.');}));refs.recovery.hidden=true;
     themeClient=createScriptUiThemeClient({doc:document,win:window,scriptId:id,read:()=>get('appearance',null),write:value=>put('appearance',value),onChange:theme=>ui?.setTheme(theme)});
-    ui=createTornScriptUI({doc:document,win:window,id,title:'War Contracts',surface:'floating',applyTheme:applyScriptUiTheme,themeClient,ownsThemeClient:true,readLayout:()=>get('layout',{version:1,desktop:{x:30,y:45,width:850,height:760,selected:'find'},mobile:{x:0,y:0,width:390,height:790,selected:'find'}}),writeLayout:value=>put('layout',value),sections:[{id:'find',label:'Find Partner',node:find},{id:'mine',label:'My Deal',node:mine},{id:'contracts',label:'Current Contracts',node:contracts},{id:'connection',label:'Connection',node:connection}],onSelect:value=>{selected=value;},onClose:cancel,onVisibilityChange:active=>{if(!active)cancel();}});
-    ui.root.classList.add('wch-root');ui.root.append(refs.recovery,refs.status);const style=node('style');style.textContent=warContractsStyles();(document.head||document.documentElement).append(style);cleanups.push(()=>style.remove());render();
+    ui=createTornScriptUI({doc:document,win:window,id,title:'War Contracts',surface:'floating',applyTheme:applyScriptUiTheme,themeClient,ownsThemeClient:true,readLayout:()=>get('layout',{version:1,desktop:{x:30,y:45,width:720,height:620,selected:'find'},mobile:{x:0,y:0,width:390,height:790,selected:'find'}}),writeLayout:value=>put('layout',value),sections:[{id:'find',label:'Find Partner',node:find},{id:'mine',label:'My Deal',node:mine},{id:'contracts',label:'Current Contracts',node:contracts},{id:'connection',label:'Connection',headerAction:'Set',node:connection}],onSelect:value=>{selected=value;landingPending=false;},onClose:cancel,onVisibilityChange:active=>{if(!active)cancel();}});
+    ui.root.classList.add('wch-root');ui.root.querySelector('.tsui-nav [aria-label="Find Partner"]').textContent='Matches';ui.root.querySelector('.tsui-nav [aria-label="Current Contracts"]').textContent='Contracts';ui.root.querySelector('.tsui-header-actions button').textContent='Settings';
+    ui.root.querySelector('.tsui-body').prepend(refs.context);ui.root.append(refs.recovery,refs.status);const style=node('style');style.textContent=warContractsStyles();(document.head||document.documentElement).append(style);cleanups.push(()=>style.remove());render();
   }
-  function open(section='find'){if(disposed)return false;build();ui.show();ui.collapse(false);if(ui.getState().minimized)ui.restore();ui.select(section);ui.focus();update();autoLoad();return true;}
+  function open(section){if(disposed)return false;const smart=section===undefined;build();ui.show();ui.collapse(false);if(ui.getState().minimized)ui.restore();ui.select(section||(deal?'mine':'find'));landingPending=smart;ui.focus();update();autoLoad();return true;}
   function registerAdapter(){
     adapter?.();sharedKey=null;
     keyPolicyReady=false;
     credentialClient=createHubCredentialClient({storage:createHubCredentialStorage(env,'war-contracts-hub-private-v1'),crypto:globalThis.crypto,scriptId:id});
-    adapter=registerTornScriptMenu(document,window,{id,name:'War Contracts',version:WAR_CONTRACTS_VERSION,icon:'war',category:'Faction',url:'https://www.torn.com/factions.php?step=your&type=1',actions:[{id:'open',label:'Find a partner'},{id:'contracts',label:'Current contracts'},{id:'mine',label:'My deal'},{id:'settings',label:'Connection'}],capabilities:['credentials']},{open:()=>open('find'),contracts:()=>open('contracts'),mine:()=>open('mine'),settings:()=>open('connection')},{credentialClient,sharedProviders:['torn'],credentialContext:true,credentialScope:'script',
+    adapter=registerTornScriptMenu(document,window,{id,name:'War Contracts',version:WAR_CONTRACTS_VERSION,icon:'war',category:'Faction',url:'https://www.torn.com/factions.php?step=your&type=1',actions:[{id:'open',label:'Find a partner'},{id:'contracts',label:'Current contracts'},{id:'mine',label:'My deal'},{id:'settings',label:'Connection'}],capabilities:['credentials']},{open:()=>open(),contracts:()=>open('contracts'),mine:()=>open('mine'),settings:()=>open('connection')},{credentialClient,sharedProviders:['torn'],credentialContext:true,credentialScope:'script',
       onCredentialPolicyReady(value,isManaged){keyPolicyReady=value;hubManaged ||= isManaged('torn');update();autoLoad();},
       onHubManagementChange(provider,managed){if(provider==='torn'&&managed){hubManaged=true;update();}},
       onCredentialPolicyFailure(){keyPolicyReady=false;resetAccount();say('Hub enrollment could not be saved. Reload to retry.',true);},

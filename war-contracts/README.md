@@ -2,27 +2,27 @@
 
 A separate member userscript using the existing Torn Script Hub adapter, shared window, themes and permissioned API-key manager. It does not change OC Suite or other installed tools.
 
-[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.2.0.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
+[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.3.0.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
 
 ## Install
 
 1. [Install War Contracts](https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/war-contracts/dist/Torn_War_Contracts_Hub.user.js) alongside **[Torn Script Hub 1.6.0 or later](https://greasyfork.org/en/scripts/600221-torn-script-hub)**. Replace any manually installed War Contracts entry instead of keeping duplicate copies. The 1.5.0 key manager cannot supply this script's Hub credential context; update Hub from its existing official release before connecting.
-2. Open **Hub → War Contracts → Connection**.
+2. Open **Hub → War Contracts → Settings**.
 3. Under **Connection settings**, enter the faction's deployed contracts-service `/exec` address once. The sheet link itself is not a service address.
 4. Approve this script in **Hub → API Keys**. Before Hub enrollment, a personal key can instead be used for this page session. After enrollment, missing/revoked Hub access pauses the connection rather than silently switching to a personal key.
 5. Choose **Save and reconnect** after editing settings. After setup, opening War Contracts automatically loads the configured sheet and checks the ranked war; no consent checkbox is required.
 
 Use a custom Torn key with **User battlestats**, **User equipment**, **Key info** and public **Faction members**, **Faction wars** and **Faction rankedwars**. Register the estimate key with FFScouter; a separate FFScouter key is optional. A member can view Current Contracts without granting private battle-stat access. The key must identify the member logged into Torn.
 
-The script bundles its Hub dependencies. No remote `@require`, npm installation or separate spy provider is needed by members. On a page without Hub, a fallback launcher opens the same window. Shared credentials require the Hub's supported userscript-manager/native PDA storage and WebCrypto capabilities.
+The script bundles its Hub dependencies. No remote `@require`, npm installation or separate spy provider is needed by members. The Compact console has three task tabs and a Settings shortcut in its header. A default opening selects My Deal when you already have a contract or pending contact; explicit navigation remains selected. Match review selects one detail panel without reserving or making another API call. On a page without Hub, a fallback launcher opens the same window. Shared credentials require the Hub's supported userscript-manager/native PDA storage and WebCrypto capabilities.
 
 ## Member workflow
 
-- **Connection:** Automatically load the saved sheet using your approved Hub key. See the opponent, Scheduled/Active/Ended status, war ID, start in TCT and hit cap. Service/key fields and API-use details are in expandable sections. Missing setup or a failed request offers manual reconnection instead of repeatedly retrying. Automatic loading does not fetch private stats, gear or FFScouter.
-- **Find Partner:** Load your current four stats, modifiers and equipped gear plus the opposing roster/FFScouter estimates. Pick the equipped weapon you intend to use. Booked opponents and those already being contacted are omitted.
+- **Settings:** Automatically load the saved sheet using your approved Hub key. See the opponent, Scheduled/Active/Ended status, war ID, start in TCT and hit cap. Service/key fields and API-use details are in expandable sections. Missing setup or a failed request offers manual reconnection instead of repeatedly retrying. Automatic loading does not fetch private stats, gear or FFScouter.
+- **Matches:** Load your current four stats, modifiers and equipped gear plus the opposing roster/FFScouter estimates. Pick the equipped weapon you intend to use. Booked opponents and those already being contacted are omitted.
 - **Reserve and prepare message:** The service checks current manual entries and claims both sides before showing the invitation. New invitations include the detected opponent and start; the coordinated-time field defaults to the detected TCT start. Availability is left for the member to enter. Edits and recovered agreement terms are preserved. Edit/copy the message and send it yourself.
 - **My Deal:** Mark the invitation sent, release your pending contact, or review the agreed hit count, TCT window/time, Warlord requirement and notes. An explicit agreement/stripping attestation and final preview confirmation are required before saving.
-- **Current Contracts:** Search both manually entered and script-confirmed contracts, along with pending contacts. Refresh reads the sheet again. Existing notes and targets are displayed without being overwritten.
+- **Contracts:** Search compact rows of manually entered and script-confirmed contracts, along with pending contacts. Expand a row for notes and profile links. Refresh reads the sheet again. Existing notes and targets are displayed without being overwritten.
 
 Confirmed deals append to **Script Contracts** and also fill the main **War Contracts** table. The service reuses your compatible unassigned member row or an unused row, filling only blank public contract cells. Existing values, formulas, annotations, private stats (E) and second targets (I) are preserved. Conflicts leave the confirmed audit record intact and show **Main sheet update pending**; review the manual row, then use **Retry main sheet sync**. A refresh also recovers your previously confirmed current-war deal. A completed copy never rewrites later manual edits. For a scheduled/current war, the service fills the opponent (D6) and TCT start (E6) headers only when genuinely blank. Existing text, including `-`, and formulas are preserved. Shared reservations live in **Script Contract Registry**. That service-owned tab must not be edited as a substitute for the member actions. Pending invitations do not expire silently, which avoids a new member messaging someone still considering an earlier invitation. Release an abandoned pending contact explicitly.
 

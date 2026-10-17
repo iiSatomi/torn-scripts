@@ -1,5 +1,13 @@
 # War Contracts Hub changes
 
+## 1.3.0 — 2026-10-17
+
+- Implements the selected Compact console: dense match comparison rows and one selected-player detail. Review does not reserve or fetch again.
+- Moves Connection into the header Settings shortcut; three compact task tabs replace the large navigation buttons.
+- Opens My Deal by default when paired, while preserving explicit navigation and drafts.
+- Folds contract notes/profile links into expandable rows and separates message drafting from agreement review.
+- Retains Hub themes, saved window geometry, touch targets and existing confirmation/sheet protections. No service update is required.
+
 ## 1.2.0 — 2026-10-16
 
 - Copies confirmed deals into the main War Contracts table as well as Script Contracts.

@@ -35,7 +35,7 @@ async function connectionSettings(page){
    window.service=createWarContractsService({
     config:{factionId:100},authenticate:()=>({id:123,factionId:100}),
     verifyContext:discovery.verifyContext,
-    rosters:()=>({ours:[{id:123,name:'Sample'},{id:124,name:'Other member'}],enemies:[{id:304,name:'Booked Target'},{id:305,name:'Stretch Target'},{id:306,name:'Impossible Target'}]}),
+    rosters:()=>({ours:[{id:123,name:'Sample'},{id:124,name:'Other member'}],enemies:[{id:304,name:'Booked Target'},{id:305,name:'Stretch Target'},{id:306,name:'Impossible Target'},{id:307,name:'Alternative Target'}]}),
     readManual:()=>({maxHits:30,opponentName:'Example opponents',contracts:window.conflict?[...window.manual,...window.mainContracts,{ourName:'Someone else',enemyId:305,enemyName:'Stretch Target'}]:[...window.manual,...window.mainContracts]}),
     readRecords:()=>({records:structuredClone(window.records),confirmed:structuredClone(window.outputs)}),
     writeRecord:r=>{window.records=window.records.filter(x=>x.id!==r.id).concat(structuredClone(r));},
@@ -52,8 +52,8 @@ async function connectionSettings(page){
      }else if(u.pathname.endsWith('/key/info'))data={info:{user:{id:window.invalidIdentity?999:123,faction_id:100}}};
      else if(u.pathname.endsWith('/battlestats'))data={battlestats:Object.fromEntries(['strength','defense','speed','dexterity'].map(k=>[k,{value:1000000,modifier:0}]))};
      else if(u.pathname.endsWith('/equipment'))data={equipment:[{uid:99,id:1,type:'Weapon',name:'Warlord rifle',stats:{damage:65,accuracy:65},bonuses:[{title:'Warlord',value:17}]}]};
-     else if(u.pathname.endsWith('/members'))data={members:[{id:304,name:'Booked Target',level:100,status:{state:'Okay'}},{id:305,name:'Stretch Target',level:90,status:{state:'Hospital'}},{id:306,name:'Impossible Target',level:100,status:{state:'Okay'}}]};
-     else data=[{player_id:304,bss_public:4100,bs_estimate:4000000,last_updated:Date.now()/1000},{player_id:305,bss_public:4200,bs_estimate:4410000,last_updated:Date.now()/1000},{player_id:306,bss_public:900000,bs_estimate:202500000000,last_updated:Date.now()/1000}];
+     else if(u.pathname.endsWith('/members'))data={members:[{id:304,name:'Booked Target',level:100,status:{state:'Okay'}},{id:305,name:'Stretch Target',level:90,status:{state:'Hospital'}},{id:306,name:'Impossible Target',level:100,status:{state:'Okay'}},{id:307,name:'Alternative Target',level:80,status:{state:'Okay'}}]};
+     else data=[{player_id:304,bss_public:4100,bs_estimate:4000000,last_updated:Date.now()/1000},{player_id:305,bss_public:4200,bs_estimate:4410000,last_updated:Date.now()/1000},{player_id:306,bss_public:900000,bs_estimate:202500000000,last_updated:Date.now()/1000},{player_id:307,bss_public:4100,bs_estimate:4202500,last_updated:Date.now()/1000}];
      o.onload({status:200,responseText:JSON.stringify(data),finalUrl:o.url});
     };
     if(window.delayReply){window.delayedReply=reply;}else setTimeout(reply,5);
@@ -68,6 +68,7 @@ async function connectionSettings(page){
   await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();
   await page.getByText('Connected as Sample.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
+  await page.locator('.wch-contract summary').first().click();
   await page.getByText('Manual entry must survive',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Find Partner',exact:true}).click();
   await page.evaluate(()=>window.ffStatus=401);
@@ -78,19 +79,39 @@ async function connectionSettings(page){
   await page.evaluate(()=>window.ffStatus=0);
   await page.getByRole('button',{name:'Find my matches',exact:true}).click();
   await page.locator('.wch-match').filter({hasText:'Stretch Target'}).waitFor();
+  assert.equal(await page.locator('.wch-match-table').count(),1,'matches use one compact comparison table');
+  assert.equal(await page.locator('.wch-match-detail').count(),1,'only the selected match gets a detail panel');
+  assert.equal(await page.locator('.tsui-nav button:visible').count(),3,'Connection is in the window header');
+  assert.equal(await page.locator('.tsui-header').getByRole('button',{name:'Connection',exact:true}).count(),1);
+  const beforeSelection=await page.evaluate(()=>calls.length);
+  await page.getByRole('button',{name:'Review Alternative Target',exact:true}).click();
+  assert.equal(await page.locator('.wch-match-detail').filter({hasText:'Alternative Target'}).count(),1);
+  await page.getByRole('button',{name:'Review Stretch Target',exact:true}).click();
+  assert.equal(await page.evaluate(()=>calls.length),beforeSelection,'reviewing a match makes no API or reservation request');
   assert.equal(await page.locator('.wch-match').filter({hasText:'Booked Target'}).count(),0);
   assert.equal(await page.locator('.wch-match').filter({hasText:'Impossible Target'}).count(),0);
+  for(const [width,height] of [[1920,1080],[390,844],[430,932],[844,390]]){
+   await page.setViewportSize({width,height});
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'no matches document overflow '+width);
+   assert.equal(await page.locator('.wch-match-table').evaluate(t=>t.scrollWidth>t.clientWidth+1),false,'match table fits '+width);
+   if(width===1920)assert.ok(await page.locator('.wch-match').first().evaluate(r=>r.getBoundingClientRect().height)<60,'desktop comparison rows stay compact');
+   else if(width<600)assert.ok(await page.getByRole('button',{name:'Review Stretch Target',exact:true}).evaluate(b=>b.getBoundingClientRect().height)>=44,'phone review target stays tappable');
+   await page.screenshot({path:path.join(report,'matches-'+width+'.png'),fullPage:true});
+  }
+  await page.setViewportSize({width:1920,height:1080});
   await page.getByRole('button',{name:'Reserve and prepare message',exact:true}).click();
   await page.getByRole('button',{name:'Copy message',exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.body?.action==='reserve').length),1);
   assert.equal(await page.locator('#wch-time').inputValue(),'2026-10-18 19:00','new terms start with detected TCT time');
   assert.equal(await page.locator('#wch-online').inputValue(),'','member availability is not invented');
   assert.match(await page.locator('#wch-message').inputValue(),/Example opponents.*2026-10-18 19:00 TCT/);
+  await page.locator('#wch-message').fill('');
   await page.getByRole('button',{name:'Review agreement',exact:true}).click();
-  await page.locator('#wch-time').fill('22:00');await page.locator('#wch-message').fill('');
+  await page.locator('#wch-time').fill('22:00');
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();
   await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'My Deal',exact:true}).click();assert.equal(await page.locator('#wch-time').inputValue(),'22:00','refresh preserves an edited draft even when the message is empty');
+  await page.getByRole('button',{name:'Back to message',exact:true}).click();
   await page.locator('.wch-form select').selectOption('short');
   assert.equal(await page.evaluate(()=>calls.some(c=>c.body?.action==='sent')),false,'copy preparation must not mark sent');
   await page.evaluate(()=>window.clipboardFail=true);
@@ -164,7 +185,9 @@ async function connectionSettings(page){
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.body?.action==='confirm').length),confirmationCalls,'retrying the main copy is not a second confirmation');
   assert.equal(await page.evaluate(()=>manual[0].notes),'Manual entry must survive');
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
-  await page.getByText('21 hits then strip',{exact:true}).waitFor();
+  const ownRow=page.locator('.wch-contract').filter({hasText:'Stretch Target'});
+  assert.equal(await ownRow.getAttribute('open'),null,'contract notes start folded');
+  await ownRow.locator('summary').click();await page.getByText('21 hits then strip',{exact:true}).waitFor();
   assert.equal(await page.locator('.wch-contract').count(),2,'the main and audit rows for the script deal appear once');
   await page.locator('#wch-search').fill('Other member');
   assert.equal(await page.locator('.wch-contract').count(),1);
@@ -173,6 +196,13 @@ async function connectionSettings(page){
   assert.equal(await page.evaluate(()=>JSON.stringify(store).includes('1000000')),false,'private stats never persisted');
   await page.addScriptTag({content:source});
   assert.equal(await page.locator('[data-tsui-id="war-contracts"]').count(),1,'single UI instance');
+  await page.getByRole('button',{name:'Close window',exact:true}).click();
+  await page.getByRole('button',{name:'Open war contracts',exact:true}).click();
+  assert.equal(await page.locator('.tsui-nav [aria-current="page"]').getAttribute('aria-label'),'My Deal','paired default opening selects My Deal');
+  await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();
+  await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();
+  assert.equal(await page.locator('.tsui-nav [aria-current="page"]').getAttribute('aria-label'),'Current Contracts','refresh respects explicit navigation');
   for(const [width,height] of [[1920,1080],[390,844],[430,932],[844,390]]){
    await page.setViewportSize({width,height});
    await page.getByRole('button',{name:'Current Contracts',exact:true}).click();

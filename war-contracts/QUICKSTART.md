@@ -29,13 +29,13 @@ Review Google's permission grant before accepting it. Publishing changed Google 
 1. Install Torn Script Hub 1.6.0 or later and the War Contracts userscript in your userscript manager. Replace older entries rather than enabling duplicates. Reload Torn.
 2. Create/use your own Torn custom key allowing **User battlestats**, **User equipment**, **Key info** and public **Faction members**, **Faction wars**, **Faction rankedwars**. Register the key used for estimates with FFScouter. Current Contracts alone does not need private battle stats.
 3. In **Hub → API Keys**, assign and approve your Torn key for War Contracts. Keep your key private.
-4. Open **Hub → War Contracts → Connection**. Expand **Connection settings**, paste your faction's `/exec` address once and choose **Save and reconnect**. Later openings automatically load the configured sheet and ranked war with your approved Hub key. The key must belong to the member logged into Torn.
-5. Open **Current Contracts** to check existing manual/script deals. If you already have a contract, **My Deal** shows it and new matching is blocked.
+4. Open **Hub → War Contracts → Settings**. Expand **Connection settings**, paste your faction's `/exec` address once and choose **Save and reconnect**. Later openings automatically load the configured sheet and ranked war with your approved Hub key. The key must belong to the member logged into Torn.
+5. Open **Contracts** to check existing manual/script deals. If you already have a contract, the default opening goes to **My Deal** and new matching is blocked. Expand a contract row for its notes.
 
 ## Find and record a deal
 
-1. Open **Find Partner → Find my matches**. Select the equipped weapon you intend to use. Recommendations assume the opponent removes weapons and armor. Unavailable, already paired, pending and extreme-gap opponents are hidden.
-2. The Connection page shows the detected opponent, war status and TCT start. New deal drafts use that start time, but remain editable. Select a partner and reserve the contact. The service rechecks the sheet before claiming either side.
+1. Open **Matches → Find my matches**. Select the equipped weapon you intend to use. Recommendations assume the opponent removes weapons and armor. Unavailable, already paired, pending and extreme-gap opponents are hidden.
+2. The Connection page shows the detected opponent, war status and TCT start. New deal drafts use that start time, but remain editable. Review a partner in the comparison table, then choose **Reserve and prepare message**. Selecting Review alone does not reserve anyone. The service rechecks the sheet before claiming either side.
 3. Edit/copy the suggested invitation and send it yourself through Torn. The script does not send messages or perform attacks or medical actions.
 4. In **My Deal**, mark the invitation sent. When both players agree, enter the hits, TCT window/time, Warlord requirement and notes. Confirm the agreement and stripping, review the preview, then confirm saving.
 5. The confirmed deal appears in **Script Contracts**, the main **War Contracts** table and **Current Contracts**. Only blank compatible public cells are filled; stats, second targets, existing values and formulas are preserved. Release an abandoned pending contact explicitly so the players become available again.

@@ -19,7 +19,7 @@ async function connectionSettings(page){
    for(const kind of ['register','credential-request','credential-reply','credential-changed','rpc','rpc-result'])document.addEventListener('torn-script-hub:v1:'+kind,e=>events.push(String(e.detail)));
    window.GM_xmlhttpRequest=o=>{let cancelled=false;const u=new URL(o.url);window.requests.push({path:u.pathname,ffKey:u.hostname==='ffscouter.com'?u.searchParams.get('key'):null,body:o.data?JSON.parse(o.data):null});
     setTimeout(()=>{if(cancelled)return;let data;
-     if(u.hostname==='script.google.com')data={ok:true,user:{id:123,name:'Member',factionId:100},context:{warId:42,factionId:100,opponentId:200,opponentName:'Opponents',factionName:'Example faction',startAt:Date.parse('2026-10-18T19:00:00Z')/1000,maxHits:30,ended:window.warEnded},contracts:[]};
+     if(u.hostname==='script.google.com')data={ok:true,user:{id:123,name:'Member',factionId:100},context:{warId:42,factionId:100,opponentId:200,opponentName:'Opponents',factionName:'Example faction',startAt:Date.parse('2026-10-18T19:00:00Z')/1000,maxHits:30,ended:window.warEnded},contracts:window.hasManualDeal?[{id:'manual-own',ourId:123,ourName:'Member',enemyId:305,enemyName:'Available Opponent',status:'manual',source:'manual',hits:30}]:[]};
      else if(u.pathname.endsWith('/key/info'))data={info:{user:{id:123,faction_id:100}}};
      else if(u.pathname.endsWith('/battlestats'))data={battlestats:Object.fromEntries(['strength','defense','speed','dexterity'].map(k=>[k,{value:1000000,modifier:0}]))};
      else if(u.pathname.endsWith('/equipment'))data={equipment:[]};
@@ -76,6 +76,16 @@ async function connectionSettings(page){
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Find Partner',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'Reserve and prepare message',exact:true}).isEnabled(),false,'ended war is read-only');
+  await page.getByRole('button',{name:'Close window',exact:true}).click();
+  await page.evaluate(()=>{window.hasManualDeal=true;window.fixtureNow=Date.now;Date.now=()=>window.fixtureNow()+31000;});
+  await page.locator('.tsh-tile[data-script="war-contracts"] .tsh-primary').click();
+  await page.getByText('Member ↔ Available Opponent · Manually entered',{exact:true}).waitFor();
+  assert.equal(await page.locator('.wch-root .tsui-nav [aria-current="page"]').getAttribute('aria-label'),'My Deal','stale default opening routes to a newly recorded manual deal');
+  await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();
+  await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();
+  assert.equal(await page.locator('.wch-root .tsui-nav [aria-current="page"]').getAttribute('aria-label'),'Current Contracts','a subsequent explicit contracts choice stays selected');
+  await page.evaluate(()=>Date.now=window.fixtureNow);
   const persisted=await page.evaluate(()=>[...saved]);
   const pda=await browser.newPage({viewport:{width:390,height:844}});
   pda.setDefaultTimeout(8000);
@@ -99,6 +109,11 @@ async function connectionSettings(page){
   assert.equal(await pda.locator('[data-tsui-id="war-contracts"]').getAttribute('data-tsui-maximized'),'true');
   assert.equal(await pda.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.equal(await pda.evaluate(()=>requestCount),0);
+  await page.evaluate(()=>window.hasManualDeal=false);
+  await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();
+  await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Find Partner',exact:true}).click();
   const count=await page.evaluate(()=>requests.length);
   await page.evaluate(()=>window.dispatchEvent(new CustomEvent('tornpda:tabState',{detail:{isActiveTab:false,isWebViewVisible:false}})));
   await page.getByRole('button',{name:'Find my matches',exact:true}).click();
