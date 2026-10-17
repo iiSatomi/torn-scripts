@@ -1,5 +1,13 @@
 # War Contracts Hub changes
 
+## 1.2.0 — 2026-10-16
+
+- Copies confirmed deals into the main War Contracts table as well as Script Contracts.
+- Reuses compatible member rows and preserves private stats, second targets, manual values, formulas and annotations.
+- Recovers interrupted main-table writes without duplicating confirmation; My Deal shows pending conflicts and a retry button. Earlier confirmed current-war deals recover on their owner's board refresh.
+- Combines compatible main/audit pairs in Current Contracts while retaining differing manual edits.
+- Requires the updated Apps Script service.
+
 ## 1.1.0 — 2026-10-16
 
 - Replaces the long Connection form with member/sheet status, war details and expandable settings; removes the consent checkbox.

@@ -9,7 +9,7 @@ new vm.Script(fs.readFileSync(path.join(root,'war-contracts/service/Code.gs'),'u
 const artifact=path.join(root,'war-contracts/dist/Torn_War_Contracts_Hub.user.js');
 const before=fs.readFileSync(artifact,'utf8');
 new vm.Script(before.replace(/[\u201c\u201d]/g,'"').replace(/[\u2018\u2019]/g,"'"),{filename:'PDA-prepared-userscript.js'});
-run(['--test','war-contracts/test/domain.test.cjs','war-contracts/test/http.test.cjs','war-contracts/test/service.test.cjs']);
+run(['--test','war-contracts/test/domain.test.cjs','war-contracts/test/http.test.cjs','war-contracts/test/service.test.cjs','war-contracts/test/main-sheet.test.cjs']);
 if(process.argv.includes('--browser')){run(['war-contracts/test/client-browser.cjs']);run(['war-contracts/test/hub-browser.cjs']);}
 run(['war-contracts/tools/build.cjs']);
 if(fs.readFileSync(artifact,'utf8')!==before)throw new Error('Build output changed after verification.');

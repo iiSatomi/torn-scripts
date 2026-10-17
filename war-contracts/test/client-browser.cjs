@@ -24,7 +24,7 @@ async function connectionSettings(page){
    window.GM_setValue=(k,v)=>{store[k]=v;};window.GM_deleteValue=k=>{delete store[k];};
    window.GM_setClipboard=text=>{if(window.clipboardFail)throw new Error('blocked');window.copied.push(text);};
    window.manual=[{id:'manual:11',ourId:124,ourName:'Other member',enemyId:304,enemyName:'Booked Target',status:'manual',source:'manual',hits:'30',notes:'Manual entry must survive'}];window.deal=null;
-   window.records=[];window.outputs=[];
+   window.records=[];window.outputs=[];window.mainContracts=[];
    window.currentWar={war_id:42,start:Date.parse('2026-10-18T19:00:00Z')/1000,end:null,factions:[{id:100,name:'Example faction'},{id:200,name:'Example opponents'}]};
    const warCache=new Map();
    window.PropertiesService={getScriptProperties:()=>({getProperty:k=>({FACTION_ID:'100',WORKBOOK_ID:'synthetic'})[k]})};
@@ -36,10 +36,11 @@ async function connectionSettings(page){
     config:{factionId:100},authenticate:()=>({id:123,factionId:100}),
     verifyContext:discovery.verifyContext,
     rosters:()=>({ours:[{id:123,name:'Sample'},{id:124,name:'Other member'}],enemies:[{id:304,name:'Booked Target'},{id:305,name:'Stretch Target'},{id:306,name:'Impossible Target'}]}),
-    readManual:()=>({maxHits:30,opponentName:'Example opponents',contracts:window.conflict?[...window.manual,{ourName:'Someone else',enemyId:305,enemyName:'Stretch Target'}]:window.manual}),
+    readManual:()=>({maxHits:30,opponentName:'Example opponents',contracts:window.conflict?[...window.manual,...window.mainContracts,{ourName:'Someone else',enemyId:305,enemyName:'Stretch Target'}]:[...window.manual,...window.mainContracts]}),
     readRecords:()=>({records:structuredClone(window.records),confirmed:structuredClone(window.outputs)}),
     writeRecord:r=>{window.records=window.records.filter(x=>x.id!==r.id).concat(structuredClone(r));},
     appendConfirmed:r=>{if(window.failBeforeAppend){window.failBeforeAppend=false;throw Error('Synthetic sheet outage');}window.outputs.push(structuredClone(r));},lock:fn=>fn(),now:()=>Date.now(),id:()=>crypto.randomUUID()
+    ,syncMainContract:r=>{if(window.failMainSync){if(!manual.some(m=>m.id==='synthetic-conflict'))manual.push({...structuredClone(r),id:'synthetic-conflict',hits:99,status:'manual',source:'manual'});const e=Error('Synthetic main sheet conflict');e.publicCode='CONFLICT';throw e;}window.mainContracts=window.mainContracts.filter(m=>m.id!=='main-'+r.id).concat({...structuredClone(r),id:'main-'+r.id,status:'manual',source:'manual'});return 16;}
    });
    window.GM_xmlhttpRequest=o=>{
     const u=new URL(o.url),body=o.data?JSON.parse(o.data):null;window.calls.push({path:u.pathname,body});let ended=false;
@@ -151,11 +152,20 @@ async function connectionSettings(page){
   assert.equal(await page.locator('#wch-time').inputValue(),'19:30');
   assert.equal(await page.locator('#wch-notes').inputValue(),'21 hits then strip');
   await page.locator('#wch-agreed').check();await page.locator('#wch-final-review').check();
+  await page.evaluate(()=>window.failMainSync=true);
   await save.click();
-  await page.getByText('Deal confirmed and saved.',{exact:true}).waitFor();
+  await page.getByText('Deal confirmed; main sheet update needs attention.',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>outputs.length),1);assert.equal(await page.evaluate(()=>mainContracts.length),0);
+  const confirmationCalls=await page.evaluate(()=>calls.filter(c=>c.body?.action==='confirm').length);
+  await page.evaluate(()=>{window.failMainSync=false;window.manual=window.manual.filter(m=>m.id!=='synthetic-conflict');});
+  await page.getByRole('button',{name:'Retry main sheet sync',exact:true}).click();
+  await page.getByText('Main War Contracts sheet updated.',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>outputs.length),1);assert.equal(await page.evaluate(()=>mainContracts.length),1);
+  assert.equal(await page.evaluate(()=>calls.filter(c=>c.body?.action==='confirm').length),confirmationCalls,'retrying the main copy is not a second confirmation');
   assert.equal(await page.evaluate(()=>manual[0].notes),'Manual entry must survive');
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
   await page.getByText('21 hits then strip',{exact:true}).waitFor();
+  assert.equal(await page.locator('.wch-contract').count(),2,'the main and audit rows for the script deal appear once');
   await page.locator('#wch-search').fill('Other member');
   assert.equal(await page.locator('.wch-contract').count(),1);
   await page.locator('#wch-search').fill('');

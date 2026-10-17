@@ -2,7 +2,7 @@
 
 A separate member userscript using the existing Torn Script Hub adapter, shared window, themes and permissioned API-key manager. It does not change OC Suite or other installed tools.
 
-[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.1.0.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
+[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.2.0.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
 
 ## Install
 
@@ -24,7 +24,7 @@ The script bundles its Hub dependencies. No remote `@require`, npm installation 
 - **My Deal:** Mark the invitation sent, release your pending contact, or review the agreed hit count, TCT window/time, Warlord requirement and notes. An explicit agreement/stripping attestation and final preview confirmation are required before saving.
 - **Current Contracts:** Search both manually entered and script-confirmed contracts, along with pending contacts. Refresh reads the sheet again. Existing notes and targets are displayed without being overwritten.
 
-Manual contract rows in **War Contracts** remain read-only. For a scheduled/current war, the service fills the opponent (D6) and TCT start (E6) headers only when genuinely blank. Existing text, including `-`, and formulas are preserved. New confirmed deals append to **Script Contracts** in the same workbook. Shared reservations live in **Script Contract Registry**. That service-owned tab must not be edited as a substitute for the member actions. Pending invitations do not expire silently, which avoids a new member messaging someone still considering an earlier invitation. Release an abandoned pending contact explicitly.
+Confirmed deals append to **Script Contracts** and also fill the main **War Contracts** table. The service reuses your compatible unassigned member row or an unused row, filling only blank public contract cells. Existing values, formulas, annotations, private stats (E) and second targets (I) are preserved. Conflicts leave the confirmed audit record intact and show **Main sheet update pending**; review the manual row, then use **Retry main sheet sync**. A refresh also recovers your previously confirmed current-war deal. A completed copy never rewrites later manual edits. For a scheduled/current war, the service fills the opponent (D6) and TCT start (E6) headers only when genuinely blank. Existing text, including `-`, and formulas are preserved. Shared reservations live in **Script Contract Registry**. That service-owned tab must not be edited as a substitute for the member actions. Pending invitations do not expire silently, which avoids a new member messaging someone still considering an earlier invitation. Release an abandoned pending contact explicitly.
 
 If a save times out or the result is uncertain, use **Check saved state**. The board recovers completed writes and existing reservations; do not send another invitation just because a network call failed. The service rejects conflicts introduced manually after the reservation. Direct manual edits cannot acquire an Apps Script lock; conflicting external edits are detected on the next read. Unrecorded private agreements cannot be discovered by the tool.
 

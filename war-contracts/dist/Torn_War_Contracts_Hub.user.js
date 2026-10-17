@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Contracts Hub
 // @namespace    isatomi.torn.war-contracts-hub
-// @version      1.1.0
+// @version      1.2.0
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/war-contracts/dist/Torn_War_Contracts_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/war-contracts/dist/Torn_War_Contracts_Hub.user.js
 // @description  Find manageable med-out partners, coordinate contact, protect manual contracts and review the faction's current deals through Torn Script Hub.
@@ -34,7 +34,7 @@
 (function(){
 'use strict';
 if(window.top!==window.self)return;
-const WAR_CONTRACTS_VERSION="1.1.0";
+const WAR_CONTRACTS_VERSION="1.2.0";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -1780,6 +1780,7 @@ function installWarContractsHub(){
     const pending=deal&&['reserved','contacted'].includes(deal.status)&&deal.source==='script'&&board?.context.ended!==true;
     refs.copy.disabled=busy||uncertain||!pending;refs.sent.disabled=busy||uncertain||!pending;refs.release.disabled=busy||uncertain||!pending;refs.review.disabled=busy||uncertain||!pending;
     refs.confirm.disabled=busy||uncertain||!pending||!refs.agreed.checked||!refs.finalReview.checked;
+    refs.syncMain.disabled=busy||uncertain||!verified||board?.context.ended===true;
     for(const control of [refs.hits,refs.online,refs.time,refs.warlord,refs.notes])control.disabled=busy||deal?.confirmationPending===true;
     refs.recovery.hidden=!uncertain;
   }
@@ -1812,7 +1813,7 @@ function installWarContractsHub(){
     board={context:c,contracts:data.contracts.filter(r=>r&&typeof r==='object'&&Object.hasOwn(labels,r.status)).map(r=>({...r,ourName:String(r.ourName||'').slice(0,100),enemyName:String(r.enemyName||'').slice(0,100),notes:String(r.notes||'').slice(0,2000)})),at:Date.now()};
     if(oldWar&&oldWar!==c.warId){member=null;enemies=[];loaded=false;}
     verified={...verified,name:String(user.name||'Member')};
-    deal=board.contracts.find(r=>activeStatuses.has(r.status)&&(Number(r.ourId)===verified.id||D.normalizeName(r.ourName)===D.normalizeName(verified.name)))||null;
+    deal=board.contracts.find(r=>r.source==='script'&&activeStatuses.has(r.status)&&Number(r.ourId)===verified.id)||board.contracts.find(r=>activeStatuses.has(r.status)&&(Number(r.ourId)===verified.id||D.normalizeName(r.ourName)===D.normalizeName(verified.name)))||null;
     if((deal?.id||null)!==dealId){dealId=deal?.id||null;draftDealId=null;reviewing=false;if(refs.message)refs.message.value='';}
     uncertain=false;render();
   }
@@ -1897,8 +1898,9 @@ function installWarContractsHub(){
     if(!deal||!refs.agreed.checked||!refs.finalReview.checked)throw new Error('Review the terms and confirm that both players agreed.');
     const t=terms();if(!Number.isInteger(t.hits)||t.hits<1||t.hits>board.context.maxHits)throw new Error('Hit count must be between 1 and '+board.context.maxHits+'.');
     uncertain=true;update();const data=await call('confirm',{id:deal.id,...t});if(!current())return;
-    accept(data);reviewing=false;renderMine();say('Deal confirmed and saved.');
+    accept(data);reviewing=false;renderMine();say(deal?.mainSheetSynced===false?'Deal confirmed; main sheet update needs attention.':deal?.mainSheetSynced===true?'Deal confirmed and saved to both sheets.':'Deal confirmed and saved.',deal?.mainSheetSynced===false);
   });}
+  async function retryMain(){await run(async current=>{if(!await refresh(current))return;const synced=deal?.status==='confirmed'&&deal.mainSheetSynced===true;say(synced?'Main War Contracts sheet updated.':'The confirmed deal still needs a main-sheet update. Check My Deal for details.',!synced);});}
   function profileLink(name,memberId){const e=node(memberId?'a':'span',name);if(memberId){e.href='https://www.torn.com/profiles.php?XID='+Number(memberId);e.target='_blank';e.rel='noopener noreferrer';}return e;}
   function renderWeapon(){
     refs.weapon.replaceChildren();
@@ -1927,6 +1929,10 @@ function installWarContractsHub(){
     refs.contact.hidden=!pending;refs.agreement.hidden=!pending||!reviewing;
     refs.recovered.hidden=deal?.confirmationPending!==true;
     if(deal&&(deal.status==='confirmed'||deal.source==='manual'))refs.dealDetails.textContent=[deal.hits?deal.hits+' hits':'',deal.time?'Time: '+deal.time+' TCT':'',deal.warlord?'Warlord: '+deal.warlord:'',deal.notes||''].filter(Boolean).join('\n');else refs.dealDetails.textContent='';
+    const projection=deal?.source==='script'&&deal.status==='confirmed'&&typeof deal.mainSheetSynced==='boolean';
+    refs.syncStatus.hidden=!projection;refs.syncMain.hidden=!projection||deal.mainSheetSynced||board?.context.ended===true;
+    refs.syncStatus.dataset.error=String(projection&&!deal.mainSheetSynced);
+    refs.syncStatus.textContent=!projection?'':deal.mainSheetSynced?'Also recorded on the main War Contracts tab.':deal.mainSheetError==='CONFLICT'?'Confirmed in Script Contracts. A manual value or booking conflicts with the main-sheet update. Review the main sheet, then retry.':deal.mainSheetError==='WAR_ENDED'||deal.mainSheetError==='CONTEXT_CHANGED'?'Confirmed in Script Contracts. The war changed or ended before the main-sheet update. Ask your sheet coordinator to review it.':'Confirmed in Script Contracts. The main-sheet update is pending. Check the sheet, then retry.';
     if(pending&&(draftDealId!==deal.id||deal.confirmationPending)){
       const initial=draftDealId!==deal.id,before=JSON.stringify(terms());draftDealId=deal.id;
       refs.hits.value=String(deal.hits||board.context.maxHits);refs.time.value=deal.time||(!deal.confirmationPending?D.warDetails(board.context).dealTime:'');refs.online.value=deal.onlineWindow??'';refs.warlord.checked=deal.warlord?deal.warlord==='Yes':!!member?.weapon?.warlordPercent;refs.notes.value=deal.notes||'';
@@ -1940,11 +1946,12 @@ function installWarContractsHub(){
     if(!board){refs.contracts.append(note('Connect or refresh to see contracts from the manual sheet and this script.'));return;}
     const query=D.normalizeName(refs.search.value);
     const rows=board.contracts.filter(r=>r.status!=='cancelled'&&D.normalizeName([r.ourName,r.enemyName,r.notes,labels[r.status]].join(' ')).includes(query));
-    refs.contracts.append(node('p',rows.length+' current contracts · checked '+new Date(board.at).toLocaleTimeString()+' · manual entries are read-only','wch-muted'));
+    refs.contracts.append(node('p',rows.length+' current contracts · checked '+new Date(board.at).toLocaleTimeString()+' · manual values are preserved','wch-muted'));
     for(const r of rows.slice(0,200)){
       const card=node('article',undefined,'wch-contract'),head=node('div',undefined,'wch-row');head.append(profileLink(r.ourName,r.ourId),node('span','↔'),profileLink(r.enemyName,r.enemyId),node('span',labels[r.status],'wch-tag'));
       card.append(head,node('p',[r.hits?r.hits+' hits':'',r.onlineWindow?'Online: '+r.onlineWindow+' TCT':'',r.time?'Time: '+r.time+' TCT':'',r.warlord?'Warlord: '+r.warlord:''].filter(Boolean).join(' · '),'wch-muted'));
       if(r.notes)card.append(node('p',r.notes));refs.contracts.append(card);
+      if(r.source==='script'&&r.status==='confirmed'&&r.mainSheetSynced===false)card.append(node('p','Main sheet update pending','wch-muted'));
     }
     if(rows.length>200)refs.contracts.append(note('Showing the first 200. Search to narrow the results.'));
   }
@@ -1967,7 +1974,8 @@ function installWarContractsHub(){
     for(const e of [refs.hits,refs.online,refs.time,refs.warlord,refs.notes])e.addEventListener('input',preview);
     refs.agreed.addEventListener('change',update);refs.finalReview.addEventListener('change',update);
     refs.recovered=note('Previous save terms recovered. Review and retry this exact agreement, or release the pending contact to start different terms.');refs.recovered.hidden=true;
-    mine.append(refs.dealSummary,refs.dealDetails,refs.recovered,refs.contact,refs.agreement);
+    refs.syncStatus=note('');refs.syncStatus.hidden=true;refs.syncMain=button('Retry main sheet sync',retryMain);refs.syncMain.hidden=true;
+    mine.append(refs.dealSummary,refs.dealDetails,refs.syncStatus,refs.syncMain,refs.recovered,refs.contact,refs.agreement);
     refs.refresh=button('Refresh contracts',()=>run(async current=>{if(await refresh(current))say('Current contracts refreshed from the sheet.');}));refs.search=input('search','search');refs.search.placeholder='Search member, opponent, status or notes';refs.search.addEventListener('input',renderContracts);refs.contracts=node('div',undefined,'wch-list');
     contracts.append(node('h2','Current contracts'),refs.refresh,field('Search contracts',refs.search),refs.contracts);
     refs.endpoint=input('url','endpoint');refs.endpoint.placeholder='https://script.google.com/macros/s/.../exec';refs.endpoint.value=settings.endpoint;
