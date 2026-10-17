@@ -32,7 +32,11 @@ function installWarContractsHub(){
   function key(){return keyPolicyReady?(validKey(sharedKey)?sharedKey:hubManaged?'':sessionKey):'';}
   function awake(){return !disposed&&pdaActive&&document.visibilityState!=='hidden';}
   function usable(){return awake()&&!!ui&&ui.getState().active;}
-  function ownPageId(){const anchor=document.querySelector('a[aria-label^="Name:"][href*="profiles.php"]');try{const n=Number(new URL(anchor.href).searchParams.get('XID'));return Number.isSafeInteger(n)&&n>0?n:null;}catch(_){return null;}}
+  function ownPageId(){
+    const anchors=[...document.querySelectorAll('a[aria-label^="Name:"][href*="profiles.php"],#sidebar a[href*="profiles.php?XID="]')].filter(a=>a.getAttribute('aria-label')?.startsWith('Name:')||(a.parentElement?.tagName==='P'&&/^Name\s*:/.test(a.parentElement.textContent.trim())));
+    const ids=new Set();for(const anchor of anchors)try{const url=new URL(anchor.href),n=Number(url.searchParams.get('XID'));if(url.origin===location.origin&&url.pathname==='/profiles.php'&&Number.isSafeInteger(n)&&n>0)ids.add(n);}catch(_){}
+    return ids.size===1?[...ids][0]:null;
+  }
   function say(text,error=false){if(!refs.status)return;refs.status.textContent=text;refs.status.dataset.error=String(error);}
   function cancel(){generation++;http.abort();busy=false;loaded=false;autoAttempted=false;update();}
   function resetAccount(){cancel();verified=null;board=null;member=null;enemies=[];deal=null;dealId=null;selectedMatchId=null;sessionFF='';uncertain=false;reviewing=false;if(refs.message)refs.message.value='';if(refs['ff-key'])refs['ff-key'].value='';render();}

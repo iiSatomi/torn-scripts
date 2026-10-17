@@ -14,7 +14,7 @@ async function connectionSettings(page){
  const browser=await playwright.chromium.launch({headless:true,executablePath:process.env.TORN_BROWSER||'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe'});
  try{
   const page=await browser.newPage({viewport:{width:1920,height:1080}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.route('https://www.torn.com/**',r=>r.fulfill({contentType:'text/html',body:'<!doctype html><html><body><a aria-label="Name: Sample" href="/profiles.php?XID=123">Sample</a><main>Isolated Torn fixture</main></body></html>'}));
+  await page.route('https://www.torn.com/**',r=>r.fulfill({contentType:'text/html',body:'<!doctype html><html><body><aside id="sidebar"><p>Name:<a href="/profiles.php?XID=123">Sample</a></p></aside><main>Isolated Torn fixture</main></body></html>'}));
   await page.goto('https://www.torn.com/index.php');
   await page.addScriptTag({content:fs.readFileSync(path.join(__dirname,'../service/Code.gs'),'utf8')});
   await page.evaluate(()=>{

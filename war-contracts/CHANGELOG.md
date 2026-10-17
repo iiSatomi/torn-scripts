@@ -1,5 +1,10 @@
 # War Contracts Hub changes
 
+## 1.4.1 — 2026-10-17
+
+- Recognizes the current Torn sidebar Name row when its profile link has no accessibility label, restoring automatic connection. The Torn key must still match that unique logged-in member ID.
+- Keeps the original labelled identity anchor supported. No further Apps Script update is needed beyond 1.4.0.
+
 ## 1.4.0 — 2026-10-17
 
 - Adds Cancel deal in My Deal for your own confirmed and manually entered contracts, with named-opponent review and explicit confirmation.
