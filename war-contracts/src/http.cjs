@@ -2,6 +2,18 @@
 
 function createWarContractsHttp(env) {
   const pending = new Set();
+  function rejection(raw, status) {
+    const url = new URL(raw);
+    const code = Number.isInteger(status) && status >= 0 && status <= 599 ? status : 'unknown';
+    const provider = url.hostname === 'ffscouter.com' ? 'FFScouter' : url.hostname === 'script.google.com' ? 'Contracts sheet service' :
+      url.pathname.endsWith('/battlestats') ? 'Torn battle stats' : url.pathname.endsWith('/equipment') ? 'Torn equipment' :
+      url.pathname.endsWith('/members') ? 'Torn faction roster' : 'Torn account verification';
+    const advice = status === 429 ? 'Wait a minute before trying again.' :
+      provider === 'FFScouter' && status === 401 ? 'Register the exact estimate key at ffscouter.com, or enter your registered key in Connection.' :
+      provider === 'FFScouter' ? 'Check your key and access at ffscouter.com.' :
+      provider === 'Contracts sheet service' ? 'Check the deployment address and its access permissions.' : 'Check your Torn key permissions.';
+    return new Error(provider + ' rejected this request (HTTP ' + code + '). ' + advice);
+  }
   function supported(raw) {
     let url; try { url = new URL(raw); } catch (_) { return false; }
     if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.port) return false;
@@ -32,7 +44,7 @@ function createWarContractsHttp(env) {
               const googleOutput = original.hostname === 'script.google.com' && final.hostname === 'script.googleusercontent.com' && final.protocol === 'https:' && !final.username && !final.password && !final.port;
               if (final.origin !== original.origin && !googleOutput) throw new Error('Unexpected service redirect was refused.');
             }
-            if (response.status < 200 || response.status >= 300) throw new Error('The service rejected this request. Check your connection and permissions.');
+            if (response.status < 200 || response.status >= 300) throw rejection(url, response.status);
             if (typeof response.responseText !== 'string' || response.responseText.length > 1048576) throw new Error('The service response was too large.');
             let data; try { data = JSON.parse(response.responseText); } catch (_) { throw new Error('The service did not return JSON. Check the deployment address and access.'); }
             if (!data || typeof data !== 'object') throw new Error('The service returned an invalid response.');

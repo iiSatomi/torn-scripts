@@ -1,5 +1,10 @@
 # War Contracts Hub changes
 
+## 1.0.4 — 2026-10-16
+
+- Names the failed provider and HTTP status when a matching or sheet request is rejected, without exposing keys, addresses or upstream response bodies.
+- Explains how to resolve an FFScouter unregistered-key response and distinguishes it from Torn permissions and sheet deployment failures.
+
 ## 1.0.3 — 2026-10-16
 
 - Uses GPL-3.0 to match the published OC Suite, with full license text included in the source package and ZIP.

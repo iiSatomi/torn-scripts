@@ -41,6 +41,7 @@ const report=path.join(__dirname,'../reports');fs.mkdirSync(report,{recursive:tr
     const u=new URL(o.url),body=o.data?JSON.parse(o.data):null;window.calls.push({path:u.pathname,body});let ended=false;
     const reply=()=>{
      if(ended)return;let data;
+     if(u.hostname==='ffscouter.com'&&window.ffStatus){o.onload({status:window.ffStatus,responseText:'private upstream response',finalUrl:o.url});return;}
      if(u.hostname==='script.google.com'){
       data=window.service.handle(body);if(data.ok)window.deal=data.deal||null;
      }else if(u.pathname.endsWith('/key/info'))data={info:{user:{id:window.invalidIdentity?999:123,faction_id:100}}};
@@ -65,6 +66,12 @@ const report=path.join(__dirname,'../reports');fs.mkdirSync(report,{recursive:tr
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
   await page.getByText('Manual entry must survive',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Find Partner',exact:true}).click();
+  await page.evaluate(()=>window.ffStatus=401);
+  await page.getByRole('button',{name:'Find my matches',exact:true}).click();
+  await page.getByText('FFScouter rejected this request (HTTP 401). Register the exact estimate key at ffscouter.com, or enter your registered key in Connection.',{exact:true}).waitFor();
+  assert.equal((await page.locator('.wch-root').innerText()).includes('private upstream'),false);
+  assert.equal(await page.locator('.wch-match').count(),0);
+  await page.evaluate(()=>window.ffStatus=0);
   await page.getByRole('button',{name:'Find my matches',exact:true}).click();
   await page.locator('.wch-match').filter({hasText:'Stretch Target'}).waitFor();
   assert.equal(await page.locator('.wch-match').filter({hasText:'Booked Target'}).count(),0);

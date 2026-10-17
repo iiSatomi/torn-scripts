@@ -26,3 +26,15 @@ test('large or malformed payloads and upstream errors never escape as raw text',
  await assert.rejects(http.json('https://api.torn.com/v2/key/info'),e=>!e.message.includes('private'));
  await assert.rejects(http.json('https://api.torn.com/v2/key/info',{body:{text:'a'.repeat(20000)}}),/large/i);
 });
+test('HTTP failures identify the provider and safe status without leaking credentials or response bodies',async()=>{
+ const {createWarContractsHttp}=require('../src/http.cjs');
+ for(const [url,status,pattern] of [
+  ['https://ffscouter.com/api/v1/get-stats?key=private-query&targets=123',401,/FFScouter.*HTTP 401.*registered key/i],
+  ['https://api.torn.com/v2/user/equipment',403,/Torn equipment.*HTTP 403/i],
+  ['https://api.torn.com/v2/user/battlestats',429,/Torn battle stats.*HTTP 429/i],
+  ['https://script.google.com/macros/s/private-deployment/exec',403,/Contracts sheet service.*HTTP 403/i],
+ ]){
+  const http=createWarContractsHttp({GM_xmlhttpRequest(o){queueMicrotask(()=>o.onload({status,responseText:'private-response'}));return {};}});
+  await assert.rejects(http.json(url),error=>pattern.test(error.message)&&!error.message.includes('private-'));
+ }
+});
