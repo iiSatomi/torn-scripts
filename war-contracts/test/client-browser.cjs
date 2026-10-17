@@ -6,6 +6,10 @@ assert.ok(fs.existsSync(artifact),'Build the separate War Contracts Hub userscri
 let playwright;try{playwright=require('playwright');}catch(_){playwright=require('C:/Users/asato/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');}
 const source=fs.readFileSync(artifact,'utf8');
 const report=path.join(__dirname,'../reports');fs.mkdirSync(report,{recursive:true});
+async function connectionSettings(page){
+ await page.getByRole('button',{name:'Connection',exact:true}).click();
+ if(await page.locator('.wch-settings').getAttribute('open')===null)await page.locator('.wch-settings summary').click();
+}
 (async()=>{
  const browser=await playwright.chromium.launch({headless:true,executablePath:process.env.TORN_BROWSER||'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe'});
  try{
@@ -21,7 +25,7 @@ const report=path.join(__dirname,'../reports');fs.mkdirSync(report,{recursive:tr
    window.GM_setClipboard=text=>{if(window.clipboardFail)throw new Error('blocked');window.copied.push(text);};
    window.manual=[{id:'manual:11',ourId:124,ourName:'Other member',enemyId:304,enemyName:'Booked Target',status:'manual',source:'manual',hits:'30',notes:'Manual entry must survive'}];window.deal=null;
    window.records=[];window.outputs=[];
-   window.currentWar={war_id:42,start:9999999999,end:null,factions:[{id:100,name:'Example faction'},{id:200,name:'Example opponents'}]};
+   window.currentWar={war_id:42,start:Date.parse('2026-10-18T19:00:00Z')/1000,end:null,factions:[{id:100,name:'Example faction'},{id:200,name:'Example opponents'}]};
    const warCache=new Map();
    window.PropertiesService={getScriptProperties:()=>({getProperty:k=>({FACTION_ID:'100',WORKBOOK_ID:'synthetic'})[k]})};
    window.CacheService={getScriptCache:()=>({get:k=>warCache.get(k),put:(k,v)=>warCache.set(k,v)})};
@@ -57,11 +61,10 @@ const report=path.join(__dirname,'../reports');fs.mkdirSync(report,{recursive:tr
   });
   await page.addScriptTag({content:source});
   await page.getByRole('button',{name:'Open war contracts',exact:true}).click();
-  await page.getByRole('button',{name:'Connection',exact:true}).click();
+  await connectionSettings(page);
   await page.locator('#wch-endpoint').fill('https://script.google.com/macros/s/test/exec');
   await page.locator('#wch-torn-key').fill('x'.repeat(16));
-  await page.locator('#wch-consent').check();
-  await page.getByRole('button',{name:'Connect and load contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();
   await page.getByText('Connected as Sample.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
   await page.getByText('Manual entry must survive',{exact:true}).waitFor();
@@ -79,6 +82,15 @@ const report=path.join(__dirname,'../reports');fs.mkdirSync(report,{recursive:tr
   await page.getByRole('button',{name:'Reserve and prepare message',exact:true}).click();
   await page.getByRole('button',{name:'Copy message',exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>calls.filter(c=>c.body?.action==='reserve').length),1);
+  assert.equal(await page.locator('#wch-time').inputValue(),'2026-10-18 19:00','new terms start with detected TCT time');
+  assert.equal(await page.locator('#wch-online').inputValue(),'','member availability is not invented');
+  assert.match(await page.locator('#wch-message').inputValue(),/Example opponents.*2026-10-18 19:00 TCT/);
+  await page.getByRole('button',{name:'Review agreement',exact:true}).click();
+  await page.locator('#wch-time').fill('22:00');await page.locator('#wch-message').fill('');
+  await page.getByRole('button',{name:'Current Contracts',exact:true}).click();await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();
+  await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'My Deal',exact:true}).click();assert.equal(await page.locator('#wch-time').inputValue(),'22:00','refresh preserves an edited draft even when the message is empty');
+  await page.locator('.wch-form select').selectOption('short');
   assert.equal(await page.evaluate(()=>calls.some(c=>c.body?.action==='sent')),false,'copy preparation must not mark sent');
   await page.evaluate(()=>window.clipboardFail=true);
   await page.getByRole('button',{name:'Copy message',exact:true}).click();
@@ -127,10 +139,9 @@ const report=path.join(__dirname,'../reports');fs.mkdirSync(report,{recursive:tr
   await page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:false})));
   await page.addScriptTag({content:source});
   await page.getByRole('button',{name:'Open war contracts',exact:true}).click();
-  await page.getByRole('button',{name:'Connection',exact:true}).click();
+  await connectionSettings(page);
   await page.locator('#wch-torn-key').fill('x'.repeat(16));
-  await page.locator('#wch-consent').check();
-  await page.getByRole('button',{name:'Connect and load contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();
   await page.getByText('Connected as Sample.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'My Deal',exact:true}).click();
   await page.getByText('Previous save terms recovered. Review and retry this exact agreement, or release the pending contact to start different terms.',{exact:true}).waitFor();
@@ -157,20 +168,24 @@ const report=path.join(__dirname,'../reports');fs.mkdirSync(report,{recursive:tr
    await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'no document overflow '+width);
    await page.screenshot({path:path.join(report,'contracts-'+width+'.png'),fullPage:true});
+   await page.getByRole('button',{name:'Connection',exact:true}).click();
+   if(await page.locator('.wch-settings').getAttribute('open')!==null)await page.locator('.wch-settings summary').click();
+   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'no connection overflow '+width);
+   await page.screenshot({path:path.join(report,'connection-'+width+'.png'),fullPage:true});
   }
   await page.setViewportSize({width:1920,height:1080});
-  await page.getByRole('button',{name:'Connection',exact:true}).click();
+  await connectionSettings(page);
   await page.evaluate(()=>window.invalidIdentity=true);
   await page.locator('#wch-torn-key').fill('y'.repeat(16));
-  await page.getByRole('button',{name:'Connect and load contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();
   await page.getByText('The key must belong to the Torn account currently logged in and a faction member.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Find Partner',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'Find my matches',exact:true}).isEnabled(),false,'failed account switch clears old authorization');
   assert.equal(await page.locator('.wch-match').count(),0,'failed account switch clears private matches');
-  await page.getByRole('button',{name:'Connection',exact:true}).click();
+  await connectionSettings(page);
   await page.evaluate(()=>window.invalidIdentity=false);
   await page.locator('#wch-torn-key').fill('x'.repeat(16));
-  await page.getByRole('button',{name:'Connect and load contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();
   await page.getByText('Connected as Sample.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
   await page.evaluate(()=>window.delayReply=true);

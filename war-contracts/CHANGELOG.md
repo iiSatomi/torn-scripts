@@ -1,5 +1,12 @@
 # War Contracts Hub changes
 
+## 1.1.0 — 2026-10-16
+
+- Replaces the long Connection form with member/sheet status, war details and expandable settings; removes the consent checkbox.
+- Automatically loads the configured sheet and detects the ranked war on opening with an approved key, while respecting inactive tabs and coalescing requests.
+- Shows the detected opponent, Scheduled/Active/Ended status and TCT start; new invitations and deal-time defaults use the war details without replacing edits.
+- Fills only genuinely blank D6/E6 sheet headers. Existing values, placeholders, formulas and manual contract rows remain untouched. Requires the updated Apps Script service for timing/header support.
+
 ## 1.0.4 — 2026-10-16
 
 - Names the failed provider and HTTP status when a matching or sheet request is rejected, without exposing keys, addresses or upstream response bodies.

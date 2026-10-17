@@ -97,6 +97,13 @@ var WarContractsDomain = (() => {
     const text = String(value ?? '').trim();
     return /^https:\/\/script\.google\.com\/macros\/s\/[a-zA-Z0-9_-]+\/exec$/.test(text) ? text : null;
   }
-  return { normalizeName, profile, evaluate, recommend, message, endpoint, contractBlocked };
+  function warDetails(context, now = Date.now()) {
+    const timestamp = Number(context?.startAt);
+    const date = timestamp > 0 && Number.isSafeInteger(timestamp) ? new Date(timestamp * 1000) : null;
+    const dealTime = date && Number.isFinite(date.getTime()) ? date.toISOString().slice(0,16).replace('T',' ') : '';
+    return {state:!context?'Not checked':context.ended?'Ended':dealTime?(timestamp*1000>now?'Scheduled':'Active'):'Current war',
+      startLabel:dealTime?dealTime+' TCT':'Start time unavailable',dealTime};
+  }
+  return { normalizeName, profile, evaluate, recommend, message, endpoint, contractBlocked, warDetails };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = WarContractsDomain;

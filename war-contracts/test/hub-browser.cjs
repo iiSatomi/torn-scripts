@@ -2,6 +2,10 @@
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 let playwright;try{playwright=require('playwright');}catch(_){playwright=require('C:/Users/asato/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');}
 const root=path.resolve(__dirname,'../..');
+async function connectionSettings(page){
+ await page.getByRole('button',{name:'Connection',exact:true}).click();
+ if(await page.locator('.wch-settings').getAttribute('open')===null)await page.locator('.wch-settings summary').click();
+}
 (async()=>{
  const browser=await playwright.chromium.launch({headless:true,executablePath:process.env.TORN_BROWSER||'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe'});
  try{
@@ -9,13 +13,13 @@ const root=path.resolve(__dirname,'../..');
   await page.route('**/*',r=>r.fulfill({contentType:'text/html',body:'<!doctype html><html><body><a aria-label="Name: Member" href="/profiles.php?XID=123">Member</a><main>Hub integration fixture</main></body></html>'}));
   await page.goto('https://www.torn.com/index.php');
   await page.evaluate(()=>{
-   window.saved=new Map();window.requests=[];window.events=[];window.warEnded=false;
+   window.saved=new Map([['war-contracts-hub:v1:settings',{endpoint:'https://script.google.com/macros/s/test/exec'}]]);window.requests=[];window.events=[];window.warEnded=false;
    window.GM_info={scriptHandler:'Tampermonkey',script:{version:'1.0.0'}};
    window.GM_getValue=(k,d)=>saved.has(k)?structuredClone(saved.get(k)):d;window.GM_setValue=(k,v)=>saved.set(k,structuredClone(v));window.GM_deleteValue=k=>saved.delete(k);
    for(const kind of ['register','credential-request','credential-reply','credential-changed','rpc','rpc-result'])document.addEventListener('torn-script-hub:v1:'+kind,e=>events.push(String(e.detail)));
    window.GM_xmlhttpRequest=o=>{let cancelled=false;const u=new URL(o.url);window.requests.push({path:u.pathname,ffKey:u.hostname==='ffscouter.com'?u.searchParams.get('key'):null,body:o.data?JSON.parse(o.data):null});
     setTimeout(()=>{if(cancelled)return;let data;
-     if(u.hostname==='script.google.com')data={ok:true,user:{id:123,name:'Member',factionId:100},context:{warId:42,factionId:100,opponentId:200,opponentName:'Opponents',maxHits:30,ended:window.warEnded},contracts:[]};
+     if(u.hostname==='script.google.com')data={ok:true,user:{id:123,name:'Member',factionId:100},context:{warId:42,factionId:100,opponentId:200,opponentName:'Opponents',factionName:'Example faction',startAt:Date.parse('2026-10-18T19:00:00Z')/1000,maxHits:30,ended:window.warEnded},contracts:[]};
      else if(u.pathname.endsWith('/key/info'))data={info:{user:{id:123,faction_id:100}}};
      else if(u.pathname.endsWith('/battlestats'))data={battlestats:Object.fromEntries(['strength','defense','speed','dexterity'].map(k=>[k,{value:1000000,modifier:0}]))};
      else if(u.pathname.endsWith('/equipment'))data={equipment:[]};
@@ -37,12 +41,16 @@ const root=path.resolve(__dirname,'../..');
   await provider.locator('.tsh-key-permission input').check();
   await page.locator('[data-hub-view="scripts"]').click();
   await page.locator('.tsh-tile[data-script="war-contracts"] .tsh-primary').click();
-  await page.getByRole('button',{name:'Connection',exact:true}).click();
+  assert.equal(await page.locator('#wch-consent').count(),0,'opening the tool no longer requires a consent checkbox');
+  await page.getByText('Connected as Member.',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>requests.filter(r=>r.path.endsWith('/key/info')).length),1,'opening and credential readiness coalesce into one account check');
+  assert.equal(await page.evaluate(()=>requests.filter(r=>r.path.endsWith('/exec')).length),1,'configured sheet loads automatically');
+  assert.equal(await page.evaluate(()=>requests.some(r=>r.ffKey||/battlestats|equipment/.test(r.path))),false,'automatic loading reads no private stats, gear or FF estimates');
+  await connectionSettings(page);
   await page.getByText('Approved Hub Torn key available.',{exact:true}).waitFor();
   await page.locator('#wch-endpoint').fill('https://script.google.com/macros/s/test/exec');
   await page.locator('#wch-ff-key').fill('y'.repeat(16));
-  await page.locator('#wch-consent').check();
-  await page.getByRole('button',{name:'Connect and load contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();
   await page.getByText('Connected as Member.',{exact:true}).waitFor();
   assert.equal(await page.locator('#wch-torn-key').inputValue(),'','shared key never appears in input');
   await page.getByRole('button',{name:'Find Partner',exact:true}).click();
@@ -57,8 +65,8 @@ const root=path.resolve(__dirname,'../..');
   await page.getByText('Hub key changed. Reconnect to verify your account.',{exact:true}).waitFor({state:'attached'});
   await page.locator('[data-hub-view="scripts"]').click();
   await page.locator('.tsh-tile[data-script="war-contracts"] .tsh-primary').click();
-  await page.getByRole('button',{name:'Connection',exact:true}).click();
-  await page.getByRole('button',{name:'Connect and load contracts',exact:true}).click();
+  await connectionSettings(page);
+  await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();
   await page.getByText('Connected as Member.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Find Partner',exact:true}).click();await page.getByRole('button',{name:'Find my matches',exact:true}).click();await page.locator('.wch-match').waitFor();
   assert.equal(await page.evaluate(()=>requests.filter(r=>r.ffKey).at(-1).ffKey),'z'.repeat(16),'Hub change clears old separate FF credential');
@@ -84,7 +92,7 @@ const root=path.resolve(__dirname,'../..');
   const prepared=('(function(){const PDA_storage=window.fixtureNative;'+fs.readFileSync(path.join(root,'war-contracts/dist/Torn_War_Contracts_Hub.user.js'),'utf8')+'}());').replace(/[\u201c\u201d]/g,'"').replace(/[\u2018\u2019]/g,"'");
   await pda.addScriptTag({content:prepared});
   await pda.getByRole('button',{name:'Open war contracts',exact:true}).click();
-  await pda.getByRole('button',{name:'Connection',exact:true}).click();
+  await connectionSettings(pda);
   await pda.getByText('Managed by Hub. Approve an assigned key in Hub API Keys to reconnect.',{exact:true}).waitFor();
   assert.equal(await pda.locator('#wch-torn-key').isEnabled(),false,'Hub enrollment survives reload without Hub and does not reactivate personal fallback');
   assert.equal(await pda.locator('[data-tsui-id="war-contracts"]').getAttribute('data-tsui-pda'),'true');

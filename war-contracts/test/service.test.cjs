@@ -3,6 +3,25 @@ const path=require('node:path');
 function factory(){const s={module:{exports:{}}};const p=path.join(__dirname,'../service/Code.gs');if(fs.existsSync(p))vm.runInNewContext(fs.readFileSync(p,'utf8'),s);assert.equal(typeof s.module.exports.createWarContractsService,'function','service factory exists');return s.module.exports.createWarContractsService;}
 function fixture(overrides={}){let records=[],outputs=[],manual=[],locked=false,fail=false;const deps={config:{warId:8,factionId:1,opponentId:2},authenticate:k=>({id:k==='other'?12:11,name:k==='other'?'Other':'Own',factionId:1}),rosters:()=>({ours:[{id:11,name:'Own'},{id:12,name:'Other'}],enemies:[{id:21,name:'Enemy'},{id:22,name:'Second'}],opponentName:'Opponent'}),readManual:()=>({maxHits:10,opponentName:'Opponent',contracts:manual}),readRecords:()=>({records:structuredClone(records),confirmed:structuredClone(outputs)}),writeRecord:r=>{records=records.filter(x=>x.id!==r.id).concat(structuredClone(r));},appendConfirmed:r=>{outputs.push(structuredClone(r));if(fail){fail=false;throw Error('private-key');}},lock:fn=>{assert.equal(locked,false);locked=true;try{return fn();}finally{locked=false;}},now:()=>100,id:()=>`r${records.length+1}`};Object.assign(deps,{verifyContext:()=>({warId:8,factionId:1,opponentId:2,opponentName:'Opponent',ended:false})},overrides);const api=factory()(deps);return {call:(action,p={},key='key')=>api.handle({action,apiKey:key,warId:8,...p}),manual,outputs,setFail:()=>{fail=true;}};}
 const req='12345678-1234-4123-8123-123456789012';
+test('a board that will fill blank headers bypasses cached war discovery before filling',()=>{
+ const calls=[];let filledContext;
+ const f=fixture({headersNeedFill:()=>true,verifyContext:(key,c,fresh)=>{calls.push(fresh);return {warId:fresh?9:8,factionId:1,opponentId:2,opponentName:'Opponent',ended:false};},readManual:(roster,context)=>{filledContext=context;return {opponentName:'Opponent',maxHits:10,contracts:[]};}});
+ assert.equal(f.call('board').context.warId,9);assert.deepEqual(calls,[false,true]);assert.equal(filledContext.warId,9);
+});
+test('only genuinely blank opponent/start header cells are filled; manual values, placeholders and formulas survive',()=>{
+ const sandbox={module:{exports:{}}};vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../service/Code.gs'),'utf8'),sandbox);
+ const context={opponentName:'Opponent',startAt:Date.parse('2026-10-18T19:00:00Z')/1000,ended:false};
+ function sheet(name='',time='',formulas={}){
+  const values={D6:name,E6:time},writes=[];
+  return {values,writes,getRange(cell){assert.ok(['D6','E6'].includes(cell),'header filling cannot access any manual contract cell');return {getDisplayValue:()=>values[cell],isBlank:()=>values[cell]===''&&!formulas[cell],getFormula:()=>formulas[cell]||'',setValue:value=>{values[cell]=value;writes.push(cell);}};}};
+ }
+ const empty=sheet();sandbox.fillWarContractHeaders(empty,context);assert.equal(empty.values.D6,'Opponent');assert.equal(empty.values.E6,'2026-10-18 19:00');
+ const placeholder=sheet('Opponent','-');sandbox.fillWarContractHeaders(placeholder,context);assert.deepEqual(placeholder.writes,[]);
+ const manual=sheet('Opponent','19:30');sandbox.fillWarContractHeaders(manual,context);assert.deepEqual(manual.writes,[]);
+ const formula=sheet('Opponent','',{E6:'=""'});sandbox.fillWarContractHeaders(formula,context);assert.deepEqual(formula.writes,[]);
+ const conflict=sheet('Previous opponent');sandbox.fillWarContractHeaders(conflict,context);assert.deepEqual(conflict.writes,[]);
+ const ended=sheet();sandbox.fillWarContractHeaders(ended,{...context,ended:true});assert.deepEqual(ended.writes,[]);
+});
 function reserve(f,enemyId=21){return f.call('reserve',{requestId:req,enemyId});}
 const terms={hits:3,onlineWindow:'18-20 TCT',time:'19:00',warlord:'10%',notes:'=formula',strippedConfirmed:true};
 test('service exists',()=>factory());
@@ -31,6 +50,7 @@ function discoveryFixture(){
 test('production discovers scheduled ranked war without fixed war/opponent IDs and sanitizes cache',()=>{
  const f=discoveryFixture(),d=f.d;
  assert.equal(d.verifyContext('temporary-key',d.config).opponentName,'Opponent');assert.equal(d.verifyContext('temporary-key',d.config).warId,8);assert.equal(d.verifyContext('temporary-key',d.config).ended,false);
+ assert.equal(d.verifyContext('temporary-key',d.config).factionName,'Our faction');assert.equal(d.verifyContext('temporary-key',d.config).startAt,9999999999);assert.equal(d.verifyContext('temporary-key',d.config).endAt,null);
  assert.equal(f.requests.length,1);assert.equal(f.requests[0].url,'https://api.torn.com/v2/faction/1/wars');assert.ok(!JSON.stringify([...f.stored]).includes('temporary-key'));assert.ok(!JSON.stringify([...f.stored]).includes('not cached'));
  f.state.current={...f.state.current,war_id:9,factions:[{id:1,name:'Our faction'},{id:3,name:'Next opponent'}]};
  assert.equal(d.verifyContext('temporary-key',d.config).warId,8,'board can use brief cache');

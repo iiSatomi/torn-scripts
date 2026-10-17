@@ -16,9 +16,9 @@ The ZIP contains no account configuration, service address, workbook ID or worki
 
 ## Workbook owner: one-time setup
 
-1. Make a test copy of your contracts workbook. Preserve the `War Contracts` tab and its layout; see the service guide for the exact columns. Cell D6 must name the upcoming opponent, and I6 must contain your maximum hit count.
+1. Make a test copy of your contracts workbook. Preserve the `War Contracts` tab and its layout; see the service guide for the exact columns. I6 must contain your maximum hit count. Blank D6 (opponent) and E6 (TCT start) headers fill from Torn automatically; existing values, `-` placeholders and formulas are retained. A populated opponent heading must match the detected war.
 2. Open the copy's **Extensions → Apps Script**. Paste `war-contracts/service/Code.gs`, save, and reload the workbook.
-3. Choose **War Contracts Service → Configure faction service** in the workbook. Enter your own public faction ID. Setup creates `Script Contracts` and `Script Contract Registry`; it does not rewrite the manual tab.
+3. Choose **War Contracts Service → Configure faction service** in the workbook. Enter your own public faction ID. Setup creates `Script Contracts` and `Script Contract Registry`; manual contract rows are never rewritten.
 4. In Apps Script choose **Deploy → New deployment → Web app**. Run as the workbook owner, grant the required Google access and select access that lets faction members call the endpoint. The service independently verifies each caller's Torn key and faction.
 5. Share the resulting `/exec` service address with your faction. The spreadsheet link is not the service address. No fixed war or opponent ID is needed: the service detects the scheduled/current ranked war through Torn.
 
@@ -29,16 +29,16 @@ Review Google's permission grant before accepting it. Publishing changed Google 
 1. Install Torn Script Hub 1.6.0 or later and the War Contracts userscript in your userscript manager. Replace older entries rather than enabling duplicates. Reload Torn.
 2. Create/use your own Torn custom key allowing **User battlestats**, **User equipment**, **Key info** and public **Faction members**, **Faction wars**, **Faction rankedwars**. Register the key used for estimates with FFScouter. Current Contracts alone does not need private battle stats.
 3. In **Hub → API Keys**, assign and approve your Torn key for War Contracts. Keep your key private.
-4. Open **Hub → War Contracts → Connection**. Paste your faction's `/exec` address, review the data-use text, check consent and connect. The key must belong to the member logged into Torn.
+4. Open **Hub → War Contracts → Connection**. Expand **Connection settings**, paste your faction's `/exec` address once and choose **Save and reconnect**. Later openings automatically load the configured sheet and ranked war with your approved Hub key. The key must belong to the member logged into Torn.
 5. Open **Current Contracts** to check existing manual/script deals. If you already have a contract, **My Deal** shows it and new matching is blocked.
 
 ## Find and record a deal
 
 1. Open **Find Partner → Find my matches**. Select the equipped weapon you intend to use. Recommendations assume the opponent removes weapons and armor. Unavailable, already paired, pending and extreme-gap opponents are hidden.
-2. Select a partner and reserve the contact. The service rechecks the sheet before claiming either side.
+2. The Connection page shows the detected opponent, war status and TCT start. New deal drafts use that start time, but remain editable. Select a partner and reserve the contact. The service rechecks the sheet before claiming either side.
 3. Edit/copy the suggested invitation and send it yourself through Torn. The script does not send messages or perform attacks or medical actions.
 4. In **My Deal**, mark the invitation sent. When both players agree, enter the hits, TCT window/time, Warlord requirement and notes. Confirm the agreement and stripping, review the preview, then confirm saving.
-5. The confirmed deal appears in **Script Contracts** and **Current Contracts**. The original manual tab remains read-only. Release an abandoned pending contact explicitly so the players become available again.
+5. The confirmed deal appears in **Script Contracts** and **Current Contracts**. Manual contract rows remain read-only; only genuinely blank D6/E6 war headers may be filled. Release an abandoned pending contact explicitly so the players become available again.
 
 If saving times out, use **Check saved state** before retrying. An uncertain request may already have saved; do not send a second invitation. If a manual entry appeared meanwhile, the conflict is rejected rather than overwritten.
 
@@ -46,6 +46,7 @@ If saving times out, use **Check saved state** before retrying. An uncertain req
 
 - **No Hub key:** update Hub to 1.6.0+, check the normal API-key assignment/approval, then reload Torn. Keys are never embedded in this download.
 - **Already paired:** inspect My Deal or Current Contracts. Ask your sheet coordinator to resolve an incorrect manual entry; the script cannot overwrite it.
+- **FFScouter HTTP 401:** the exact estimate key must be registered at [FFScouter](https://ffscouter.com). Enter an existing registered key under Connection settings if different from your Hub Torn key, then choose Save and reconnect. Separate estimate keys last for this page session.
 - **No suitable matches:** check FFScouter registration, key scopes and estimates. The safety ceiling deliberately excludes unsuitable targets.
 - **Opponent heading/configuration error:** ask the owner to update the test sheet's opponent heading to match Torn's detected war. Do not hard-code war IDs.
 - **War changed or ended:** refresh the board. Old-war writes are blocked; an ended war can be viewed read-only.

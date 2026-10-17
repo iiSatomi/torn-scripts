@@ -2,15 +2,15 @@
 
 A separate member userscript using the existing Torn Script Hub adapter, shared window, themes and permissioned API-key manager. It does not change OC Suite or other installed tools.
 
-[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.0.4.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
+[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.1.0.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
 
 ## Install
 
 1. [Install War Contracts](https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/war-contracts/dist/Torn_War_Contracts_Hub.user.js) alongside **[Torn Script Hub 1.6.0 or later](https://greasyfork.org/en/scripts/600221-torn-script-hub)**. Replace any manually installed War Contracts entry instead of keeping duplicate copies. The 1.5.0 key manager cannot supply this script's Hub credential context; update Hub from its existing official release before connecting.
 2. Open **Hub → War Contracts → Connection**.
-3. Enter the faction's deployed contracts-service `/exec` address. The sheet link itself is not a service address.
+3. Under **Connection settings**, enter the faction's deployed contracts-service `/exec` address once. The sheet link itself is not a service address.
 4. Approve this script in **Hub → API Keys**. Before Hub enrollment, a personal key can instead be used for this page session. After enrollment, missing/revoked Hub access pauses the connection rather than silently switching to a personal key.
-5. Review the data-use description, check consent, and connect.
+5. Choose **Save and reconnect** after editing settings. After setup, opening War Contracts automatically loads the configured sheet and checks the ranked war; no consent checkbox is required.
 
 Use a custom Torn key with **User battlestats**, **User equipment**, **Key info** and public **Faction members**, **Faction wars** and **Faction rankedwars**. Register the estimate key with FFScouter; a separate FFScouter key is optional. A member can view Current Contracts without granting private battle-stat access. The key must identify the member logged into Torn.
 
@@ -18,12 +18,13 @@ The script bundles its Hub dependencies. No remote `@require`, npm installation 
 
 ## Member workflow
 
+- **Connection:** Automatically load the saved sheet using your approved Hub key. See the opponent, Scheduled/Active/Ended status, war ID, start in TCT and hit cap. Service/key fields and API-use details are in expandable sections. Missing setup or a failed request offers manual reconnection instead of repeatedly retrying. Automatic loading does not fetch private stats, gear or FFScouter.
 - **Find Partner:** Load your current four stats, modifiers and equipped gear plus the opposing roster/FFScouter estimates. Pick the equipped weapon you intend to use. Booked opponents and those already being contacted are omitted.
-- **Reserve and prepare message:** The service checks current manual entries and claims both sides before showing the invitation. Edit/copy the message and send it yourself.
+- **Reserve and prepare message:** The service checks current manual entries and claims both sides before showing the invitation. New invitations include the detected opponent and start; the coordinated-time field defaults to the detected TCT start. Availability is left for the member to enter. Edits and recovered agreement terms are preserved. Edit/copy the message and send it yourself.
 - **My Deal:** Mark the invitation sent, release your pending contact, or review the agreed hit count, TCT window/time, Warlord requirement and notes. An explicit agreement/stripping attestation and final preview confirmation are required before saving.
 - **Current Contracts:** Search both manually entered and script-confirmed contracts, along with pending contacts. Refresh reads the sheet again. Existing notes and targets are displayed without being overwritten.
 
-The original **War Contracts** tab is read-only to the service. New confirmed deals append to **Script Contracts** in the same workbook. Shared reservations live in **Script Contract Registry**. That service-owned tab must not be edited as a substitute for the member actions. Pending invitations do not expire silently, which avoids a new member messaging someone still considering an earlier invitation. Release an abandoned pending contact explicitly.
+Manual contract rows in **War Contracts** remain read-only. For a scheduled/current war, the service fills the opponent (D6) and TCT start (E6) headers only when genuinely blank. Existing text, including `-`, and formulas are preserved. New confirmed deals append to **Script Contracts** in the same workbook. Shared reservations live in **Script Contract Registry**. That service-owned tab must not be edited as a substitute for the member actions. Pending invitations do not expire silently, which avoids a new member messaging someone still considering an earlier invitation. Release an abandoned pending contact explicitly.
 
 If a save times out or the result is uncertain, use **Check saved state**. The board recovers completed writes and existing reservations; do not send another invitation just because a network call failed. The service rejects conflicts introduced manually after the reservation. Direct manual edits cannot acquire an Apps Script lock; conflicting external edits are detected on the next read. Unrecorded private agreements cannot be discovered by the tool.
 
@@ -39,7 +40,7 @@ Public FFScouter BSS is preferred with its corresponding timestamp/total estimat
 
 See [service/README.md](service/README.md). The bound Apps Script needs the workbook owner to authorize Sheets/external-request access and deploy the web app. Configure our faction once; Torn's current-war API automatically identifies the scheduled/current ranked war and opponent when the board loads. Before every mutation the service rechecks Torn, bypassing its brief board cache. An old-war request is rejected if the war has changed. With no current ranked war, the latest ended war remains readable with writes disabled. The manual opponent heading must match the detected faction name, so a stale manual sheet cannot silently become the new war's board.
 
-The Google authorization surface may request broader spreadsheet access because the web app opens its bound workbook by ID. Review that grant before deployment; the code limits its operations to the configured workbook. The script sends the member's Torn key to this configured service only after its disclosure/consent step. The service authenticates with Torn and does not store the raw key. Sheet output contains public player identities and contract terms, never private stats, gear or API responses.
+The Google authorization surface may request broader spreadsheet access because the web app opens its bound workbook by ID. Review that grant before deployment; the code limits its operations to the configured workbook. The script sends the member's Torn key to this configured service when opened with a configured service and approved key; API-use details remain available on Connection. The service authenticates with Torn and does not store the raw key. Sheet output contains public player identities and contract terms, never private stats, gear or API responses.
 
 Personal fallback keys and private matching data stay in memory. Only harmless settings/window geometry are stored by this package. The existing Hub credential subsystem separately owns its private identity and enrollment records. No API keys are exported, inserted into visible inputs, or included in public Hub messages.
 
@@ -60,7 +61,7 @@ Fixture verification does not prove authenticated live Torn accuracy, native pho
 
 GitHub installs check the sibling `.meta.js` feed and download the generated `.user.js` above. Greasy Fork installs update through Greasy Fork. This package is published separately from the existing Hub/Payout managed release workflow: change its own `release.json`, build and verify this package, then publish only its reviewed files. Bundled shared Hub dependencies already exist in this repository. No service address, workbook ID, Torn key or faction credential is embedded in the installable script; members configure their faction service after installation.
 
-This first public release is in testing. Authenticated service reads, automatic war detection and manual duplicate blocking were verified with the test workbook. Full live recommendations still require an unpaired member; simulated browser tests cover the matching and confirmation flow. Publishing does not switch the configured service from the test workbook to the live sheet.
+This first public release is in testing. Authenticated service reads, automatic war detection and manual duplicate blocking were verified with the test workbook. Live matching for an unpaired desktop member has also been verified; simulated browser tests cover the full reservation and confirmation flow. Publishing does not switch the configured service from the test workbook to the live sheet.
 
 For rollback, restore the last verified source, increase the package version and republish a verified build at the same paths. Do not lower versions or change its namespace. Disable the script while investigating any unexpected reservation or write behavior.
 

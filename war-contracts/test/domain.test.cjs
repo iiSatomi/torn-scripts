@@ -89,3 +89,12 @@ test('endpoint only accepts deployed HTTPS Apps Script exec URL', () => {
   assert.equal(D.endpoint('https://script.google.com/macros/s/abc-123_/exec'), 'https://script.google.com/macros/s/abc-123_/exec');
   for (const url of ['http://script.google.com/macros/s/a/exec','https://script.google.com/macros/s/a/dev','https://evil.test/macros/s/a/exec','https://user@script.google.com/macros/s/a/exec','https://script.google.com/macros/s/a/exec?x=1','https://script.google.com/macros/s/a/exec#x']) assert.equal(D.endpoint(url), null);
 });
+test('war details use UTC/TCT and provide editable defaults without inventing availability',()=>{
+ const start=Date.parse('2026-10-18T19:00:00Z')/1000;
+ const info=D.warDetails({opponentName:'Opponents',startAt:start,ended:false},Date.parse('2026-10-16T12:00:00Z'));
+ assert.equal(info.state,'Scheduled');assert.equal(info.startLabel,'2026-10-18 19:00 TCT');assert.equal(info.dealTime,'2026-10-18 19:00');
+ assert.equal(D.warDetails({startAt:start,ended:false},start*1000).state,'Active');
+ assert.equal(D.warDetails({startAt:start,ended:true}).state,'Ended');
+ for(const startAt of [null,undefined,0,-1,Infinity,'not a time'])assert.equal(D.warDetails({startAt}).dealTime,'');
+ assert.equal(D.warDetails(null).state,'Not checked');
+});

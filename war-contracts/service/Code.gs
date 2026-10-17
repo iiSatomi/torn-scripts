@@ -15,6 +15,7 @@ function createWarContractsService(deps) {
       var user={id:Number(auth.id),name:String(auth.name),factionId:Number(auth.factionId)};
       return deps.lock(function() {
         var verified=deps.verifyContext(p.apiKey,c,p.action!=='board');
+        if(p.action==='board'&&verified&&!verified.ended&&typeof deps.headersNeedFill==='function'&&deps.headersNeedFill())verified=deps.verifyContext(p.apiKey,c,true);
         if(!verified)fail('NO_WAR');
         if(!positive(verified.warId)||Number(verified.factionId)!==Number(c.factionId)||!positive(verified.opponentId)||Number(verified.opponentId)===Number(c.factionId)||typeof verified.ended!=='boolean'||!norm(verified.opponentName))fail('CONFIG');
         c={factionId:Number(c.factionId),warId:Number(verified.warId),opponentId:Number(verified.opponentId)};
@@ -22,10 +23,10 @@ function createWarContractsService(deps) {
         if(verified.ended && p.action!=='board')fail('WAR_ENDED');
         var roster=deps.rosters(p.apiKey,c),ours=roster.ours||[],enemies=roster.enemies||[];
         var member=ours.find(function(x){return Number(x.id)===user.id;});if(!member)fail('AUTH');user.name=String(member.name);
-        var manual=deps.readManual(roster),snapshot=deps.readRecords();
+        var manual=deps.readManual(roster,verified),snapshot=deps.readRecords();
         if(norm(manual.opponentName)!==norm(verified.opponentName))fail('CONFIG');
         if(!positive(manual.maxHits)||Number(manual.maxHits)>10000)fail('CONFIG');
-        var context={warId:Number(c.warId),factionId:Number(c.factionId),opponentId:Number(c.opponentId),opponentName:String(verified.opponentName),maxHits:Number(manual.maxHits),ended:verified.ended};
+        var context={warId:Number(c.warId),factionId:Number(c.factionId),factionName:String(verified.factionName||''),opponentId:Number(c.opponentId),opponentName:String(verified.opponentName),startAt:positive(verified.startAt)?Number(verified.startAt):null,endAt:positive(verified.endAt)?Number(verified.endAt):null,maxHits:Number(manual.maxHits),ended:verified.ended};
         var rows=(snapshot.records||[]).filter(function(r){return Number(r.warId)===context.warId && Number(r.factionId)===context.factionId && Number(r.opponentId)===context.opponentId;});
         var confirmed=(snapshot.confirmed||[]).filter(function(r){return Number(r.warId)===context.warId && Number(r.factionId)===context.factionId && Number(r.opponentId)===context.opponentId;});
         confirmed.forEach(function(r){rows=rows.filter(function(x){return x.id!==r.id;});rows.push(r);});
@@ -67,6 +68,16 @@ function createWarContractsService(deps) {
   return {handle:handle};
 }
 if(typeof module!=='undefined')module.exports={createWarContractsService:createWarContractsService};
+function fillWarContractHeaders(sheet,context) {
+  if(!context||context.ended||!context.opponentName)return;
+  function norm(value){return String(value||'').replace(/\[\d+\]/g,'').trim().replace(/\s+/g,' ').toLowerCase();}
+  function blank(cell){return cell.isBlank()&&!cell.getFormula();}
+  var opponent=sheet.getRange('D6');
+  if(blank(opponent)){var name=String(context.opponentName);opponent.setValue(/^[=+\-@]/.test(name)?"'"+name:name);}
+  if(norm(opponent.getDisplayValue())!==norm(context.opponentName))return;
+  var start=Number(context.startAt),date=Number.isSafeInteger(start)&&start>0?new Date(start*1000):null;
+  if(date&&Number.isFinite(date.getTime())){var time=sheet.getRange('E6');if(blank(time))time.setValue(date.toISOString().slice(0,16).replace('T',' '));}
+}
 function onOpen() { SpreadsheetApp.getUi().createMenu('War Contracts Service').addItem('Configure faction service','setupWarContracts').addToUi(); }
 function setupWarContracts() {
   var ui=SpreadsheetApp.getUi(),book=SpreadsheetApp.getActiveSpreadsheet(),values={WORKBOOK_ID:book.getId()};
@@ -108,13 +119,16 @@ function warContractsDependencies() {
         if(!war||!Number.isSafeInteger(Number(warId))||Number(warId)<=0||!Array.isArray(war.factions)||war.factions.length!==2||!war.factions.every(function(f){return f&&Number.isSafeInteger(Number(f.id))&&Number(f.id)>0;})||!war.factions.some(function(f){return Number(f.id)===Number(c.factionId);}))throw new Error('Invalid ranked war');
         var opponent=war.factions.find(function(f){return Number(f.id)!==Number(c.factionId);});
         if(!opponent||typeof opponent.name!=='string'||!opponent.name.trim()||!Object.prototype.hasOwnProperty.call(war,'end')||!Number.isFinite(Number(war.end))||Number(war.end)<0||(history&&Number(war.end)<=0))throw new Error('Invalid ranked opponent');
-        return {warId:Number(warId),factionId:Number(c.factionId),opponentId:Number(opponent.id),opponentName:opponent.name,ended:Number(war.end)>0};
+        var own=war.factions.find(function(f){return Number(f.id)===Number(c.factionId);});
+        var start=Number(war.start),end=Number(war.end);
+        return {warId:Number(warId),factionId:Number(c.factionId),factionName:String(own.name||''),opponentId:Number(opponent.id),opponentName:opponent.name,startAt:Number.isSafeInteger(start)&&start>0?start:null,endAt:end>0?end:null,ended:end>0};
       }
       // Boards use a brief public cache. Writes always check Torn again under the script lock.
       return fresh?discover():cached('current-war:'+c.factionId,30,discover);
     },
     rosters:function(key,c){function members(id){return cached('roster:'+id,30,function(){var data=fetchJson('faction/'+id+'/members?striptags=true',key);if(!Array.isArray(data.members)||data.members.length>1000)throw new Error('Invalid roster');return data.members.map(function(m){return {id:Number(m.id),name:String(m.name)};});});}return {ours:members(c.factionId),enemies:members(c.opponentId)};},
-    readManual:function(roster){var s=sheet('War Contracts'),count=s.getLastRow()-9;if(count>10000)throw new Error('Manual capacity');var rows=count>0?s.getRange(10,4,count,9).getDisplayValues():[],rich=count>0?s.getRange(10,4,count,9).getRichTextValues():[],formulas=count>0?s.getRange(10,4,count,9).getFormulas():[];var contracts=[];
+    headersNeedFill:function(){var s=sheet('War Contracts');return ['D6','E6'].some(function(address){var cell=s.getRange(address);return cell.isBlank()&&!cell.getFormula();});},
+    readManual:function(roster,context){var s=sheet('War Contracts');fillWarContractHeaders(s,context);var count=s.getLastRow()-9;if(count>10000)throw new Error('Manual capacity');var rows=count>0?s.getRange(10,4,count,9).getDisplayValues():[],rich=count>0?s.getRange(10,4,count,9).getRichTextValues():[],formulas=count>0?s.getRange(10,4,count,9).getFormulas():[];var contracts=[];
       rows.forEach(function(r,i){if(!r[0]||(!r[4]&&!r[5]))return;[4,5].forEach(function(col){if(!r[col])return;var a=lookup(r[0],rich[i][0],formulas[i][0],roster.ours),b=lookup(r[col],rich[i][col],formulas[i][col],roster.enemies);contracts.push({id:'manual-'+(i+10)+'-'+col,ourId:a.id,ourName:a.name,enemyId:b.id,enemyName:b.name,hits:r[3],onlineWindow:r[2],time:r[6],warlord:r[7],notes:r[8]});});});return {maxHits:Number(s.getRange('I6').getValue()),opponentName:String(s.getRange('D6').getDisplayValue()),contracts:contracts};},
     readRecords:function(){return {records:readRows('Script Contract Registry'),confirmed:readRows('Script Contracts')};},
     writeRecord:function(r){var s=sheet('Script Contract Registry'),n=s.getLastRow(),ids=n>1?s.getRange(2,1,n-1,1).getValues():[],index=ids.findIndex(function(row){return String(row[0])===r.id;});s.getRange(index<0?n+1:index+2,1,1,11).setNumberFormat('@').setValues([cells(r)]);SpreadsheetApp.flush();},
