@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const path=require('node:path');
 function factory(){const s={module:{exports:{}}};const p=path.join(__dirname,'../service/Code.gs');if(fs.existsSync(p))vm.runInNewContext(fs.readFileSync(p,'utf8'),s);assert.equal(typeof s.module.exports.createWarContractsService,'function','service factory exists');return s.module.exports.createWarContractsService;}
-function fixture(overrides={}){let records=[],outputs=[],manual=[],locked=false,fail=false;const deps={config:{warId:8,factionId:1,opponentId:2},authenticate:k=>({id:k==='other'?12:11,name:k==='other'?'Other':'Own',factionId:1}),rosters:()=>({ours:[{id:11,name:'Own'},{id:12,name:'Other'}],enemies:[{id:21,name:'Enemy'},{id:22,name:'Second'}],opponentName:'Opponent'}),readManual:()=>({maxHits:10,opponentName:'Opponent',contracts:manual}),readRecords:()=>({records:structuredClone(records),confirmed:structuredClone(outputs)}),writeRecord:r=>{records=records.filter(x=>x.id!==r.id).concat(structuredClone(r));},appendConfirmed:r=>{outputs.push(structuredClone(r));if(fail){fail=false;throw Error('private-key');}},lock:fn=>{assert.equal(locked,false);locked=true;try{return fn();}finally{locked=false;}},now:()=>100,id:()=>`r${records.length+1}`};Object.assign(deps,{verifyContext:()=>({warId:8,factionId:1,opponentId:2,opponentName:'Opponent',ended:false})},overrides);const api=factory()(deps);return {call:(action,p={},key='key')=>api.handle({action,apiKey:key,warId:8,...p}),manual,outputs,setFail:()=>{fail=true;}};}
+function fixture(overrides={}){let records=[],outputs=[],manual=[],locked=false,fail=false;const deps={config:{warId:8,factionId:1,opponentId:2},authenticate:k=>({id:k==='other'?12:11,name:k==='other'?'Other':'Own',factionId:1}),rosters:()=>({ours:[{id:11,name:'Own'},{id:12,name:'Other'}],enemies:[{id:21,name:'Enemy'},{id:22,name:'Second'}],opponentName:'Opponent'}),readManual:()=>({maxHits:10,opponentName:'Opponent',contracts:manual}),readRecords:()=>({records:structuredClone(records),confirmed:structuredClone(outputs)}),writeRecord:r=>{records=records.filter(x=>x.id!==r.id).concat(structuredClone(r));},appendConfirmed:r=>{outputs.push(structuredClone(r));if(fail){fail=false;throw Error('private-key');}},markCancelled:r=>{const i=outputs.findIndex(x=>x.id===r.id);if(i<0)outputs.push(structuredClone(r));else outputs[i]=structuredClone(r);},lock:fn=>{assert.equal(locked,false);locked=true;try{return fn();}finally{locked=false;}},now:()=>100,id:()=>`r${records.length+1}`};Object.assign(deps,{verifyContext:()=>({warId:8,factionId:1,opponentId:2,opponentName:'Opponent',ended:false})},overrides);const api=factory()(deps);return {call:(action,p={},key='key')=>api.handle({action,apiKey:key,warId:8,...p}),manual,outputs,setFail:()=>{fail=true;}};}
 const req='12345678-1234-4123-8123-123456789012';
 test('own script projection failure remains the selected deal alongside a conflicting manual row',()=>{
  const f=fixture({syncMainContract:()=>{if(!f.manual.length)f.manual.push({ourId:11,ourName:'Own',enemyId:22,enemyName:'Second',hits:9});const e=Error('Synthetic conflict');e.publicCode='CONFLICT';throw e;}});
@@ -29,6 +29,55 @@ test('only genuinely blank opponent/start header cells are filled; manual values
 });
 function reserve(f,enemyId=21){return f.call('reserve',{requestId:req,enemyId});}
 const terms={hits:3,onlineWindow:'18-20 TCT',time:'19:00',warlord:'10%',notes:'=formula',strippedConfirmed:true};
+const cancelRequest={operationId:'42345678-1234-4123-8123-123456789012',cancelConfirmed:true};
+test('only the owner can explicitly cancel a confirmed deal and retries do not erase a rebooking',()=>{
+ let clears=0;const f=fixture({planMainCancellation:()=>({row:10}),applyMainCancellation:()=>{clears++;}}),a=reserve(f);f.call('confirm',{id:a.deal.id,...terms});
+ assert.equal(f.call('cancel',{id:a.deal.id,...cancelRequest,cancelConfirmed:false}).error.code,'INVALID');
+ assert.equal(f.call('cancel',{id:a.deal.id,...cancelRequest},'other').error.code,'FORBIDDEN');assert.equal(clears,0);
+ assert.equal(f.call('cancel',{id:a.deal.id,...cancelRequest}).ok,true);assert.equal(clears,1);assert.equal(f.outputs[0].status,'cancelled');assert.equal(f.call('board').deal,undefined);
+ const next=f.call('reserve',{requestId:'52345678-1234-4123-8123-123456789012',enemyId:22});assert.equal(next.ok,true);
+ assert.equal(f.call('cancel',{id:a.deal.id,...cancelRequest}).ok,true);assert.equal(clears,1);assert.equal(f.call('board').deal.id,next.deal.id);
+ assert.equal(f.call('confirm',{id:a.deal.id,...terms}).error.code,'CONFLICT');
+});
+test('own manual cancellation checks the exact snapshot, keeps other bookings and is idempotent',()=>{
+ let clears=0;const f=fixture({planMainCancellation:()=>({row:10}),applyMainCancellation:r=>{clears++;f.manual.splice(f.manual.findIndex(m=>m.enemyId===r.enemyId),1);}});
+ const own={ourId:11,ourName:'Own',enemyId:21,enemyName:'Enemy',hits:3,onlineWindow:'18-20',time:'19:00',warlord:'No',notes:'Manual note'};f.manual.push(own,{ourId:12,ourName:'Other',enemyId:22,enemyName:'Second'});
+ const request={id:'manual-0',expected:{...own},...cancelRequest};
+ assert.equal(f.call('cancel',{...request,expected:{...own,notes:'Stale'}}).error.code,'CONFLICT');assert.equal(clears,0);
+ assert.equal(f.call('cancel',request,'other').error.code,'FORBIDDEN');assert.equal(f.call('cancel',request).ok,true);assert.equal(f.manual.length,1);assert.equal(f.outputs[0].status,'cancelled');
+ f.manual.unshift({...own,notes:'A new deal'});assert.equal(f.call('cancel',request).ok,true);assert.equal(clears,1);assert.equal(f.manual[0].notes,'A new deal');
+});
+test('partial cancellation stays blocking, never projects again, and owner board recovers it',()=>{
+ let attempts=0,projections=0;const f=fixture({syncMainContract:()=>{projections++;return 10;},planMainCancellation:()=>({row:10}),applyMainCancellation:()=>{if(++attempts===1)throw Error('Synthetic outage');}}),a=reserve(f);f.call('confirm',{id:a.deal.id,...terms});
+ const result=f.call('cancel',{id:a.deal.id,...cancelRequest});assert.equal(result.deal.cancellationPending,true);assert.equal(result.deal.cancellationError,'UNAVAILABLE');
+ assert.equal(f.call('reserve',{requestId:'62345678-1234-4123-8123-123456789012',enemyId:22}).error.code,'CONFLICT');
+ assert.equal(f.call('confirm',{id:a.deal.id,...terms}).error.code,'CONFLICT');
+ assert.equal(f.call('board').deal,undefined);assert.equal(attempts,2);assert.equal(projections,1);assert.equal(f.outputs[0].status,'cancelled');
+});
+test('cancellation rejects old/ended wars and old audit confirmation cannot restore a cancelled deal',()=>{
+ const f=fixture({planMainCancellation:()=>({row:10}),applyMainCancellation:()=>{}}),a=reserve(f);f.call('confirm',{id:a.deal.id,...terms});
+ assert.equal(f.call('cancel',{id:a.deal.id,...cancelRequest,warId:7}).error.code,'CONTEXT_CHANGED');
+ assert.equal(f.call('cancel',{id:a.deal.id,...cancelRequest}).ok,true);assert.equal(f.call('board').deal,undefined);
+ const ended=fixture({verifyContext:()=>({warId:8,factionId:1,opponentId:2,opponentName:'Opponent',ended:true}),planMainCancellation:()=>{throw Error('must not write');}});assert.equal(ended.call('cancel',{id:'any',...cancelRequest}).error.code,'WAR_ENDED');
+});
+test('cancelled audit truth survives a lost success response without restoring or clearing the deal twice',()=>{
+ let clears=0;const f=fixture({planMainCancellation:()=>({row:10}),applyMainCancellation:()=>{clears++;},markCancelled:r=>{f.outputs[0]=structuredClone(r);throw Error('Lost success response');}}),a=reserve(f);f.call('confirm',{id:a.deal.id,...terms});
+ f.call('cancel',{id:a.deal.id,...cancelRequest});assert.equal(f.call('board').deal,undefined);assert.equal(f.call('cancel',{id:a.deal.id,...cancelRequest}).ok,true);assert.equal(clears,1);
+});
+test('durable target-clear guard survives audit failure, board merge and a fresh cancellation operation',()=>{
+ let pair=true,clears=0;const f=fixture({planMainCancellation:()=>({row:10}),applyMainCancellation:(r,plan,roster,persist)=>{if(!pair)return;if(plan.targetClearAttempted){const e=Error('Renewed agreement');e.publicCode='CONFLICT';throw e;}persist();pair=false;clears++;},markCancelled:()=>{throw Error('History unavailable');}}),a=reserve(f);f.call('confirm',{id:a.deal.id,...terms});
+ assert.equal(f.call('cancel',{id:a.deal.id,...cancelRequest}).deal.cancellationPending,true);assert.equal(clears,1);
+ pair=true;assert.equal(f.call('board').deal.cancellationError,'CONFLICT');assert.equal(pair,true);assert.equal(clears,1);
+ const retry=f.call('cancel',{id:a.deal.id,...cancelRequest,operationId:'72345678-1234-4123-8123-123456789012'});assert.equal(retry.deal.cancellationError,'CONFLICT');assert.equal(pair,true);assert.equal(clears,1);
+});
+test('bound cancellation updates the physical audit row even with blank history rows',()=>{
+ const record={id:'saved',ourId:11,enemyId:21,warId:8,factionId:1,opponentId:2,confirmation:'canonical',status:'confirmed'},writes=[];
+ const ids=[['other'],[''],['saved']],json=[[JSON.stringify({...record,id:'other'})],[''],[JSON.stringify(record)]];
+ const sheet={getLastRow:()=>4,getRange(row,col,count=1,width=1){const range={getValues:()=>col===1?ids:json,getValue:()=>json[row-2][0],setNumberFormat:()=>range,setValues:data=>{writes.push({row,col,width,data});return range;}};return range;}};
+ const ctx={module:{exports:{}},PropertiesService:{getScriptProperties:()=>({getProperty:k=>k==='FACTION_ID'?'1':'synthetic'})},CacheService:{getScriptCache:()=>({})},SpreadsheetApp:{openById:()=>({getSheetByName:()=>sheet}),flush:()=>{}}};vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../service/Code.gs'),'utf8'),ctx);
+ ctx.warContractsDependencies().markCancelled({...record,status:'cancelled'});assert.equal(writes[0].row,4);assert.equal(writes[0].data[0][4],'cancelled');
+ writes.length=0;json[2][0]=JSON.stringify({...record,id:'foreign'});assert.throws(()=>ctx.warContractsDependencies().markCancelled({...record,status:'cancelled'}));assert.equal(writes.length,0);
+});
 test('confirmed output projects to the main sheet once and completed projection does not rewrite later edits',()=>{
  const projected=[];const f=fixture({syncMainContract:r=>{projected.push(structuredClone(r));return 10;}});const a=reserve(f),confirmed=f.call('confirm',{id:a.deal.id,...terms});
  assert.equal(projected.length,1);assert.equal(confirmed.deal.mainSheetSynced,true);assert.equal(projected[0].confirmation,f.outputs[0].confirmation);

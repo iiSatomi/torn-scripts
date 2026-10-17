@@ -44,6 +44,14 @@ If saving times out, use **Check saved state** before retrying. An uncertain req
 
 If the main-table copy is pending, the deal is still confirmed in Script Contracts. Review any conflicting manual entry, then use **Retry main sheet sync**. Refreshing also copies your earlier confirmed current-war deal if needed. Completed copies do not replace later manual edits.
 
+## Cancel your own deal
+
+Open **My Deal → Cancel deal**, check the opponent, tick **I confirm cancelling this deal**, then choose **Confirm cancellation**. This works for your own script-saved and manually entered contracts in the current war. **Keep deal** closes the panel without changing anything. Tell the opponent yourself.
+
+The active pairing is removed from the main sheet and Contracts view, while a Cancelled history entry remains in Script Contracts. Your name, stats, another target and its shared terms, formulas, annotations and changed manual values survive. Other members' contracts cannot be cancelled. Pending invitations use **Release pending contact** instead.
+
+If cancellation is pending, use **Check saved state** before retrying. Players remain booked until cleanup completes. A conflict after an uncertain target clear needs the sheet coordinator to review/remove the original pairing, then refresh; the service refuses to clear a possible renewed agreement. Cancellation requires the updated Apps Script service as well as userscript 1.4.0.
+
 ## Common issues
 
 - **No Hub key:** update Hub to 1.6.0+, check the normal API-key assignment/approval, then reload Torn. Keys are never embedded in this download.

@@ -1,5 +1,12 @@
 # War Contracts Hub changes
 
+## 1.4.0 — 2026-10-17
+
+- Adds Cancel deal in My Deal for your own confirmed and manually entered contracts, with named-opponent review and explicit confirmation.
+- Removes the active main-sheet pairing and keeps Cancelled history; preserves identity, stats, the other target/shared terms, formulas, annotations and changed manual values.
+- Enforces ownership, fresh war checks, exact manual snapshots and stable retries on the service. Interrupted cleanup stays blocking and cannot erase a renewed same-pair deal.
+- Requires the updated Apps Script service. No messages are sent automatically.
+
 ## 1.3.0 — 2026-10-17
 
 - Implements the selected Compact console: dense match comparison rows and one selected-player detail. Review does not reserve or fetch again.

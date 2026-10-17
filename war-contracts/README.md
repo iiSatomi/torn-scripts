@@ -2,7 +2,7 @@
 
 A separate member userscript using the existing Torn Script Hub adapter, shared window, themes and permissioned API-key manager. It does not change OC Suite or other installed tools.
 
-[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.3.0.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
+[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.4.0.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
 
 ## Install
 
@@ -22,9 +22,12 @@ The script bundles its Hub dependencies. No remote `@require`, npm installation 
 - **Matches:** Load your current four stats, modifiers and equipped gear plus the opposing roster/FFScouter estimates. Pick the equipped weapon you intend to use. Booked opponents and those already being contacted are omitted.
 - **Reserve and prepare message:** The service checks current manual entries and claims both sides before showing the invitation. New invitations include the detected opponent and start; the coordinated-time field defaults to the detected TCT start. Availability is left for the member to enter. Edits and recovered agreement terms are preserved. Edit/copy the message and send it yourself.
 - **My Deal:** Mark the invitation sent, release your pending contact, or review the agreed hit count, TCT window/time, Warlord requirement and notes. An explicit agreement/stripping attestation and final preview confirmation are required before saving.
+- **Cancel deal:** In My Deal, cancel your own confirmed or manually entered contract. Review the named opponent, tick the cancellation confirmation and choose Confirm cancellation. Keep deal closes the panel without a request. The service removes the active main-sheet pairing and marks its history Cancelled; tell the opponent yourself. Members cannot cancel another member's deal.
 - **Contracts:** Search compact rows of manually entered and script-confirmed contracts, along with pending contacts. Expand a row for notes and profile links. Refresh reads the sheet again. Existing notes and targets are displayed without being overwritten.
 
 Confirmed deals append to **Script Contracts** and also fill the main **War Contracts** table. The service reuses your compatible unassigned member row or an unused row, filling only blank public contract cells. Existing values, formulas, annotations, private stats (E) and second targets (I) are preserved. Conflicts leave the confirmed audit record intact and show **Main sheet update pending**; review the manual row, then use **Retry main sheet sync**. A refresh also recovers your previously confirmed current-war deal. A completed copy never rewrites later manual edits. For a scheduled/current war, the service fills the opponent (D6) and TCT start (E6) headers only when genuinely blank. Existing text, including `-`, and formulas are preserved. Shared reservations live in **Script Contract Registry**. That service-owned tab must not be edited as a substitute for the member actions. Pending invitations do not expire silently, which avoids a new member messaging someone still considering an earlier invitation. Release an abandoned pending contact explicitly.
+
+Cancellation preserves your name, private stats, the other target and its shared terms, formulas, cell annotations and changed manual values. Only the matching target and unchanged matching public terms are cleared. Cancelled records are hidden from active Contracts. Interrupted cancellation stays booked until recovery completes; use Check saved state. If the target-clear result is uncertain and the same pair is present, cleanup stops for coordinator review so a renewed deal cannot be erased.
 
 If a save times out or the result is uncertain, use **Check saved state**. The board recovers completed writes and existing reservations; do not send another invitation just because a network call failed. The service rejects conflicts introduced manually after the reservation. Direct manual edits cannot acquire an Apps Script lock; conflicting external edits are detected on the next read. Unrecorded private agreements cannot be discovered by the tool.
 

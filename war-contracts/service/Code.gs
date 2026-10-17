@@ -9,7 +9,7 @@ function createWarContractsService(deps) {
   function blocks(rows, user, enemy, excluded) { return rows.some(function(r) { if (r.id === excluded || r.status === 'cancelled') return false; var a=identity(r,'our'),b=identity(r,'enemy'); return (a.id === user.id || a.name === norm(user.name)) || (b.id === enemy.id || b.name === norm(enemy.name)); }); }
   function handle(p) {
     try {
-      if (!p || JSON.stringify(p).length > 16384 || ['board','reserve','sent','release','confirm'].indexOf(p.action)<0 || typeof p.apiKey !== 'string' || !p.apiKey || p.apiKey.length>128) fail('INVALID');
+      if (!p || JSON.stringify(p).length > 16384 || ['board','reserve','sent','release','confirm','cancel'].indexOf(p.action)<0 || typeof p.apiKey !== 'string' || !p.apiKey || p.apiKey.length>128) fail('INVALID');
       var c=deps.config;if(!c || !positive(c.factionId))fail('CONFIG');
       var auth=deps.authenticate(p.apiKey);if(!auth||!positive(auth.id)||Number(auth.factionId)!==Number(c.factionId))fail('AUTH');
       var user={id:Number(auth.id),name:String(auth.name),factionId:Number(auth.factionId)};
@@ -29,11 +29,11 @@ function createWarContractsService(deps) {
         var context={warId:Number(c.warId),factionId:Number(c.factionId),factionName:String(verified.factionName||''),opponentId:Number(c.opponentId),opponentName:String(verified.opponentName),startAt:positive(verified.startAt)?Number(verified.startAt):null,endAt:positive(verified.endAt)?Number(verified.endAt):null,maxHits:Number(manual.maxHits),ended:verified.ended};
         var rows=(snapshot.records||[]).filter(function(r){return Number(r.warId)===context.warId && Number(r.factionId)===context.factionId && Number(r.opponentId)===context.opponentId;});
         var confirmed=(snapshot.confirmed||[]).filter(function(r){return Number(r.warId)===context.warId && Number(r.factionId)===context.factionId && Number(r.opponentId)===context.opponentId;});
-        confirmed.forEach(function(r){var registry=rows.find(function(x){return x.id===r.id;});if(registry&&registry.confirmation===r.confirmation&&registry.ourId===r.ourId&&registry.enemyId===r.enemyId&&typeof registry.mainSheetSynced==='boolean')r=Object.assign({},r,{mainSheetSynced:registry.mainSheetSynced,mainSheetRow:registry.mainSheetRow,mainSheetError:registry.mainSheetError});rows=rows.filter(function(x){return x.id!==r.id;});rows.push(r);});
+        confirmed.forEach(function(r){var registry=rows.find(function(x){return x.id===r.id;});if(registry&&registry.confirmation===r.confirmation&&registry.ourId===r.ourId&&registry.enemyId===r.enemyId){if(typeof registry.mainSheetSynced==='boolean')r=Object.assign({},r,{mainSheetSynced:registry.mainSheetSynced,mainSheetRow:registry.mainSheetRow,mainSheetError:registry.mainSheetError});if(r.status==='confirmed'&&registry.cancellationPending===true)r=Object.assign({},r,{cancellationPending:true,cancellationPlan:registry.cancellationPlan,cancellationError:registry.cancellationError,cancelOperationId:registry.cancelOperationId,cancelOriginalId:registry.cancelOriginalId});}rows=rows.filter(function(x){return x.id!==r.id;});rows.push(r);});
         function manualRows(data){return (data.contracts||[]).map(function(r,i){return Object.assign({id:'manual-'+i,ourId:null,enemyId:null,ourName:'',enemyName:'',hits:'',onlineWindow:'',time:'',warlord:'',notes:'',createdAt:null,updatedAt:null},r,{status:'manual',source:'manual'});});}
         var manuals=manualRows(manual);
         function project(record,refreshWar){
-          if(typeof deps.syncMainContract!=='function'||record.mainSheetSynced===true)return record;
+          if(typeof deps.syncMainContract!=='function'||record.mainSheetSynced===true||record.cancellationPending===true)return record;
           var updated=Object.assign({},record,{mainSheetSynced:false,mainSheetError:''});
           try {
             if(verified.ended)fail('WAR_ENDED');
@@ -49,6 +49,24 @@ function createWarContractsService(deps) {
           if(updated.mainSheetError!=='WAR_ENDED'&&updated.mainSheetError!=='CONTEXT_CHANGED')try{deps.writeRecord(updated);}catch(e){updated.mainSheetSynced=false;updated.mainSheetError='UNAVAILABLE';}
           rows=rows.filter(function(x){return x.id!==record.id;}).concat(updated);return updated;
         }
+        function finishCancellation(record,freshWar){
+          var updated=Object.assign({},record,{cancellationError:''});
+          try{
+            if(verified.ended)fail('WAR_ENDED');
+            if(freshWar){var fresh=deps.verifyContext(p.apiKey,deps.config,true);if(!fresh||Number(fresh.warId)!==context.warId||Number(fresh.factionId)!==context.factionId||Number(fresh.opponentId)!==context.opponentId)fail('CONTEXT_CHANGED');if(fresh.ended)fail('WAR_ENDED');}
+            if(Number(record.ourId)!==user.id||record.cancellationPending!==true||!record.cancellationPlan)fail('INVALID');
+            deps.applyMainCancellation(record,record.cancellationPlan,roster,function(){
+              // Persist before the destructive attempt. An uncertain write/clear must never
+              // replay against a manually renewed agreement with the same two people.
+              updated=Object.assign({},updated,{cancellationPlan:Object.assign({},record.cancellationPlan,{targetClearAttempted:true})});
+              deps.writeRecord(updated);
+            });
+            manuals=manualRows(deps.readManual(roster,verified));
+            var finalRecord=Object.assign({},updated,{status:'cancelled',cancellationPending:false,cancelledAt:deps.now(),updatedAt:deps.now()});delete finalRecord.cancellationPlan;
+            deps.markCancelled(finalRecord);deps.writeRecord(finalRecord);updated=finalRecord;
+          }catch(e){updated.cancellationError=['CONFLICT','CONTEXT_CHANGED','WAR_ENDED','INVALID'].indexOf(e&&e.publicCode)>=0?e.publicCode:'UNAVAILABLE';if(updated.cancellationError!=='WAR_ENDED'&&updated.cancellationError!=='CONTEXT_CHANGED')deps.writeRecord(updated);}
+          rows=rows.filter(function(x){return x.id!==record.id;}).concat(updated);return updated;
+        }
         function response(deal) {
           var visibleManual=manuals.slice(),display=rows.map(function(r){
             if(r.status!=='confirmed')return r;
@@ -57,9 +75,24 @@ function createWarContractsService(deps) {
             var m=matching[0],merged=Object.assign({},r);visibleManual=visibleManual.filter(function(x){return x!==m;});
             ['onlineWindow','time','warlord','notes'].forEach(function(k){if(!merged[k])merged[k]=m[k];});return merged;
           });
-          var publicRows=visibleManual.concat(display).map(function(r){var out={};['id','ourId','ourName','enemyId','enemyName','status','source','hits','onlineWindow','time','warlord','notes','createdAt','updatedAt'].forEach(function(k){out[k]=r[k]===undefined?'':r[k];});out.confirmationPending=Boolean(r.confirmation && (r.status==='reserved'||r.status==='contacted'));if(r.source==='script'&&r.status==='confirmed'){out.mainSheetSynced=r.mainSheetSynced===true;out.mainSheetError=['CONFLICT','CONTEXT_CHANGED','WAR_ENDED','INVALID','UNAVAILABLE'].indexOf(r.mainSheetError)>=0?r.mainSheetError:'';}return out;});return {ok:true,user:user,context:context,contracts:publicRows,deal:deal?publicRows.find(function(r){return r.id===deal.id;}):(publicRows.find(function(r){return r.source==='script'&&r.status!=='cancelled'&&Number(r.ourId)===user.id;})||publicRows.find(function(r){return r.status!=='cancelled' && (Number(r.ourId)===user.id || norm(r.ourName)===norm(user.name));}))};
+          var publicRows=visibleManual.concat(display).map(function(r){var out={};['id','ourId','ourName','enemyId','enemyName','status','source','hits','onlineWindow','time','warlord','notes','createdAt','updatedAt'].forEach(function(k){out[k]=r[k]===undefined?'':r[k];});out.confirmationPending=Boolean(r.confirmation && (r.status==='reserved'||r.status==='contacted'));out.canCancel=!context.ended&&Number(r.ourId)===user.id&&positive(r.enemyId)&&['manual','confirmed'].indexOf(r.status)>=0;out.cancellationPending=r.cancellationPending===true;out.cancellationError=['CONFLICT','CONTEXT_CHANGED','WAR_ENDED','INVALID','UNAVAILABLE'].indexOf(r.cancellationError)>=0?r.cancellationError:'';if(r.source==='script'&&r.status==='confirmed'){out.mainSheetSynced=r.mainSheetSynced===true;out.mainSheetError=['CONFLICT','CONTEXT_CHANGED','WAR_ENDED','INVALID','UNAVAILABLE'].indexOf(r.mainSheetError)>=0?r.mainSheetError:'';}return out;});return {ok:true,user:user,context:context,contracts:publicRows,deal:deal?publicRows.find(function(r){return r.id===deal.id;}):(publicRows.find(function(r){return r.source==='script'&&r.status!=='cancelled'&&Number(r.ourId)===user.id;})||publicRows.find(function(r){return r.status!=='cancelled' && (Number(r.ourId)===user.id || norm(r.ourName)===norm(user.name));}))};
         }
-        if(p.action==='board'){var owned=rows.find(function(r){return r.status==='confirmed'&&Number(r.ourId)===user.id;});if(owned)project(owned,true);return response();}
+        if(p.action==='board'){var owned=rows.find(function(r){return r.cancellationPending===true&&r.status==='confirmed'&&Number(r.ourId)===user.id;})||rows.find(function(r){return r.status==='confirmed'&&Number(r.ourId)===user.id;});if(owned){if(owned.cancellationPending===true)finishCancellation(owned,true);else project(owned,true);}return response();}
+        if(p.action==='cancel'){
+          if(p.cancelConfirmed!==true||typeof p.id!=='string'||typeof p.operationId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.operationId))fail('INVALID');
+          if(typeof deps.planMainCancellation!=='function'||typeof deps.applyMainCancellation!=='function'||typeof deps.markCancelled!=='function')fail('CONFIG');
+          var previous=rows.find(function(r){return r.cancelOperationId===p.operationId;});
+          if(previous){if(Number(previous.ourId)!==user.id)fail('FORBIDDEN');if(previous.cancelOriginalId!==p.id&&previous.id!==p.id)fail('CONFLICT');return response(previous.status==='cancelled'?previous:finishCancellation(previous,false));}
+          var chosen=rows.find(function(r){return r.id===p.id;})||manuals.find(function(r){return r.id===p.id;});if(!chosen||Number(chosen.ourId)!==user.id)fail('FORBIDDEN');
+          if(chosen.status==='cancelled')return response(chosen);if(['confirmed','manual'].indexOf(chosen.status)<0)fail('CONFLICT');
+          if(chosen.cancellationPending===true)return response(finishCancellation(chosen,false));
+          if(chosen.source==='manual'){
+            if(!positive(chosen.enemyId)||!p.expected||['ourId','ourName','enemyId','enemyName','hits','onlineWindow','time','warlord','notes'].some(function(k){return String(p.expected[k]===undefined?'':p.expected[k])!==String(chosen[k]===undefined?'':chosen[k]);}))fail('CONFLICT');
+            chosen=Object.assign({},chosen,{id:deps.id(),source:'script',status:'confirmed',warId:context.warId,factionId:context.factionId,opponentId:context.opponentId,cancelFromManual:true});
+          }
+          var cancellation=Object.assign({},chosen,{cancelOriginalId:p.id,cancelOperationId:p.operationId,cancellationPending:true,cancellationError:'',cancellationPlan:deps.planMainCancellation(chosen,roster),updatedAt:deps.now()});
+          deps.writeRecord(cancellation);rows=rows.filter(function(r){return r.id!==cancellation.id;}).concat(cancellation);return response(finishCancellation(cancellation,false));
+        }
         if(p.action==='reserve') {
           if(typeof p.requestId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.requestId)||!positive(p.enemyId))fail('INVALID');
           var old=rows.find(function(r){return r.requestId===p.requestId;});if(old){if(old.ourId!==user.id||old.enemyId!==Number(p.enemyId))fail('CONFLICT');return response(old);}
@@ -69,6 +102,7 @@ function createWarContractsService(deps) {
         }
         var record=rows.find(function(r){return r.id===p.id;});if(!record||record.ourId!==user.id)fail('FORBIDDEN');
         if(p.action==='confirm') {
+          if(record.cancellationPending===true)fail('CONFLICT');
           if(p.strippedConfirmed!==true||!positive(p.hits)||Number(p.hits)>context.maxHits)fail('INVALID');
           // Only a previously saved canonical field may use the one-character formula escape allowance.
           function confirmationText(field,max) {
@@ -144,6 +178,40 @@ function writeMainWarContract(sheet,record){
   });
   return row;
 }
+function warCancellationPairs(sheet,record){
+  function conflict(){var e=new Error('Cancellation conflict');e.publicCode='CONFLICT';throw e;}
+  if(!record||!Number.isSafeInteger(Number(record.ourId))||Number(record.ourId)<=0||!Number.isSafeInteger(Number(record.enemyId))||Number(record.enemyId)<=0||sheet.getLastRow()>10009)conflict();
+  var count=Math.min(sheet.getMaxRows(),10009)-9;if(count<1)conflict();
+  var area=sheet.getRange(10,4,count,9),values=area.getDisplayValues(),raw=area.getValues(),formulas=area.getFormulas(),rich=area.getRichTextValues(),notes=area.getNotes(),pairs=[];
+  function person(value,link,formula,id,name){var url=link&&link.getLinkUrl?link.getLinkUrl():'';var found=String(url||formula||'').match(/XID=(\d+)/i)||String(value||'').match(/\[(\d+)\]/);return warContractSamePerson(found?Number(found[1]):null,value,id,name);}
+  values.forEach(function(row,i){if(!person(row[0],rich[i][0],formulas[i][0],record.ourId,record.ourName))return;[4,5].forEach(function(col){if(person(row[col],rich[i][col],formulas[i][col],record.enemyId,record.enemyName))pairs.push({row:i+10,targetCol:col+4,values:row,raw:raw[i],formulas:formulas[i],notes:notes[i],other:!!(row[col===4?5:4]||formulas[i][col===4?5:4])});});});
+  if(pairs.length>1)conflict();return pairs;
+}
+function planMainWarCancellation(sheet,record){
+  var pairs=warCancellationPairs(sheet,record);if(!pairs.length){if(record.cancelFromManual){var missing=new Error('Manual pairing changed');missing.publicCode='CONFLICT';throw missing;}return {absent:true};}
+  var pair=pairs[0],offset=pair.targetCol-4;if(pair.formulas[offset]||pair.notes[offset]){var e=new Error('Protected target');e.publicCode='CONFLICT';throw e;}
+  var fields=[];
+  if(!pair.other)[[6,'onlineWindow'],[7,'hits'],[10,'time'],[11,'warlord'],[12,'notes']].forEach(function(item){var col=item[0],key=item[1],value=pair.values[col-4],wanted=record[key];if(wanted===undefined||wanted===null||wanted===''||!value||pair.formulas[col-4]||pair.notes[col-4])return;var equal=key==='hits'&&typeof pair.raw[col-4]==='number'?pair.raw[col-4]===Number(wanted):warContractCellText(value)===warContractCellText(wanted);if(equal)fields.push({col:col,value:key==='hits'&&typeof pair.raw[col-4]==='number'?pair.raw[col-4]:value});});
+  return {row:pair.row,ownValue:pair.values[0],targetCol:pair.targetCol,targetValue:pair.values[offset],fields:fields};
+}
+function applyMainWarCancellation(sheet,record,plan,beforeTargetClear){
+  function conflict(){var e=new Error('Cancellation conflict');e.publicCode='CONFLICT';throw e;}
+  var pairs=warCancellationPairs(sheet,record);if(!pairs.length)return;
+  var pair=pairs[0];if(!plan||plan.absent||plan.targetClearAttempted===true||typeof beforeTargetClear!=='function'||pair.row!==plan.row||pair.targetCol!==plan.targetCol||pair.values[0]!==plan.ownValue||pair.values[plan.targetCol-4]!==plan.targetValue||!Array.isArray(plan.fields)||plan.fields.length>5)conflict();
+  var target=sheet.getRange(plan.row,plan.targetCol),own=sheet.getRange(plan.row,4);
+  function stillTarget(){return own.getDisplayValues()[0][0]===plan.ownValue&&target.getDisplayValues()[0][0]===plan.targetValue;}
+  function protectedTarget(){if(target.getFormulas()[0][0]||target.getNotes()[0][0])conflict();}
+  protectedTarget();
+  // Shared fields are optional cleanup. New manual values/formulas/annotations survive.
+  if(!pair.other)plan.fields.forEach(function(item){
+    if([6,7,10,11,12].indexOf(item.col)<0)conflict();if(!stillTarget())return;
+    var range=sheet.getRange(plan.row,item.col),raw=range.getValues()[0][0],display=range.getDisplayValues()[0][0];
+    if(range.getFormulas()[0][0]||range.getNotes()[0][0])return;
+    var equal=typeof item.value==='number'?raw===item.value:warContractCellText(display)===warContractCellText(item.value);if(equal)range.clearContent();
+  });
+  // Clear the target last, retaining duplicate protection until the other writes finish.
+  if(stillTarget()){protectedTarget();beforeTargetClear();if(stillTarget()){protectedTarget();target.clearContent();}}
+}
 function fillWarContractHeaders(sheet,context) {
   if(!context||context.ended||!context.opponentName)return;
   function norm(value){return String(value||'').replace(/\[\d+\]/g,'').trim().replace(/\s+/g,' ').toLowerCase();}
@@ -210,6 +278,9 @@ function warContractsDependencies() {
     writeRecord:function(r){var s=sheet('Script Contract Registry'),n=s.getLastRow(),ids=n>1?s.getRange(2,1,n-1,1).getValues():[],index=ids.findIndex(function(row){return String(row[0])===r.id;});s.getRange(index<0?n+1:index+2,1,1,11).setNumberFormat('@').setValues([cells(r)]);SpreadsheetApp.flush();},
     appendConfirmed:function(r){var s=sheet('Script Contracts'),rows=readRows('Script Contracts');if(rows.some(function(x){return x.id===r.id;}))return;s.getRange(s.getLastRow()+1,1,1,11).setNumberFormat('@').setValues([cells(r)]);SpreadsheetApp.flush();},
     syncMainContract:function(r,roster){var own=roster.ours.find(function(m){return Number(m.id)===Number(r.ourId);}),enemy=roster.enemies.find(function(m){return Number(m.id)===Number(r.enemyId);});if(!own||!enemy)throw new Error('Roster changed');var row=writeMainWarContract(sheet('War Contracts'),Object.assign({},r,{ourName:own.name,enemyName:enemy.name}));SpreadsheetApp.flush();return row;},
+    planMainCancellation:function(r){return planMainWarCancellation(sheet('War Contracts'),r);},
+    applyMainCancellation:function(r,plan,roster,beforeTargetClear){applyMainWarCancellation(sheet('War Contracts'),r,plan,beforeTargetClear);SpreadsheetApp.flush();},
+    markCancelled:function(r){var s=sheet('Script Contracts'),count=s.getLastRow()-1;if(count>10000)throw new Error('History capacity');var ids=count>0?s.getRange(2,1,count,1).getValues():[],matches=[];ids.forEach(function(row,i){if(String(row[0])===r.id)matches.push(i+2);});if(matches.length>1)throw new Error('Duplicate history');var row=matches[0];if(row){var old=JSON.parse(s.getRange(row,11).getValue());if(old.id!==r.id||Number(old.ourId)!==Number(r.ourId)||Number(old.enemyId)!==Number(r.enemyId)||Number(old.warId)!==Number(r.warId)||Number(old.factionId)!==Number(r.factionId)||Number(old.opponentId)!==Number(r.opponentId)||old.confirmation!==r.confirmation)throw new Error('History changed');}s.getRange(row||s.getLastRow()+1,1,1,11).setNumberFormat('@').setValues([cells(r)]);SpreadsheetApp.flush();},
     lock:function(fn){var l=LockService.getScriptLock();l.waitLock(20000);try{return fn();}finally{l.releaseLock();}},now:function(){return Date.now();},id:function(){return Utilities.getUuid();}
   };
 }

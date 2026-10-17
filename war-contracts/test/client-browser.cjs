@@ -40,7 +40,8 @@ async function connectionSettings(page){
     readRecords:()=>({records:structuredClone(window.records),confirmed:structuredClone(window.outputs)}),
     writeRecord:r=>{window.records=window.records.filter(x=>x.id!==r.id).concat(structuredClone(r));},
     appendConfirmed:r=>{if(window.failBeforeAppend){window.failBeforeAppend=false;throw Error('Synthetic sheet outage');}window.outputs.push(structuredClone(r));},lock:fn=>fn(),now:()=>Date.now(),id:()=>crypto.randomUUID()
-    ,syncMainContract:r=>{if(window.failMainSync){if(!manual.some(m=>m.id==='synthetic-conflict'))manual.push({...structuredClone(r),id:'synthetic-conflict',hits:99,status:'manual',source:'manual'});const e=Error('Synthetic main sheet conflict');e.publicCode='CONFLICT';throw e;}window.mainContracts=window.mainContracts.filter(m=>m.id!=='main-'+r.id).concat({...structuredClone(r),id:'main-'+r.id,status:'manual',source:'manual'});return 16;}
+    ,syncMainContract:r=>{if(window.failMainSync){if(!manual.some(m=>m.id==='synthetic-conflict'))manual.push({...structuredClone(r),id:'synthetic-conflict',hits:99,status:'manual',source:'manual'});const e=Error('Synthetic main sheet conflict');e.publicCode='CONFLICT';throw e;}window.mainContracts=window.mainContracts.filter(m=>m.id!=='main-'+r.id).concat({...structuredClone(r),id:'main-'+r.id,status:'manual',source:'manual'});return 16;},
+    planMainCancellation:r=>({id:r.id}),applyMainCancellation:(r,plan,roster,persist)=>{persist();window.mainContracts=window.mainContracts.filter(m=>m.id!=='main-'+r.id);window.manual=window.manual.filter(m=>!(m.ourId===r.ourId&&m.enemyId===r.enemyId));if(window.failCancelOnce){window.failCancelOnce=false;throw Error('Synthetic cancellation outage');}},markCancelled:r=>{const i=window.outputs.findIndex(x=>x.id===r.id);if(i<0)window.outputs.push(structuredClone(r));else window.outputs[i]=structuredClone(r);}
    });
    window.GM_xmlhttpRequest=o=>{
     const u=new URL(o.url),body=o.data?JSON.parse(o.data):null;window.calls.push({path:u.pathname,body});let ended=false;
@@ -233,7 +234,26 @@ async function connectionSettings(page){
   await page.getByRole('button',{name:'Close window',exact:true}).click();
   await page.evaluate(()=>window.delayedReply?.());
   assert.equal(await page.locator('[data-tsui-id="war-contracts"]').isVisible(),false,'late response must not reopen tool');
+  await page.evaluate(()=>window.delayReply=false);
+  await page.getByRole('button',{name:'Open war contracts',exact:true}).click();
+  await page.getByRole('button',{name:'Cancel deal',exact:true}).click();
+  const cancelSave=page.getByRole('button',{name:'Confirm cancellation',exact:true});assert.equal(await cancelSave.isEnabled(),false);
+  for(const [width,height] of [[1920,1080],[390,844],[430,932],[844,390]]){await page.setViewportSize({width,height});await page.getByRole('button',{name:'My Deal',exact:true}).click();assert.equal(await page.getByRole('group',{name:'Cancel deal confirmation',exact:true}).isVisible(),true);await page.getByRole('button',{name:'Keep deal',exact:true}).focus();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'cancellation panel fits '+width);await page.screenshot({path:path.join(report,'cancel-'+width+'.png'),fullPage:true});}
+  await page.setViewportSize({width:1920,height:1080});
+  const cancellations=()=>page.evaluate(()=>calls.filter(c=>c.body?.action==='cancel').length);
+  const beforeCancel=await cancellations();await page.getByRole('button',{name:'Keep deal',exact:true}).click();assert.equal(await cancellations(),beforeCancel,'opening/keeping a deal makes no cancellation request');
+  await page.getByRole('button',{name:'Cancel deal',exact:true}).click();await page.locator('#wch-cancel-agreed').check();await page.evaluate(()=>window.failCancelOnce=true);await cancelSave.click();
+  await page.getByText('Cancellation pending. Check My Deal, then retry.',{exact:true}).waitFor();
+  await page.getByRole('button',{name:'Current Contracts',exact:true}).click();await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>outputs[0].status),'cancelled');assert.equal(await page.locator('.wch-contract').count(),1,'cancelled history is absent from active contracts');assert.equal(await page.evaluate(()=>mainContracts.length),0);
+  await page.evaluate(()=>manual.push({id:'own-manual',ourId:123,ourName:'Sample',enemyId:305,enemyName:'Stretch Target',hits:12,onlineWindow:'evening',time:'20:00',warlord:'No',notes:'Manual agreement'}));
+  await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();await page.getByRole('button',{name:'My Deal',exact:true}).click();
+  await page.getByRole('button',{name:'Cancel deal',exact:true}).click();await page.locator('#wch-cancel-agreed').check();await page.evaluate(()=>manual.find(m=>m.id==='own-manual').notes='Changed manually');await cancelSave.click();
+  await page.getByText('The contract changed or someone is already booked. Refresh Current Contracts.',{exact:true}).waitFor();assert.equal(await page.evaluate(()=>manual.some(m=>m.id==='own-manual')),true,'a stale cancellation cannot remove changed manual terms');
+  await page.getByRole('button',{name:'Check saved state',exact:true}).click();await page.getByText('Saved state checked. Review My Deal and Current Contracts before continuing.',{exact:true}).waitFor();await page.getByRole('button',{name:'Keep deal',exact:true}).click();
+  await page.getByRole('button',{name:'Cancel deal',exact:true}).click();await page.locator('#wch-cancel-agreed').check();await cancelSave.click();await page.getByText('Deal cancelled. The active sheet pairing was removed.',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>manual.length),1);assert.equal(await page.evaluate(()=>manual[0].notes),'Manual entry must survive');assert.equal(await page.evaluate(()=>outputs.every(r=>r.status==='cancelled')),true);
   assert.deepEqual(errors,[]);
-  console.log('PASS browser: own stats/gear, booked and impossible filtering, reservation, editable message, clipboard failure, explicit confirmation, manual conflict, current contracts/search, privacy, singleton, four viewports, and late-reply cleanup.');
+  console.log('PASS browser: own stats/gear, booked and impossible filtering, reservation, editable message, clipboard failure, explicit confirmation, manual conflict, current contracts/search, privacy, singleton, four viewports, own script/manual cancellation, stale-snapshot protection, interrupted cancellation recovery, and late-reply cleanup.');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

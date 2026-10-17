@@ -32,6 +32,8 @@ function warContractsStyles(){return `
 .wch-root.tsui-root .wch-actions{justify-content:flex-start}
 .wch-root.tsui-root .wch-form{gap:10px}.wch-root.tsui-root .wch-grid{gap:10px}
 .wch-root.tsui-root .wch-note{padding:8px 10px}
+.wch-root.tsui-root .wch-cancel-panel{padding:10px;border:1px solid var(--tsui-error);border-radius:5px;background:var(--tsui-surface);display:flex;flex-direction:column;gap:10px}
+.wch-root.tsui-root .wch-danger{color:var(--tsui-error);border-color:var(--tsui-error);align-self:flex-start}
 .wch-root.tsui-root .wch-loadout{padding:0 8px}.wch-root.tsui-root .wch-loadout p{padding-bottom:10px}
 .wch-root.tsui-root summary{min-height:32px;font-weight:400}
 .wch-root.tsui-root .wch-match-table{width:100%;table-layout:fixed;border-collapse:collapse;background:var(--tsui-surface)}

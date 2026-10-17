@@ -8,7 +8,7 @@ function table(initial={},options={}){
  const address=(r,c)=>String.fromCharCode(64+c)+r,empty=v=>v===undefined||v==='';
  const sheet={values,formulas,notes,writes,copies,getMaxRows:()=>maxRows,getLastRow:()=>Math.max(9,...[...values.keys(),...formulas.keys()].map(k=>Number(k.slice(1)))),insertRowsAfter:(r,n)=>{assert.equal(r,maxRows);maxRows+=n;},getRange(row,col,count=1,width=1){
   const matrix=fn=>Array.from({length:count},(_,i)=>Array.from({length:width},(_,j)=>fn(address(row+i,col+j))));
-  return {row,col,count,width,getValues:()=>matrix(k=>values.get(k)??''),getDisplayValues:()=>matrix(k=>options.displays?.[k]??String(values.get(k)??'').replace(/^'(?=[=+\-@])/,'')),getFormulas:()=>matrix(k=>formulas.get(k)||''),getNotes:()=>matrix(k=>notes.get(k)||''),getRichTextValues:()=>matrix(()=>null),getDataValidations:()=>matrix(()=>null),setDataValidations:()=>{},copyTo:(target,o)=>{assert.equal(o.formatOnly,true);copies.push({row:target.row,col:target.col,width:target.width});},setValues(data){
+  return {row,col,count,width,getValues:()=>matrix(k=>values.get(k)??''),getDisplayValues:()=>matrix(k=>options.displays?.[k]??String(values.get(k)??'').replace(/^'(?=[=+\-@])/,'')),getFormulas:()=>matrix(k=>formulas.get(k)||''),getNotes:()=>matrix(k=>notes.get(k)||''),getRichTextValues:()=>matrix(()=>null),getDataValidations:()=>matrix(()=>null),setDataValidations:()=>{},copyTo:(target,o)=>{assert.equal(o.formatOnly,true);copies.push({row:target.row,col:target.col,width:target.width});},clearContent(){if(remaining===0){remaining=null;throw Error('Synthetic sheet outage');}if(Number.isInteger(remaining))remaining--;for(let i=0;i<count;i++)for(let j=0;j<width;j++){const k=address(row+i,col+j);assert.ok(!formulas.get(k));values.set(k,'');writes.push(k);}},setValues(data){
    if(remaining===0){remaining=null;throw Error('Synthetic sheet outage');}
    if(Number.isInteger(remaining))remaining--;
    for(let i=0;i<count;i++)for(let j=0;j<width;j++){const k=address(row+i,col+j);assert.ok(empty(values.get(k))&&!formulas.get(k),'no manual value/formula may be overwritten: '+k);values.set(k,data[i][j]);writes.push(k);}
@@ -47,4 +47,35 @@ test('a full table extends by one row with formatting/validation only, without c
 test('formatted numeric hit counts retain their value and remain idempotent',()=>{
  const sheet=table({D10:'Own',G10:3},{displays:{G10:'3.00'}}),write=writer();
  assert.equal(write(sheet,record),10);const count=sheet.writes.length;assert.equal(write(sheet,record),10);assert.equal(sheet.writes.length,count);assert.ok(!sheet.writes.includes('G10'));
+});
+function cancellation(){const ctx={module:{exports:{}}};vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../service/Code.gs'),'utf8'),ctx);assert.equal(typeof ctx.planMainWarCancellation,'function');assert.equal(typeof ctx.applyMainWarCancellation,'function');const apply=ctx.applyMainWarCancellation;ctx.applyMainWarCancellation=(s,r,p,persist=()=>{p.targetClearAttempted=true;})=>apply(s,r,p,persist);return ctx;}
+test('cancellation clears only the own target and matching terms, retaining identity, stats, annotations and unrelated values',()=>{
+ const s=table({D10:'Own [11]',E10:'SYNTHETIC PRIVATE',F10:record.onlineWindow,G10:3,H10:'Enemy [21]',J10:record.time,K10:record.warlord,L10:'New manual note'},{notes:{K10:'Keep annotation'}}),c=cancellation(),plan=c.planMainWarCancellation(s,record);
+ assert.ok(!JSON.stringify(plan).includes('SYNTHETIC PRIVATE'));c.applyMainWarCancellation(s,record,plan);
+ for(const cell of ['F10','G10','H10','J10'])assert.equal(s.values.get(cell),'');assert.equal(s.values.get('D10'),'Own [11]');assert.equal(s.values.get('E10'),'SYNTHETIC PRIVATE');assert.equal(s.values.get('L10'),'New manual note');assert.equal(s.values.get('K10'),record.warlord);assert.ok(!s.writes.some(x=>/^[DEI]/.test(x)));
+});
+test('cancelling one of two own targets preserves the other target and shared terms in either slot',()=>{
+ for(const targetCol of ['H','I']){const other=targetCol==='H'?'I':'H',s=table({D10:'Own',E10:'Private',F10:record.onlineWindow,G10:3,[targetCol+'10']:'Enemy [21]',[other+'10']:'Other target'}),c=cancellation();c.applyMainWarCancellation(s,record,c.planMainWarCancellation(s,record));assert.equal(s.values.get(targetCol+'10'),'');assert.equal(s.values.get(other+'10'),'Other target');assert.equal(s.values.get('G10'),3);assert.deepEqual(s.writes,[targetCol+'10']);}
+});
+test('partial cancellation retries clear the target last and never clear a reused row',()=>{
+ const c=cancellation(),s=table({D10:'Own',F10:record.onlineWindow,G10:3,H10:'Enemy [21]',J10:record.time},{failAfter:1}),plan=c.planMainWarCancellation(s,record);
+ assert.throws(()=>c.applyMainWarCancellation(s,record,plan),/outage/);assert.equal(s.values.get('H10'),'Enemy [21]');c.applyMainWarCancellation(s,record,plan);assert.equal(s.values.get('H10'),'');
+ s.values.set('H10','New target');s.values.set('G10',99);const count=s.writes.length;c.applyMainWarCancellation(s,record,plan);assert.equal(s.writes.length,count);assert.equal(s.values.get('G10'),99);
+});
+test('ambiguous or formula targets are not removed and a moved cancellation plan cannot clear the new row',()=>{
+ const c=cancellation();for(const s of [table({D10:'Own',H10:'Enemy [21]',D11:'Own',H11:'Enemy [21]'}),table({D10:'Own',H10:'Enemy [21]'},{formulas:{H10:'=HYPERLINK("https://www.torn.com/profiles.php?XID=21","Enemy")'}})]){assert.throws(()=>c.planMainWarCancellation(s,record),e=>e.publicCode==='CONFLICT');assert.equal(s.writes.length,0);}
+ const s=table({D10:'Own',H10:'Enemy [21]'}),plan=c.planMainWarCancellation(s,record);s.values.set('H10','');s.values.set('D11','Own');s.values.set('H11','Enemy [21]');assert.throws(()=>c.applyMainWarCancellation(s,record,plan),e=>e.publicCode==='CONFLICT');assert.equal(s.writes.length,0);
+});
+test('a completed target clear is never replayed against a renewed same-pair agreement',()=>{
+ const c=cancellation();for(const changed of [false,true]){const s=table({D10:'Own',G10:3,H10:'Enemy [21]',L10:record.notes}),plan=c.planMainWarCancellation(s,record);
+ const persist=()=>{plan.targetClearAttempted=true;};c.applyMainWarCancellation(s,record,plan,persist);assert.equal(plan.targetClearAttempted,true);
+ s.values.set('H10','Enemy [21]');s.values.set('G10',changed?8:3);s.values.set('L10',changed?'NEW MANUAL AGREEMENT':record.notes);const count=s.writes.length;
+ assert.throws(()=>c.applyMainWarCancellation(s,record,plan,persist),e=>e.publicCode==='CONFLICT');assert.equal(s.writes.length,count);assert.equal(s.values.get('H10'),'Enemy [21]');
+ }
+});
+test('uncertain target clear fails closed and failed durable progress never clears the target',()=>{
+ const c=cancellation(),s=table({D10:'Own',H10:'Enemy [21]'},{failAfter:0}),plan=c.planMainWarCancellation(s,record);
+ assert.throws(()=>c.applyMainWarCancellation(s,record,plan,()=>{plan.targetClearAttempted=true;}),/outage/);assert.equal(plan.targetClearAttempted,true);
+ assert.throws(()=>c.applyMainWarCancellation(s,record,plan,()=>{}),e=>e.publicCode==='CONFLICT');assert.equal(s.values.get('H10'),'Enemy [21]');
+ const t=table({D10:'Own',H10:'Enemy [21]'}),p=c.planMainWarCancellation(t,record);assert.throws(()=>c.applyMainWarCancellation(t,record,p,()=>{throw Error('Progress unavailable');}),/Progress unavailable/);assert.equal(t.values.get('H10'),'Enemy [21]');
 });
