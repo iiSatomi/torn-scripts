@@ -76,6 +76,7 @@ async function connectionSettings(page){
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Find Partner',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'Reserve and prepare message',exact:true}).isEnabled(),false,'ended war is read-only');
+  assert.equal(await page.getByRole('button',{name:'Find my matches',exact:true}).isEnabled(),false,'ended war does not offer fresh matching');
   await page.getByRole('button',{name:'Close window',exact:true}).click();
   await page.evaluate(()=>{window.hasManualDeal=true;window.fixtureNow=Date.now;Date.now=()=>window.fixtureNow()+31000;});
   await page.locator('.tsh-tile[data-script="war-contracts"] .tsh-primary').click();
@@ -109,7 +110,7 @@ async function connectionSettings(page){
   assert.equal(await pda.locator('[data-tsui-id="war-contracts"]').getAttribute('data-tsui-maximized'),'true');
   assert.equal(await pda.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.equal(await pda.evaluate(()=>requestCount),0);
-  await page.evaluate(()=>window.hasManualDeal=false);
+  await page.evaluate(()=>{window.hasManualDeal=false;window.warEnded=false;});
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
   await page.getByRole('button',{name:'Refresh contracts',exact:true}).click();
   await page.getByText('Current contracts refreshed from the sheet.',{exact:true}).waitFor();

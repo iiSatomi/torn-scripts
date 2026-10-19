@@ -50,11 +50,11 @@ async function connectionSettings(page){
      if(u.hostname==='ffscouter.com'&&window.ffStatus){o.onload({status:window.ffStatus,responseText:'private upstream response',finalUrl:o.url});return;}
      if(u.hostname==='script.google.com'){
       data=window.service.handle(body);if(data.ok)window.deal=data.deal||null;
-     }else if(u.pathname.endsWith('/key/info'))data={info:{user:{id:window.invalidIdentity?999:123,faction_id:100}}};
+     }else if(u.pathname.endsWith('/key/info'))data=window.tornError?{error:{code:window.tornError,error:'PRIVATE UPSTREAM DETAIL'}}:{info:{user:{id:window.invalidIdentity?999:123,faction_id:100}}};
      else if(u.pathname.endsWith('/battlestats'))data={battlestats:Object.fromEntries(['strength','defense','speed','dexterity'].map(k=>[k,{value:1000000,modifier:0}]))};
      else if(u.pathname.endsWith('/equipment'))data={equipment:[{uid:99,id:1,type:'Weapon',name:'Warlord rifle',stats:{damage:65,accuracy:65},bonuses:[{title:'Warlord',value:17}]}]};
-     else if(u.pathname.endsWith('/members'))data={members:[{id:304,name:'Booked Target',level:100,status:{state:'Okay'}},{id:305,name:'Stretch Target',level:90,status:{state:'Hospital'}},{id:306,name:'Impossible Target',level:100,status:{state:'Okay'}},{id:307,name:'Alternative Target',level:80,status:{state:'Okay'}}]};
-     else data=[{player_id:304,bss_public:4100,bs_estimate:4000000,last_updated:Date.now()/1000},{player_id:305,bss_public:4200,bs_estimate:4410000,last_updated:Date.now()/1000},{player_id:306,bss_public:900000,bs_estimate:202500000000,last_updated:Date.now()/1000},{player_id:307,bss_public:4100,bs_estimate:4202500,last_updated:Date.now()/1000}];
+     else if(u.pathname.endsWith('/members'))data={members:[{id:304,name:'Booked Target',level:100,status:{state:'Okay'}},{id:305,name:'Stretch Target',level:90,status:{state:'Hospital'}},{id:306,name:'Impossible Target',level:100,status:{state:'Okay'}},{id:307,name:'Alternative Target',level:80,status:{state:'Okay'}},{id:308,name:'Spy-only Target',level:100,status:{state:'Okay'}}]};
+     else data=[{player_id:304,bss_public:4100,bs_estimate:4000000,last_updated:Date.now()/1000},{player_id:305,bss_public:4200,bs_estimate:4410000,last_updated:Date.now()/1000},{player_id:306,bss_public:900000,bs_estimate:202500000000,last_updated:Date.now()/1000},{player_id:307,bss_public:4100,bs_estimate:4202500,last_updated:Date.now()/1000},{player_id:308,bss_public:null,bs_estimate:4000000,last_updated:Date.now()/1000,source:'spies',available_estimates:{bss:null}}];
      o.onload({status:200,responseText:JSON.stringify(data),finalUrl:o.url});
     };
     if(window.delayReply){window.delayedReply=reply;}else setTimeout(reply,5);
@@ -66,6 +66,8 @@ async function connectionSettings(page){
   await connectionSettings(page);
   await page.locator('#wch-endpoint').fill('https://script.google.com/macros/s/test/exec');
   await page.locator('#wch-torn-key').fill('x'.repeat(16));
+  await page.evaluate(()=>window.tornError=2);await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();await page.getByText('Torn key info returned API error 2. Check that your assigned key is active and belongs to this account.',{exact:true}).waitFor();assert.equal((await page.locator('.wch-root').innerText()).includes('PRIVATE UPSTREAM DETAIL'),false);
+  await page.evaluate(()=>window.tornError=0);
   await page.getByRole('button',{name:'Save and reconnect',exact:true}).click();
   await page.getByText('Connected as Sample.',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Current Contracts',exact:true}).click();
@@ -80,6 +82,7 @@ async function connectionSettings(page){
   await page.evaluate(()=>window.ffStatus=0);
   await page.getByRole('button',{name:'Find my matches',exact:true}).click();
   await page.locator('.wch-match').filter({hasText:'Stretch Target'}).waitFor();
+  assert.equal(await page.locator('.wch-match').filter({hasText:'Spy-only Target'}).count(),0,'merged spy-only estimate is not a public BSS recommendation');
   assert.equal(await page.locator('.wch-match-table').count(),1,'matches use one compact comparison table');
   assert.equal(await page.locator('.wch-match-detail').count(),1,'only the selected match gets a detail panel');
   assert.equal(await page.locator('.tsui-nav button:visible').count(),3,'Connection is in the window header');
@@ -106,6 +109,9 @@ async function connectionSettings(page){
   assert.equal(await page.locator('#wch-time').inputValue(),'2026-10-18 19:00','new terms start with detected TCT time');
   assert.equal(await page.locator('#wch-online').inputValue(),'','member availability is not invented');
   assert.match(await page.locator('#wch-message').inputValue(),/Example opponents.*2026-10-18 19:00 TCT/);
+  await page.getByRole('button',{name:'Review agreement',exact:true}).click();await page.locator('#wch-hits').fill('12');await page.locator('#wch-time').fill('20:30');await page.getByRole('button',{name:'Back to message',exact:true}).click();
+  assert.match(await page.locator('#wch-message').inputValue(),/12 hits around 20:30 TCT/,'unedited generated invitation follows edited terms');
+  await page.locator('#wch-message').fill('Custom invitation that must survive');await page.getByRole('button',{name:'Review agreement',exact:true}).click();await page.locator('#wch-hits').fill('14');await page.getByRole('button',{name:'Back to message',exact:true}).click();assert.equal(await page.locator('#wch-message').inputValue(),'Custom invitation that must survive');
   await page.locator('#wch-message').fill('');
   await page.getByRole('button',{name:'Review agreement',exact:true}).click();
   await page.locator('#wch-time').fill('22:00');

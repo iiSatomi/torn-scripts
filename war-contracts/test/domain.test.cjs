@@ -30,9 +30,21 @@ test('equipment cannot cross conservative stat ceiling and defensive builds need
 test('respect uses capped fair fight, defender level and selected Warlord only', () => {
   const p = own(); p.weapon = { warlordPercent: 10, damage: 99, accuracy: 99 };
   const r = D.evaluate(p, enemy(800), { now });
-  assert.equal(r.ff, 3); assert.equal(r.respect, (1 + 49 * (.5 / 99)) * 3 * 2 * 1.1);
+  assert.equal(r.ff, 3); assert.equal(r.respect, 1.25 * 3 * 2 * 1.1);
   assert.equal(D.evaluate({ ...p, weapon: null }, enemy(800), { now }).ff, r.ff);
   assert.equal(D.evaluate(p, enemy(200), { now }).ff, 1 + 8 / 3 * .5);
+});
+test('respect rounds the level base before multipliers and rejects future-dated estimates',()=>{
+ assert.ok(Math.abs(D.evaluate(own(),enemy(400,{level:60}),{now}).respect-7.8)<1e-9);
+ assert.ok(Math.abs(D.evaluate(own(),enemy(400,{level:2}),{now}).respect-6.06)<1e-9);
+ assert.equal(D.evaluate(own(),enemy(400,{estimateAt:now+86400000}),{now}).viable,false);
+});
+test('public estimates never mix merged spy totals or timestamps into the BSS source',()=>{
+ assert.equal(typeof D.publicEstimate,'function');
+ const r=D.publicEstimate({bss_public:500,last_updated:now,bs_estimate:999999999,source:'spies',available_estimates:{bss:{bss_public:400,bs_estimate:40000,last_updated:now-40*86400000}}});
+ assert.deepEqual(r,{bss:400,bs:40000,estimateAt:now-40*86400000});
+ assert.deepEqual(D.publicEstimate({bss_public:400,bs_estimate:999999999,last_updated:now,source:'spies',available_estimates:{bss:null}}),{bss:null,bs:null,estimateAt:null});
+ assert.deepEqual(D.publicEstimate({bss_public:400,bs_estimate:40000,last_updated:now}),{bss:400,bs:40000,estimateAt:now});
 });
 test('respect level endpoints and Warlord obey documented bounds', () => {
   assert.equal(D.evaluate(own(), enemy(400, { level: 1 }), { now }).respect, 6);

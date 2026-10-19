@@ -5,7 +5,7 @@ var WarContractsDomain = (() => {
   const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
   const positive = value => Math.max(0, number(value));
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-  const score = stats => fields.every(k => stats[k] > 0) ? fields.reduce((sum, k) => sum + Math.sqrt(stats[k]), 0) : 0;
+  const score = (stats,rounded=true) => {const sum=fields.every(k => stats[k] > 0)?fields.reduce((sum,k)=>sum+Math.sqrt(stats[k]),0):0;return rounded?Math.round(sum):sum;};
   const normalizeName = text => String(text ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
 
   function profile(input, equipment, weaponUid) {
@@ -27,7 +27,7 @@ var WarContractsDomain = (() => {
         warlordPercent: clamp(positive(item.warlordPercent ?? warlord?.value), 0, 30) };
     });
     return { id: input?.id ?? null, name: input?.name || '', level: positive(input?.level), stats, effectiveStats: effective,
-      bss: score(stats), effectiveBss: score(effective), weapons,
+      bss: score(stats), effectiveBss: score(effective,false), weapons,
       weapon: weapons.find(item => item.uid === String(weaponUid)) || weapons[0] || null,
       armor: equipped.filter(item => /armor|armour/i.test(item.type || item.category || '')) };
   }
@@ -38,6 +38,13 @@ var WarContractsDomain = (() => {
     const timestamp = Number.isFinite(numeric) ? numeric * (numeric < 1e12 ? 1000 : 1) : Date.parse(value);
     return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
   }
+  function publicEstimate(row) {
+    const empty={bss:null,bs:null,estimateAt:null};if(!row||typeof row!=='object')return empty;
+    const hasBuckets=Object.prototype.hasOwnProperty.call(row,'available_estimates');
+    const source=hasBuckets?row.available_estimates?.bss:!row.source||row.source==='bss'?row:null;
+    if(!source||typeof source!=='object')return empty;
+    return {bss:positive(source.bss_public)||null,bs:positive(source.bs_estimate)||null,estimateAt:source.last_updated||null};
+  }
 
   function evaluate(our, enemy, options = {}) {
     const now = options.now ?? Date.now();
@@ -47,10 +54,11 @@ var WarContractsDomain = (() => {
     const rawRatio = our?.bss > 0 ? defenderBss / our.bss : 0;
     const ff = rawRatio > 0 ? Math.min(3, 1 + 8 / 3 * rawRatio) : 0;
     // Ranked-war baseline: level 1 => 1 base respect, level 100 => 1.5.
-    const respect = enemy?.level > 0 && ff ? (1 + (clamp(number(enemy.level), 1, 100) - 1) * (.5 / 99)) * ff * 2 * (1 + clamp(positive(our?.weapon?.warlordPercent), 0, 30) / 100) : 0;
+    const baseRespect=Math.round((1+(clamp(number(enemy?.level),1,100)-1)/198)*100)/100;
+    const respect = enemy?.level > 0 && ff ? baseRespect * ff * 2 * (1 + clamp(positive(our?.weapon?.warlordPercent), 0, 30) / 100) : 0;
     const at = estimateTime(enemy?.estimateAt ?? enemy?.timestamp);
     const age = at == null ? null : Math.max(0, now - at);
-    const confidence = age == null ? 'unknown' : age > 180 * DAY ? 'very old' : age > 30 * DAY ? 'old' : 'recent';
+    const confidence = at>now+300000?'future':age == null ? 'unknown' : age > 180 * DAY ? 'very old' : age > 30 * DAY ? 'old' : 'recent';
     // This is a bounded ordering heuristic, not Torn's combat simulator or win odds.
     // Opponent stripping is assumed by agreement, never observed. Own armor gets
     // only a small contextual benefit; damage/accuracy never alter fair fight.
@@ -68,7 +76,7 @@ var WarContractsDomain = (() => {
     let reason = `Stripped-opponent heuristic: ${fit}; estimate ${confidence}. No guaranteed outcome.`;
     let viable = true;
     if (!respect || !ratio) { viable = false; fit = 'unknown'; reason = 'Missing battle stats, estimate or defender level.'; }
-    else if (confidence === 'unknown' || confidence === 'very old') { viable = false; reason = 'Estimate age is unknown or very old; review manually.'; }
+    else if (confidence === 'unknown' || confidence === 'very old' || confidence === 'future') { viable = false; reason = 'Estimate timestamp is missing, very old or in the future; review manually.'; }
     else if (ratio > 2 || rawRatio > 3) { viable = false; reason = 'Extreme battle-stat gap; review manually.'; }
     else if (rawRatio > 1.35 || defenderBss / effectiveBss > 1.35) { viable = false; reason = 'Battle-stat gap exceeds the conservative ceiling; review manually.'; }
     else if (ratio > 1.15) { viable = false; reason = 'Hard stripped-opponent heuristic; review manually rather than automatic suggestion.'; }
@@ -104,6 +112,6 @@ var WarContractsDomain = (() => {
     return {state:!context?'Not checked':context.ended?'Ended':dealTime?(timestamp*1000>now?'Scheduled':'Active'):'Current war',
       startLabel:dealTime?dealTime+' TCT':'Start time unavailable',dealTime};
   }
-  return { normalizeName, profile, evaluate, recommend, message, endpoint, contractBlocked, warDetails };
+  return { normalizeName, profile, publicEstimate, evaluate, recommend, message, endpoint, contractBlocked, warDetails };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = WarContractsDomain;

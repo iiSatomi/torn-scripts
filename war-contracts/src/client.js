@@ -12,14 +12,14 @@ function installWarContractsHub(){
   let board=null,member=null,enemies=[],deal=null,dealId=null,draftDealId=null,uncertain=false,loaded=false;
   let ui=null,themeClient=null,adapter=null,credentialClient=null,ready=false,disposed=false,busy=false,generation=0;
   let keyPolicyReady=false,hubManaged=false;
-  let autoAttempted=false,landingPending=false,selectedMatchId=null,cancelDraft=null;
+  let autoAttempted=false,landingPending=false,selectedMatchId=null,cancelDraft=null,generatedMessage='';
   let pdaActive=typeof window.PDA_getTabState!=='function',selected='find',reviewing=false;
   let writeQueue=Promise.resolve();
   const validKey=k=>typeof k==='string'&&/^[A-Za-z0-9]{16}$/.test(k);
   const activeStatuses=new Set(['manual','reserved','contacted','confirmed']);
   const labels={manual:'Manually entered',reserved:'Preparing contact',contacted:'Awaiting reply',confirmed:'Confirmed',cancelled:'Released'};
   const templates={invite:'Hey {name}, interested in a med-out deal for our {war}? Looking for {hits} hits around {time} TCT, with you stripped for my hits. What works for you?',short:'Hey {name}, looking for a stripped med-out partner for {hits} hits in our {war}. Are you available around {time} TCT?',followup:'Hey {name}, checking whether our {hits}-hit med deal around {time} TCT works for you. Please confirm before we lock it in.'};
-  const errors={AUTH:'Your faction membership could not be verified.',CONFIG:'Check the service faction/workbook setup and that the sheet opponent matches the detected ranked war.',NO_WAR:'Your faction has no current or recent ranked war available.',CONFLICT:'The contract changed or someone is already booked. Refresh Current Contracts.',FORBIDDEN:'Only your own pending contact can be changed.',CONTEXT_CHANGED:'The current war changed. Refresh Current Contracts.',WAR_ENDED:'This war has ended. Current Contracts remains available to read.',INVALID:'Check the agreement details and the maximum hit count.',UNAVAILABLE:'The contracts service is unavailable. Refresh Current Contracts before retrying.'};
+  const errors={AUTH:'Your faction membership could not be verified.',MANUAL_WAR_CHANGED:'The sheet still contains contracts from a previous war. Ask your coordinator to review and clear those pairings before starting this war.',CONFIG:'Check the service faction/workbook setup and that the sheet opponent matches the detected ranked war.',NO_WAR:'Your faction has no current or recent ranked war available.',CONFLICT:'The contract changed or someone is already booked. Refresh Current Contracts.',FORBIDDEN:'Only your own deal or pending contact can be changed.',CONTEXT_CHANGED:'The current war changed. Refresh Current Contracts.',WAR_ENDED:'This war has ended. Current Contracts remains available to read.',INVALID:'Check the agreement details and the maximum hit count.',UNAVAILABLE:'The contracts service is unavailable. Refresh Current Contracts before retrying.'};
   function node(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=String(text);if(cls)e.className=cls;return e;}
   function button(text,fn,cls){const e=node('button',text,cls);e.type='button';e.addEventListener('click',fn);return e;}
   function input(type,name){const e=node('input');e.type=type;e.id='wch-'+name;refs[name]=e;return e;}
@@ -42,7 +42,7 @@ function installWarContractsHub(){
   function resetAccount(){cancel();verified=null;board=null;member=null;enemies=[];deal=null;dealId=null;selectedMatchId=null;sessionFF='';uncertain=false;reviewing=false;if(refs.message)refs.message.value='';if(refs['ff-key'])refs['ff-key'].value='';render();}
   function update(){
     if(!ui)return;
-    refs.connect.disabled=busy||!ready||!keyPolicyReady;refs.refresh.disabled=busy||!verified;refs.load.disabled=busy||!verified||uncertain;
+    refs.connect.disabled=busy||!ready||!keyPolicyReady;refs.refresh.disabled=busy||!verified;refs.load.disabled=busy||!verified||uncertain||board?.context.ended===true;
     refs['torn-key'].disabled=hubManaged||!keyPolicyReady;
     refs.keyStatus.textContent=!keyPolicyReady?'Checking credential storage…':validKey(sharedKey)?'Approved Hub Torn key available.':hubManaged?'Managed by Hub. Approve an assigned key in Hub API Keys to reconnect.':validKey(sessionKey)?'Personal Torn key available for this page.':'Enter a personal key or approve access in Hub API Keys.';
     refs.context.textContent=board?'vs '+board.context.opponentName+' · '+D.warDetails(board.context).state+' · '+D.warDetails(board.context).startLabel+' · '+board.context.maxHits+'-hit cap':'Checking your faction sheet and ranked war';
@@ -104,7 +104,12 @@ function installWarContractsHub(){
   async function refresh(current){const data=await call('board');if(!current())return false;accept(data);return true;}
   async function torn(path){
     const result=await http.json('https://api.torn.com/v2/'+path,{headers:{Authorization:'ApiKey '+key()}});
-    if(result.error)throw new Error('Torn could not provide the requested data. Check this key has User battlestats/equipment and public faction members access.');return result;
+    if(result.error){
+      const code=Number(result.error.code),safeCode=Number.isSafeInteger(code)&&code>=0&&code<1000?String(code):'unknown';
+      const label=path==='key/info'?'key info':path==='user/battlestats'?'battle stats':path==='user/equipment'?'equipment':'faction data';
+      const help=[2,13,18].includes(code)?'Check that your assigned key is active and belongs to this account.':[5,8,9,12,14,17,24].includes(code)?'Torn is temporarily unavailable or rate-limited. Wait before retrying.':'Check this key has access to this selection in Torn and Hub.';
+      throw new Error('Torn '+label+' returned API error '+safeCode+'. '+help);
+    }return result;
   }
   async function connect({automatic=false}={}){
     await run(async current=>{
@@ -128,6 +133,7 @@ function installWarContractsHub(){
   async function loadMatches(){await run(async current=>{
     say('Checking current contracts, your loadout and opponent estimates…');
     if(!await refresh(current))return;
+    if(board.context.ended)throw new Error(errors.WAR_ENDED);
     if(deal){say('You already have a contract or pending contact. Open My Deal.');return;}
     const [stats,equipment,roster]=await Promise.all([torn('user/battlestats'),torn('user/equipment'),torn('faction/'+board.context.opponentId+'/members?striptags=true')]);
     if(!current())return;
@@ -142,8 +148,7 @@ function installWarContractsHub(){
       if(!Array.isArray(data))throw new Error('FFScouter could not load estimates. Register your key with FFScouter or check its access.');
       for(const row of data){
         // Public BSS and its estimate belong together; do not combine a merged spy total with an unrelated BSS.
-        const publicRow=row.available_estimates?.bss||row;
-        estimates.set(Number(row.player_id),{bss:Number(publicRow.bss_public)||null,bs:Number(publicRow.bs_estimate)||null,estimateAt:publicRow.last_updated||null});
+        estimates.set(Number(row.player_id),D.publicEstimate(row));
       }
     }
     if(!current())return;
@@ -166,10 +171,12 @@ function installWarContractsHub(){
     const data=await call(action,{id:chosen});if(!current())return;
     accept(data);say(action==='sent'?'Contact marked as sent.':'Pending contact released.');
   });}
-  function draftMessage(){if(!deal)return;const war=D.warDetails(board?.context);refs.message.value=D.message(templates[refs.template.value],{name:deal.enemyName,hits:refs.hits.value||board?.context.maxHits||30,time:refs.time.value||'a time we agree',war:'war against '+board.context.opponentName+(war.dealTime?', starting '+war.startLabel:'')});}
+  function draftMessage(preserveEdits=false){if(!deal)return;const war=D.warDetails(board?.context);const value=D.message(templates[refs.template.value],{name:deal.enemyName,hits:refs.hits.value||board?.context.maxHits||30,time:refs.time.value||'a time we agree',war:'war against '+board.context.opponentName+(war.dealTime?', starting '+war.startLabel:'')});if(!preserveEdits||refs.message.value===generatedMessage){refs.message.value=value;generatedMessage=value;}}
   async function copyMessage(){await run(async current=>{
     if(!await refresh(current))return;
     if(!deal||!['reserved','contacted'].includes(deal.status)||ownConflict())throw new Error('This player is already booked or your contact changed. Refresh Current Contracts.');
+    if(board.context.ended)throw new Error(errors.WAR_ENDED);
+    draftMessage(true);
     try{
       const text=refs.message.value;
       if(typeof GM_setClipboard==='function')await GM_setClipboard(text);else if(env.GM?.setClipboard)await env.GM.setClipboard(text);else await navigator.clipboard.writeText(text);
@@ -277,11 +284,11 @@ function installWarContractsHub(){
     refs.dealSummary=node('h2');refs.dealDetails=node('p',undefined,'wch-summary');refs.contact=node('div',undefined,'wch-form');refs.template=node('select');
     for(const [value,label] of [['invite','Med-out invitation'],['short','Short invitation'],['followup','Follow-up']]){const option=node('option',label);option.value=value;refs.template.append(option);}
     refs.message=node('textarea');refs.message.id='wch-message';refs.message.maxLength=2000;refs.copy=button('Copy message',copyMessage);refs.sent=button('Message sent',()=>transition('sent'));refs.release=button('Release pending contact',()=>transition('release'));refs.review=button('Review agreement',()=>{reviewing=true;renderMine();preview();refs.hits.focus();});
-    refs.template.addEventListener('change',draftMessage);const contactActions=node('div',undefined,'wch-actions');contactActions.append(refs.copy,refs.sent,refs.review,refs.release);refs.contact.append(field('Quick message',refs.template),field('Edit before copying',refs.message),node('p','Send the message yourself. Copying does not mark it sent.','wch-muted'),contactActions);
+    refs.template.addEventListener('change',()=>draftMessage());const contactActions=node('div',undefined,'wch-actions');contactActions.append(refs.copy,refs.sent,refs.review,refs.release);refs.contact.append(field('Quick message',refs.template),field('Edit before copying',refs.message),node('p','Review the hit count and time before sending. Your edited messages stay unchanged. Send it yourself; copying does not mark it sent.','wch-muted'),contactActions);
     refs.agreement=node('div',undefined,'wch-form');refs.hits=input('number','hits');refs.hits.min='1';refs.hits.step='1';refs.online=input('text','online');refs.online.maxLength=120;refs.time=input('text','time');refs.time.maxLength=80;refs.warlord=input('checkbox','warlord');refs.notes=node('textarea');refs.notes.id='wch-notes';refs.notes.maxLength=1000;
     refs.agreed=input('checkbox','agreed');refs.finalReview=input('checkbox','final-review');refs.preview=node('p',undefined,'wch-note wch-summary');refs.confirm=button('Confirm and save deal',confirm,'tsui-primary');
     const grid=node('div',undefined,'wch-grid');grid.append(field('Agreed hits',refs.hits),field('Online window (TCT)',refs.online),field('Coordinated time (TCT)',refs.time),check('Warlord needed',refs.warlord));
-    const agreementHeading=node('div',undefined,'wch-toolbar');agreementHeading.append(node('h3','Review the agreed deal'),button('Back to message',()=>{reviewing=false;renderMine();refs.review.focus();}));
+    const agreementHeading=node('div',undefined,'wch-toolbar');agreementHeading.append(node('h3','Review the agreed deal'),button('Back to message',()=>{reviewing=false;renderMine();draftMessage(true);refs.review.focus();}));
     refs.agreement.append(agreementHeading,grid,field('Notes / deal terms',refs.notes),check('The other player agreed to strip for my hits.',refs.agreed),refs.preview,check('I reviewed these exact terms and both players agreed.',refs.finalReview),refs.confirm);
     for(const e of [refs.hits,refs.online,refs.time,refs.warlord,refs.notes])e.addEventListener('input',preview);
     refs.agreed.addEventListener('change',update);refs.finalReview.addEventListener('change',update);

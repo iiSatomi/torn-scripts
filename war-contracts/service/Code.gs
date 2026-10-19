@@ -24,8 +24,9 @@ function createWarContractsService(deps) {
         var roster=deps.rosters(p.apiKey,c),ours=roster.ours||[],enemies=roster.enemies||[];
         var member=ours.find(function(x){return Number(x.id)===user.id;});if(!member)fail('AUTH');user.name=String(member.name);
         var manual=deps.readManual(roster,verified),snapshot=deps.readRecords();
-        if(norm(manual.opponentName)!==norm(verified.opponentName))fail('CONFIG');
+        if(norm(manual.opponentName)!==norm(verified.opponentName)&&!(verified.ended&&!norm(manual.opponentName)&&!(manual.contracts||[]).length))fail('CONFIG');
         if(!positive(manual.maxHits)||Number(manual.maxHits)>10000)fail('CONFIG');
+        if(typeof deps.ensureManualWar==='function')deps.ensureManualWar(c.warId,(manual.contracts||[]).length>0);
         var context={warId:Number(c.warId),factionId:Number(c.factionId),factionName:String(verified.factionName||''),opponentId:Number(c.opponentId),opponentName:String(verified.opponentName),startAt:positive(verified.startAt)?Number(verified.startAt):null,endAt:positive(verified.endAt)?Number(verified.endAt):null,maxHits:Number(manual.maxHits),ended:verified.ended};
         var rows=(snapshot.records||[]).filter(function(r){return Number(r.warId)===context.warId && Number(r.factionId)===context.factionId && Number(r.opponentId)===context.opponentId;});
         var confirmed=(snapshot.confirmed||[]).filter(function(r){return Number(r.warId)===context.warId && Number(r.factionId)===context.factionId && Number(r.opponentId)===context.opponentId;});
@@ -124,7 +125,7 @@ function createWarContractsService(deps) {
         if(record.status==='confirmed'||record.status==='cancelled')fail('CONFLICT');
         record.status=p.action==='sent'?'contacted':'cancelled';record.updatedAt=deps.now();deps.writeRecord(record);return response(record);
       });
-    } catch(e) { var code=e&&e.publicCode||'UNAVAILABLE';return {ok:false,error:{code:code,message:({INVALID:'Invalid request.',NO_WAR:'No ranked war is available for this faction.',WAR_ENDED:'This ranked war has ended. Contracts are read-only.',CONFIG:'Service configuration unavailable.',AUTH:'Faction membership could not be verified.',CONFLICT:'This agreement is no longer available or differs from its saved terms.',FORBIDDEN:'Only your own pending contact can be changed.',CONTEXT_CHANGED:'Current war changed. Reload the board.',UNAVAILABLE:'Service unavailable. Refresh the board before retrying.'})[code]||'Service unavailable.'}}; }
+    } catch(e) { var code=e&&e.publicCode||'UNAVAILABLE';return {ok:false,error:{code:code,message:({INVALID:'Invalid request.',NO_WAR:'No ranked war is available for this faction.',WAR_ENDED:'This ranked war has ended. Contracts are read-only.',MANUAL_WAR_CHANGED:'Manual contracts belong to a previous war. Ask the sheet coordinator to review and clear the previous-war pairings before continuing.',CONFIG:'Service configuration unavailable.',AUTH:'Faction membership could not be verified.',CONFLICT:'This agreement is no longer available or differs from its saved terms.',FORBIDDEN:'Only your own deal or pending contact can be changed.',CONTEXT_CHANGED:'Current war changed. Reload the board.',UNAVAILABLE:'Service unavailable. Refresh the board before retrying.'})[code]||'Service unavailable.'}}; }
   }
   return {handle:handle};
 }
@@ -227,6 +228,7 @@ function setupWarContracts() {
   var ui=SpreadsheetApp.getUi(),book=SpreadsheetApp.getActiveSpreadsheet(),values={WORKBOOK_ID:book.getId()};
   var answer=ui.prompt('War Contracts setup','Our FACTION_ID (positive Torn ID). The ranked war and opponent are detected automatically.',ui.ButtonSet.OK_CANCEL);if(answer.getSelectedButton()!==ui.Button.OK)throw new Error('Setup cancelled.');var value=answer.getResponseText().trim();if(!/^[1-9]\d*$/.test(value))throw new Error('Invalid ID.');values.FACTION_ID=value;
   if(!book.getSheetByName('War Contracts'))throw new Error('Manual War Contracts tab missing.');
+  var cap=book.getSheetByName('War Contracts').getRange('I6');if(cap.isBlank()&&!cap.getFormula())cap.setValue(30);
   PropertiesService.getScriptProperties().setProperties(values);
   ['Script Contracts','Script Contract Registry'].forEach(function(name){if(!book.getSheetByName(name))book.insertSheet(name).appendRow(['Record ID','War ID','Our member','Enemy','Status','Hits','Online window','Time','Warlord','Notes','Record JSON']);});
   ui.alert('Configuration saved. Deploy a new web app version after reviewing the source and access settings.');
@@ -244,6 +246,7 @@ function warContractsDependencies() {
   function lookup(value,rich,formula,roster){var str=String(value||''),url=rich&&rich.getLinkUrl?rich.getLinkUrl():null;var found=(url||String(formula||'')).match(/(?:XID=|profiles?\.php\?XID=)(\d+)/i)||str.match(/\[(\d+)\]/);var name=str.replace(/\[\d+\]/g,'').trim().replace(/\s+/g,' ');var m=roster.find(function(x){return x.name.trim().replace(/\s+/g,' ').toLowerCase()===name.toLowerCase();});return {id:found?Number(found[1]):m?Number(m.id):null,name:name};}
   return {
     config:config,
+    ensureManualWar:function(warId,hasContracts){var previous=prop.getProperty('MANUAL_WAR_ID');if(previous&&Number(previous)!==Number(warId)&&hasContracts){var e=new Error('Manual war changed');e.publicCode='MANUAL_WAR_CHANGED';throw e;}if(Number(previous)!==Number(warId))prop.setProperty('MANUAL_WAR_ID',String(warId));},
     authenticate:function(key){
       // Bounded attempts per credential and globally; key itself never enters cache keys or values.
       var digest=hash(key),guard=LockService.getScriptLock();guard.waitLock(5000);try{var bucket='rate:'+Math.floor(Date.now()/60000),count=Number(cache.get(bucket)||0),own='rate:'+digest+':'+Math.floor(Date.now()/60000),n=Number(cache.get(own)||0);if(count>=240||n>=30)throw new Error('Rate limited');cache.put(bucket,String(count+1),70);cache.put(own,String(n+1),70);}finally{guard.releaseLock();}

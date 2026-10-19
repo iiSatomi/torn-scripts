@@ -1,5 +1,15 @@
 # War Contracts Hub changes
 
+## 1.4.2 — 2026-10-19
+
+- Identifies safe Torn API error codes and failed selections without exposing keys or upstream messages.
+- Rounds raw BSS and level base respect according to the documented model; rejects future-dated estimates.
+- Keeps public FFScouter BSS and its timestamp together; merged spy-only data cannot become a public estimate.
+- Updates unchanged generated invitations after hit/time edits while preserving member-edited messages.
+- Binds manual sheet contracts to a war ID, protecting same-opponent rematches from old manual agreements.
+- Allows unused blank sheets to view the last ended war; disables fresh matching for ended wars.
+- Setup defaults only a genuinely blank hit cap to 30. Requires the updated Apps Script service.
+
 ## 1.4.1 — 2026-10-17
 
 - Recognizes the current Torn sidebar Name row when its profile link has no accessibility label, restoring automatic connection. The Torn key must still match that unique logged-in member ID.
