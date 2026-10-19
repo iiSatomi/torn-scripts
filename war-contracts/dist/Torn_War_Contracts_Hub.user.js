@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Contracts Hub
 // @namespace    isatomi.torn.war-contracts-hub
-// @version      1.4.2
+// @version      1.4.3
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/war-contracts/dist/Torn_War_Contracts_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/war-contracts/dist/Torn_War_Contracts_Hub.user.js
 // @description  Find manageable med-out partners, coordinate contact, protect manual contracts and review the faction's current deals through Torn Script Hub.
@@ -34,7 +34,7 @@
 (function(){
 'use strict';
 if(window.top!==window.self)return;
-const WAR_CONTRACTS_VERSION="1.4.2";
+const WAR_CONTRACTS_VERSION="1.4.3";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -1649,7 +1649,7 @@ function createWarContractsHttp(env) {
       url.pathname.endsWith('/battlestats') ? 'Torn battle stats' : url.pathname.endsWith('/equipment') ? 'Torn equipment' :
       url.pathname.endsWith('/members') ? 'Torn faction roster' : 'Torn account verification';
     const advice = status === 429 ? 'Wait a minute before trying again.' :
-      provider === 'FFScouter' && status === 401 ? 'Register the exact estimate key at ffscouter.com, or enter your registered key in Connection.' :
+      provider === 'FFScouter' && status === 401 ? 'Use a registered key at ffscouter.com. Check the assigned FFScouter key in Hub API Keys, or your personal fallback in Connection.' :
       provider === 'FFScouter' ? 'Check your key and access at ffscouter.com.' :
       provider === 'Contracts sheet service' ? 'Check the deployment address and its access permissions.' : 'Check your Torn key permissions.';
     return new Error(provider + ' rejected this request (HTTP ' + code + '). ' + advice);
@@ -1825,10 +1825,10 @@ function installWarContractsHub(){
   if(typeof PDA_httpGet==='function')env.PDA_httpGet=PDA_httpGet;
   if(typeof PDA_httpPost==='function')env.PDA_httpPost=PDA_httpPost;
   const http=createWarContractsHttp(env);
-  let settings={endpoint:''},sessionKey='',sessionFF='',sharedKey=null,verified=null;
+  let settings={endpoint:''},sessionKey='',sessionFF='',sharedKey=null,sharedFF=null,verified=null;
   let board=null,member=null,enemies=[],deal=null,dealId=null,draftDealId=null,uncertain=false,loaded=false;
   let ui=null,themeClient=null,adapter=null,credentialClient=null,ready=false,disposed=false,busy=false,generation=0;
-  let keyPolicyReady=false,hubManaged=false;
+  let keyPolicyReady=false,hubManaged=false,ffHubManaged=false;
   let autoAttempted=false,landingPending=false,selectedMatchId=null,cancelDraft=null,generatedMessage='';
   let pdaActive=typeof window.PDA_getTabState!=='function',selected='find',reviewing=false;
   let writeQueue=Promise.resolve();
@@ -1847,6 +1847,8 @@ function installWarContractsHub(){
   function get(key,fallback){return Promise.resolve().then(()=>typeof GM_getValue==='function'?GM_getValue(prefix+key,fallback):env.GM?.getValue?.(prefix+key,fallback)).then(v=>v===undefined?fallback:v).catch(()=>fallback);}
   function put(key,value){const work=writeQueue.then(()=>{if(typeof GM_setValue==='function')return GM_setValue(prefix+key,value);if(env.GM?.setValue)return env.GM.setValue(prefix+key,value);throw new Error('Settings storage is unavailable.');});writeQueue=work.catch(()=>{});return work;}
   function key(){return keyPolicyReady?(validKey(sharedKey)?sharedKey:hubManaged?'':sessionKey):'';}
+  function estimateKey(){return keyPolicyReady?(validKey(sharedFF)?sharedFF:ffHubManaged?'':sessionFF||key()):'';}
+  function invalidateEstimates(){cancel();member=null;enemies=[];loaded=false;selectedMatchId=null;render();}
   function awake(){return !disposed&&pdaActive&&document.visibilityState!=='hidden';}
   function usable(){return awake()&&!!ui&&ui.getState().active;}
   function ownPageId(){
@@ -1869,7 +1871,8 @@ function installWarContractsHub(){
     const war=D.warDetails(board?.context);
     refs.connectionState.textContent=busy?'Checking connection…':board?'Connected to your faction sheet':verified?'Member verified · sheet not loaded':'Ready to connect';
     refs.sheetState.textContent=board?board.contracts.filter(r=>r.status!=='cancelled').length+' current contracts loaded':settings.endpoint?'Saved service address':'Add your faction service address once';
-    refs.estimateState.textContent=sessionFF?'Separate FFScouter key set for this page.':'Estimates use your Hub/personal Torn key. Register that exact key with FFScouter, or add a registered key below.';
+    refs['ff-key'].disabled=ffHubManaged||!keyPolicyReady;
+    refs.estimateState.textContent=validKey(sharedFF)?'Approved Hub FFScouter key available.':ffHubManaged?'Managed by Hub. Approve War Contracts under FFScouter in Hub API Keys.':sessionFF?'Separate FFScouter key set for this page.':'Estimates use your Hub/personal Torn key. Register that exact key with FFScouter, or add a registered key below.';
     refs.warTitle.textContent=board?(board.context.factionName?board.context.factionName+' vs ':'')+board.context.opponentName:'Ranked war';
     refs.warState.textContent=war.state;refs.warStart.textContent=war.startLabel;
     refs.warId.textContent=board?'#'+board.context.warId:'Waiting for connection';
@@ -1952,6 +1955,7 @@ function installWarContractsHub(){
     if(!await refresh(current))return;
     if(board.context.ended)throw new Error(errors.WAR_ENDED);
     if(deal){say('You already have a contract or pending contact. Open My Deal.');return;}
+    const ffKey=estimateKey();if(!validKey(ffKey))throw new Error('Approve War Contracts under FFScouter in Hub API Keys before loading estimates.');
     const [stats,equipment,roster]=await Promise.all([torn('user/battlestats'),torn('user/equipment'),torn('faction/'+board.context.opponentId+'/members?striptags=true')]);
     if(!current())return;
     if(!Array.isArray(roster.members)||roster.members.length>1000)throw new Error('Torn returned an invalid opponent roster.');
@@ -1959,8 +1963,9 @@ function installWarContractsHub(){
     const estimates=new Map();
     for(let offset=0;offset<people.length;offset+=200){
       if(!current())return;
+      if(ffKey!==estimateKey())throw new Error('Estimate access changed. Reload matches with your current Hub permissions.');
       const ids=people.slice(offset,offset+200).map(m=>m.id).join(',');
-      const data=await http.json('https://ffscouter.com/api/v1/get-stats?key='+encodeURIComponent(sessionFF||key())+'&targets='+ids);
+      const data=await http.json('https://ffscouter.com/api/v1/get-stats?key='+encodeURIComponent(ffKey)+'&targets='+ids);
       if(!current())return;
       if(!Array.isArray(data))throw new Error('FFScouter could not load estimates. Register your key with FFScouter or check its access.');
       for(const row of data){
@@ -2126,7 +2131,7 @@ function installWarContractsHub(){
     for(const [label,key] of [['War status','warState'],['Starts (TCT)','warStart'],['Ranked war','warId'],['Deal limit','warHits']]){const item=node('div');refs[key]=node('dd');item.append(node('dt',label),refs[key]);warFields.append(item);}
     warCard.append(refs.warTitle,warFields);
     refs.connectionSettings=node('details',undefined,'wch-settings');refs.connectionSettings.open=!settings.endpoint;
-    const settingsForm=node('div',undefined,'wch-form');settingsForm.append(field('Faction contracts service address',refs.endpoint),field('Personal Torn key (session fallback)',refs['torn-key']),field('FFScouter key (optional; otherwise use my Torn key)',refs['ff-key']),refs.estimateState,refs.connect,button('Forget keys on this page',()=>{sessionKey='';sessionFF='';sharedKey=null;refs['torn-key'].value='';refs['ff-key'].value='';resetAccount();say('Personal session keys cleared. Reconnect to check any existing deal.');}));
+    const settingsForm=node('div',undefined,'wch-form');settingsForm.append(field('Faction contracts service address',refs.endpoint),field('Personal Torn key (session fallback)',refs['torn-key']),field('FFScouter key (session fallback)',refs['ff-key']),refs.estimateState,refs.connect,button('Forget keys on this page',()=>{sessionKey='';sessionFF='';sharedKey=null;sharedFF=null;refs['torn-key'].value='';refs['ff-key'].value='';resetAccount();say('Personal session keys cleared. Reconnect to check any existing deal.');}));
     refs.connectionSettings.append(node('summary','Connection settings'),settingsForm);
     const privacy=node('details',undefined,'wch-privacy');privacy.append(node('summary','API access and privacy'),node('p','Your Torn key verifies faction membership with Torn and your configured sheet service. Matching reads your stats/gear and sends the estimate key to FFScouter. Keys, private stats and gear are never written to the sheet. Personal and separate FFScouter keys stay in this page session. Hub access remains controlled in Hub API Keys. Use User battlestats/equipment, Key info and public Faction members/wars/rankedwars permissions; register the estimate key at ffscouter.com.'));
     connection.append(node('h2','Connection'),node('p','Your saved faction sheet and ranked war are checked automatically when you open this tool.','wch-muted'),state,warCard,refs.connectionSettings,privacy);
@@ -2138,19 +2143,19 @@ function installWarContractsHub(){
   }
   function open(section){if(disposed)return false;const smart=section===undefined;build();ui.show();ui.collapse(false);if(ui.getState().minimized)ui.restore();ui.select(section||(deal?'mine':'find'));landingPending=smart;ui.focus();update();autoLoad();return true;}
   function registerAdapter(){
-    adapter?.();sharedKey=null;
+    adapter?.();sharedKey=null;sharedFF=null;
     keyPolicyReady=false;
     credentialClient=createHubCredentialClient({storage:createHubCredentialStorage(env,'war-contracts-hub-private-v1'),crypto:globalThis.crypto,scriptId:id});
-    adapter=registerTornScriptMenu(document,window,{id,name:'War Contracts',version:WAR_CONTRACTS_VERSION,icon:'war',category:'Faction',url:'https://www.torn.com/factions.php?step=your&type=1',actions:[{id:'open',label:'Find a partner'},{id:'contracts',label:'Current contracts'},{id:'mine',label:'My deal'},{id:'settings',label:'Connection'}],capabilities:['credentials']},{open:()=>open(),contracts:()=>open('contracts'),mine:()=>open('mine'),settings:()=>open('connection')},{credentialClient,sharedProviders:['torn'],credentialContext:true,credentialScope:'script',
-      onCredentialPolicyReady(value,isManaged){keyPolicyReady=value;hubManaged ||= isManaged('torn');update();autoLoad();},
-      onHubManagementChange(provider,managed){if(provider==='torn'&&managed){hubManaged=true;update();}},
+    adapter=registerTornScriptMenu(document,window,{id,name:'War Contracts',version:WAR_CONTRACTS_VERSION,icon:'war',category:'Faction',url:'https://www.torn.com/factions.php?step=your&type=1',actions:[{id:'open',label:'Find a partner'},{id:'contracts',label:'Current contracts'},{id:'mine',label:'My deal'},{id:'settings',label:'Connection'}],capabilities:['credentials']},{open:()=>open(),contracts:()=>open('contracts'),mine:()=>open('mine'),settings:()=>open('connection')},{credentialClient,sharedProviders:['torn','ffscouter'],credentialContext:true,credentialScope:'script',
+      onCredentialPolicyReady(value,isManaged){keyPolicyReady=value;hubManaged ||= isManaged('torn');ffHubManaged ||= isManaged('ffscouter');update();autoLoad();},
+      onHubManagementChange(provider,managed){if(managed){const old=estimateKey();if(provider==='torn')hubManaged=true;if(provider==='ffscouter')ffHubManaged=true;if(provider==='ffscouter'&&old!==estimateKey())invalidateEstimates();else update();}},
       onCredentialPolicyFailure(){keyPolicyReady=false;resetAccount();say('Hub enrollment could not be saved. Reload to retry.',true);},
-      onSharedCredentialChange(provider,value){if(provider!=='torn')return;const old=key();sharedKey=validKey(value)?value:null;if(key()!==old&&(verified||member||board||old)){resetAccount();say('Hub key changed. Reconnect to verify your account.');}else update();autoLoad();}});
+      onSharedCredentialChange(provider,value){if(provider==='ffscouter'){const old=sharedFF;sharedFF=validKey(value)?value:null;if(sharedFF!==old){invalidateEstimates();say('Hub FFScouter key changed. Reload matches to use the current key.');}else update();autoLoad();return;}if(provider!=='torn')return;const old=key();sharedKey=validKey(value)?value:null;if(key()!==old&&(verified||member||board||old)){resetAccount();say('Hub key changed. Reconnect to verify your account.');}else update();autoLoad();}});
   }
   const launcher=button('War Contracts',()=>open());launcher.id='wch-launcher';launcher.setAttribute('aria-label','Open war contracts');launcher.style.cssText='position:fixed;left:12px;bottom:12px;z-index:99999;min-height:44px;padding:10px 14px;border:1px solid #64748b;border-radius:6px;background:#142131;color:#eef4fa;cursor:pointer';(document.body||document.documentElement).append(launcher);
   const hideFallback=()=>{launcher.hidden=!!document.getElementById('tsh-launcher');};hideFallback();listen(document,'torn-script-hub:v1:discover',hideFallback);
   function activity(event){if(event.type==='tornpda:tabState'){const s=event.detail;if(typeof s?.isActiveTab!=='boolean'||typeof s?.isWebViewVisible!=='boolean')return;pdaActive=s.isActiveTab&&s.isWebViewVisible;}if(!awake())cancel();else{update();autoLoad();}}
-  function teardown(){if(disposed)return;disposed=true;cancel();adapter?.();ui?.destroy();launcher.remove();marker.remove();sessionKey='';sessionFF='';sharedKey=null;member=null;enemies=[];board=null;for(const cleanup of cleanups.splice(0))cleanup();}
+  function teardown(){if(disposed)return;disposed=true;cancel();adapter?.();ui?.destroy();launcher.remove();marker.remove();sessionKey='';sessionFF='';sharedKey=null;sharedFF=null;member=null;enemies=[];board=null;for(const cleanup of cleanups.splice(0))cleanup();}
   listen(document,'visibilitychange',activity);listen(window,'tornpda:tabState',activity);listen(window,'hashchange',cancel);listen(window,'popstate',cancel);listen(window,'pagehide',event=>{if(event.persisted)cancel();else teardown();});
   if(typeof window.PDA_getTabState==='function')Promise.resolve(window.PDA_getTabState()).then(state=>activity({type:'tornpda:tabState',detail:state})).catch(()=>{pdaActive=false;cancel();});
   const menu=typeof GM_registerMenuCommand==='function'?GM_registerMenuCommand:env.GM?.registerMenuCommand?.bind(env.GM);menu?.('Open war contracts',()=>open());

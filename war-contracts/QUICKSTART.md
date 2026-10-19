@@ -30,7 +30,7 @@ Review Google's permission grant before accepting it. Publishing changed Google 
 
 1. Install Torn Script Hub 1.6.0 or later and the War Contracts userscript in your userscript manager. Replace older entries rather than enabling duplicates. Reload Torn.
 2. Create/use your own Torn custom key allowing **User battlestats**, **User equipment**, **Key info** and public **Faction members**, **Faction wars**, **Faction rankedwars**. Register the key used for estimates with FFScouter. Current Contracts alone does not need private battle stats.
-3. In **Hub → API Keys**, assign and approve your Torn key for War Contracts. Keep your key private.
+3. In **Hub → API Keys**, assign and approve your Torn key for War Contracts. If your registered FFScouter key is different, save/assign it under **FFScouter** and approve War Contracts there too. The approved Hub FFScouter key takes priority; Hub-managed access must remain approved. Without a Hub FFScouter connection, a separate page-session key or your registered Torn key can supply estimates. Keep keys private.
 4. Open **Hub → War Contracts → Settings**. Expand **Connection settings**, paste your faction's `/exec` address once and choose **Save and reconnect**. Later openings automatically load the configured sheet and ranked war with your approved Hub key. The key must belong to the member logged into Torn.
 5. Open **Contracts** to check existing manual/script deals. If you already have a contract, the default opening goes to **My Deal** and new matching is blocked. Expand a contract row for its notes.
 
@@ -65,7 +65,7 @@ After the table is ready, opening the tool detects the new scheduled/current war
 - **No Hub key:** update Hub to 1.6.0+, check the normal API-key assignment/approval, then reload Torn. Keys are never embedded in this download.
 - **Already paired:** inspect My Deal or Current Contracts. Ask your sheet coordinator to resolve an incorrect manual entry; the script cannot overwrite it.
 - **Torn key info API error:** check the assigned key is active. Errors 2/13/18 need a valid active account key; temporary/rate-limit errors should be retried later. The message names the failed selection and a safe code, without exposing your key.
-- **FFScouter HTTP 401:** the exact estimate key must be registered at [FFScouter](https://ffscouter.com). Enter an existing registered key under Connection settings if different from your Hub Torn key, then choose Save and reconnect. Separate estimate keys last for this page session.
+- **FFScouter HTTP 401:** the exact estimate key must be registered at [FFScouter](https://ffscouter.com). Check the FFScouter key assigned to War Contracts in Hub API Keys and its access checkbox. Without Hub FFScouter enrollment, Connection settings accepts a registered page-session fallback. Separate fallback keys last for this page session.
 - **No suitable matches:** check FFScouter registration, key scopes and estimates. The safety ceiling deliberately excludes unsuitable targets.
 - **Opponent heading/configuration error:** ask the owner to update the test sheet's opponent heading to match Torn's detected war. Do not hard-code war IDs.
 - **Previous-war contracts warning:** ask the coordinator to archive/review and clear the previous pairings, then refresh. A rematch against the same faction still needs this reset.

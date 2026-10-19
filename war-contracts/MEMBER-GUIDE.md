@@ -5,7 +5,7 @@
 War Contracts is available through Script Hub. It finds suitable med-out partners using your own stats/gear and FFScouter public estimates, and hides players already paired or being contacted.
 
 1. Install/update [Script Hub](https://greasyfork.org/en/scripts/600221-torn-script-hub) and [War Contracts](https://greasyfork.org/en/scripts/600540-torn-war-contracts-hub). Keep one enabled copy of each.
-2. In Hub API Keys, approve your own Torn key for War Contracts. Register your estimate key with FFScouter first. Keys stay private; never put one in chat or sheet notes.
+2. In Hub API Keys, approve your own Torn key for War Contracts. Register your estimate key with FFScouter first. If it is a different key, save/assign it under Hub's FFScouter section and approve War Contracts there too. Keys stay private; never put one in chat or sheet notes.
 3. Open Hub → War Contracts → Settings → Connection settings. Paste the faction service address supplied by leadership once, then Save and reconnect.
 4. Contracts shows existing manual/script agreements. If unpaired, use Matches → Find my matches, choose your planned weapon and review a partner. Recommendations assume the opponent strips; check their estimate and agree on terms.
 5. Reserve and prepare message, edit/copy the invitation and send it yourself. Mark Message sent. Once both players agree, review the hits, time in TCT, Warlord and notes; confirm stripping and the final preview to save.

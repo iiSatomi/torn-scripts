@@ -1,5 +1,10 @@
 # War Contracts Hub changes
 
+## 1.4.3 — 2026-10-19
+
+- Consumes the existing Hub FFScouter provider instead of ignoring its configured estimate key. Approve War Contracts under both Torn and FFScouter when using separate keys.
+- Keeps shared estimate keys in private memory, refreshes matching after key rotation and blocks fallback after Hub access is revoked. No Hub or Apps Script update is required beyond the 1.4.2 service.
+
 ## 1.4.2 — 2026-10-19
 
 - Identifies safe Torn API error codes and failed selections without exposing keys or upstream messages.

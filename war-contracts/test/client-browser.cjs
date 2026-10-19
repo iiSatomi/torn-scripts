@@ -76,7 +76,7 @@ async function connectionSettings(page){
   await page.getByRole('button',{name:'Find Partner',exact:true}).click();
   await page.evaluate(()=>window.ffStatus=401);
   await page.getByRole('button',{name:'Find my matches',exact:true}).click();
-  await page.getByText('FFScouter rejected this request (HTTP 401). Register the exact estimate key at ffscouter.com, or enter your registered key in Connection.',{exact:true}).waitFor();
+  await page.getByText('FFScouter rejected this request (HTTP 401). Use a registered key at ffscouter.com. Check the assigned FFScouter key in Hub API Keys, or your personal fallback in Connection.',{exact:true}).waitFor();
   assert.equal((await page.locator('.wch-root').innerText()).includes('private upstream'),false);
   assert.equal(await page.locator('.wch-match').count(),0);
   await page.evaluate(()=>window.ffStatus=0);

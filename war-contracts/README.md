@@ -2,7 +2,7 @@
 
 A separate member userscript using the existing Torn Script Hub adapter, shared window, themes and permissioned API-key manager. It does not change OC Suite or other installed tools.
 
-[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.4.2.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
+[Download the complete ZIP](https://github.com/iiSatomi/torn-scripts/raw/refs/heads/main/war-contracts/releases/Torn_War_Contracts_Hub-1.4.3.zip) · [Step-by-step setup and usage guide](QUICKSTART.md)
 
 ## Install
 
@@ -12,7 +12,7 @@ A separate member userscript using the existing Torn Script Hub adapter, shared 
 4. Approve this script in **Hub → API Keys**. Before Hub enrollment, a personal key can instead be used for this page session. After enrollment, missing/revoked Hub access pauses the connection rather than silently switching to a personal key.
 5. Choose **Save and reconnect** after editing settings. After setup, opening War Contracts automatically loads the configured sheet and checks the ranked war; no consent checkbox is required.
 
-Use a custom Torn key with **User battlestats**, **User equipment**, **Key info** and public **Faction members**, **Faction wars** and **Faction rankedwars**. Register the estimate key with FFScouter; a separate FFScouter key is optional. A member can view Current Contracts without granting private battle-stat access. The key must identify the member logged into Torn.
+Use a custom Torn key with **User battlestats**, **User equipment**, **Key info** and public **Faction members**, **Faction wars** and **Faction rankedwars**. Register the estimate key with FFScouter; a separate FFScouter key is optional. War Contracts consumes Hub's Torn and FFScouter providers: assign/approve each used provider under Hub API Keys. An approved Hub FFScouter key takes priority; after enrollment, missing/revoked Hub estimate access blocks fallback. With no Hub FFScouter enrollment, a page-session estimate key or registered Torn key can supply estimates. A member can view Current Contracts without granting private battle-stat access. The Torn key must identify the member logged into Torn.
 
 The script bundles its Hub dependencies. No remote `@require`, npm installation or separate spy provider is needed by members. The Compact console has three task tabs and a Settings shortcut in its header. A default opening selects My Deal when you already have a contract or pending contact; explicit navigation remains selected. Match review selects one detail panel without reserving or making another API call. On a page without Hub, a fallback launcher opens the same window. Shared credentials require the Hub's supported userscript-manager/native PDA storage and WebCrypto capabilities.
 

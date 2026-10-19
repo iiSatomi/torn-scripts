@@ -9,7 +9,7 @@ function createWarContractsHttp(env) {
       url.pathname.endsWith('/battlestats') ? 'Torn battle stats' : url.pathname.endsWith('/equipment') ? 'Torn equipment' :
       url.pathname.endsWith('/members') ? 'Torn faction roster' : 'Torn account verification';
     const advice = status === 429 ? 'Wait a minute before trying again.' :
-      provider === 'FFScouter' && status === 401 ? 'Register the exact estimate key at ffscouter.com, or enter your registered key in Connection.' :
+      provider === 'FFScouter' && status === 401 ? 'Use a registered key at ffscouter.com. Check the assigned FFScouter key in Hub API Keys, or your personal fallback in Connection.' :
       provider === 'FFScouter' ? 'Check your key and access at ffscouter.com.' :
       provider === 'Contracts sheet service' ? 'Check the deployment address and its access permissions.' : 'Check your Torn key permissions.';
     return new Error(provider + ' rejected this request (HTTP ' + code + '). ' + advice);
