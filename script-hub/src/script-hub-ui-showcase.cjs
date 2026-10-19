@@ -30,7 +30,7 @@ function installScriptUiShowcase() {
     const settings = element('div');
     const label = element('label', 'Layout preview ');
     const picker = element('select'); picker.setAttribute('aria-label', 'Layout preview');
-    for (const name of ['frostbite', 'workbench', 'torn']) { const option = element('option', name[0].toUpperCase() + name.slice(1)); option.value = name; picker.append(option); }
+    for (const [name,title] of [['frostbite','Frostbite'],['workbench','Workbench'],['torn','Torn native'],['stock','Stock Mgr']]) { const option = element('option', title); option.value = name; picker.append(option); }
     label.append(picker); settings.append(label);
     const follow = element('button', 'Follow Hub appearance'); follow.type = 'button'; settings.append(follow);
     const inspector = element('p', 'Native content stays mounted when the layout or colors change. All example data is local.');
@@ -55,7 +55,7 @@ function installScriptUiShowcase() {
           host.append(element('h2', 'Keep your place'));
           const form = element('form');
           const noteLabel = element('label', 'Local note '), input = element('textarea'); input.setAttribute('aria-label', 'Local note'); input.maxLength = 400; input.rows = 4; input.placeholder = 'Harmless example text'; noteLabel.append(input); form.append(noteLabel);
-          const save = element('button', 'Review local draft'); save.type = 'submit'; form.append(save); host.append(form);
+          const save = element('button', 'Review local draft'); save.type = 'submit'; save.className = 'tsui-primary'; form.append(save); host.append(form);
           const submit = event => { event.preventDefault(); ui.notice('Draft is present in this window. It is never sent or stored.'); };
           form.addEventListener('submit', submit); return () => form.removeEventListener('submit', submit);
         } },

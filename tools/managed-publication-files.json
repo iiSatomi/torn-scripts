@@ -46,6 +46,7 @@
     "script-hub/test/browser/script-hub-launch-design.cjs",
     "script-hub/test/browser/script-hub-themes.cjs",
     "script-hub/test/browser/script-hub-ui-kit.cjs",
+    "script-hub/test/browser/script-hub-ui-polish.cjs",
     "script-hub/test/script-hub-pda.test.cjs",
     "script-hub/test/script-hub-key-manager.test.cjs",
     "script-hub/test/script-hub-adapter-policy.test.cjs",

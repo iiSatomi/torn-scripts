@@ -23,6 +23,20 @@ changes rates, locks a run, credits a member or requests war data.
 
 ## User controls
 
+The Hub launcher uses a connected-module mark, distinct from the Scripts grid
+icon. Its surface, accent, focus and expanded state follow the shared palette;
+theme previews and Cancel update the launcher alongside the Hub. Frostbite
+launch cards include their favorite/actions footer within one border. Availability
+retains its text label, with a dot for a live script and an arrow for a remembered
+shortcut. All four layouts keep their existing navigation and content placement.
+
+Universal factory controls support `.tsui-primary` for an accent action with
+derived readable text, subdued disabled controls and inset keyboard outlines in
+navigation/window controls. The shared stylesheet upgrades to revision 3 while
+preserving newer installed revisions. These changes preserve script content
+nodes, drafts and task state. Older consumer bundles adopt them on their own next
+build; this polish does not regenerate the other working-copy scripts.
+
 Small screens and touch layouts use a persistent bottom-left floating launcher,
 so a collapsed or offscreen Torn sidebar cannot hide the Hub entry point. Desktop
 screens retain sidebar placement when a control row is available. Launcher

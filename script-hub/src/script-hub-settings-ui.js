@@ -49,8 +49,9 @@ function createHubSettingsController(config) {
   function applyAppearance(value=appearance){
     const dialog=getDialog();if(!dialog||!themeAvailable)return;
     const resolved=applyScriptUiTheme(dialog,value,themeMedia?.matches===true);
+    const launcher=config.getLauncher?.()||doc.getElementById('tsh-launcher');if(launcher)applyScriptUiTheme(launcher,value,themeMedia?.matches===true);
     dialog.style.colorScheme=resolved.mode;
-    const label=dialog.querySelector('.tsh-current-style');if(label)label.textContent=({frostbite:'Frostbite',workbench:'Workbench',torn:'Torn native'})[resolved.layout];
+    const label=dialog.querySelector('.tsh-current-style');if(label)label.textContent=({frostbite:'Frostbite',workbench:'Workbench',torn:'Torn native',stock:'Stock Mgr'})[resolved.layout];
   }
   function publishAppearance(){
     if(!themeAvailable)return;

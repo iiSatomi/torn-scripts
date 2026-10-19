@@ -14,6 +14,13 @@ function hubThemeStyles() {
   #tsh-dialog[data-tsui-layout] button[aria-selected=true],#tsh-dialog[data-tsui-layout] button[aria-pressed=true]{background:var(--tsui-selection);color:var(--tsui-accent);border-color:var(--tsui-accent)!important}
   #tsh-dialog[data-tsui-layout] :focus-visible{outline:2px solid var(--tsui-focus);outline-offset:2px}
   #tsh-dialog[data-tsui-layout] .tsh-theme-save{background:var(--tsui-accent);color:var(--tsui-on-accent)}
+  #tsh-dialog[data-tsui-layout] button:disabled{opacity:.55;cursor:default}
+  #tsh-dialog[data-tsui-layout] .tsh-tile:focus-within{border-color:var(--tsui-focus)}
+  #tsh-dialog[data-tsui-layout] .tsh-tile-controls button:focus-visible{outline-offset:-3px}
+  #tsh-dialog[data-tsui-layout] .tsh-pin[aria-pressed=true]{color:var(--tsui-accent);background:var(--tsui-selection);font-weight:700}
+  #tsh-dialog[data-tsui-layout] .tsh-state{display:flex;align-items:center;justify-content:inherit;gap:5px;line-height:1.4}
+  #tsh-dialog[data-tsui-layout] .tsh-tile[data-active=true] .tsh-state:before{content:'';display:inline-block;width:5px;height:5px;border-radius:50%;background:currentColor;flex:none}
+  #tsh-dialog[data-tsui-layout] .tsh-tile[data-active=false] .tsh-state:before{content:'↗';font-size:12px}
   #tsh-dialog[data-tsui-layout] .tsh-header{isolation:isolate}
   #tsh-dialog[data-tsui-layout] .tsh-header h2{position:relative;font-size:16px;letter-spacing:-.025em;line-height:1.2}
   #tsh-dialog[data-tsui-layout] .tsh-header>:is(.tsh-count,button){position:relative;z-index:1}
@@ -75,11 +82,16 @@ function hubThemeStyles() {
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-settings-view{grid-column:2;grid-row:2/7;min-width:0}
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-status{grid-column:2;grid-row:7}
   #tsh-dialog[data-tsui-layout=frostbite]>.tsh-grid{grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:12px;padding:16px}
-  #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary{flex:1;min-height:124px;padding:16px 8px 12px;gap:10px;background:linear-gradient(150deg,var(--tsui-surface),var(--tsui-raised));box-shadow:inset 0 1px 0 var(--tsui-surface);border-radius:var(--tsui-radius)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile{border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary{flex:1;min-height:112px;padding:14px 8px 10px;gap:8px;border:0;background:linear-gradient(150deg,var(--tsui-surface),var(--tsui-raised));box-shadow:none;border-radius:var(--tsui-radius) var(--tsui-radius) 0 0}
   #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary .tsh-icon{width:43px;height:43px;padding:8px;border:1px solid var(--tsui-border);border-radius:calc(var(--tsui-radius) * .8);background:var(--tsui-surface)}
   #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary .tsh-name{font-weight:600}
-  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile-controls{justify-content:center;gap:5px;margin-top:6px}
-  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile-controls button{background:var(--tsui-surface)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile-controls{justify-content:flex-start;gap:0;margin:0;border-top:1px solid var(--tsui-border);border-radius:0 0 var(--tsui-radius) var(--tsui-radius)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile-controls button{margin:0;background:transparent;border:0;border-radius:0;min-height:32px}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile-controls .tsh-pin{min-width:36px;border-radius:0 0 0 var(--tsui-radius)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-tile-controls .tsh-more{flex:1;border-left:1px solid var(--tsui-border);border-radius:0 0 var(--tsui-radius) 0}
+  #tsh-dialog[data-tsui-layout] .tsh-tile-controls button:hover{background:var(--tsui-selection);color:var(--tsui-accent)}
+  #tsh-dialog[data-tsui-layout=frostbite] .tsh-primary:focus-visible{outline-offset:-3px}
   #tsh-dialog[data-tsui-layout=frostbite] .tsh-settings-script{padding:12px;background:var(--tsui-surface);border-radius:var(--tsui-radius)}
   #tsh-dialog[data-tsui-layout=workbench]{display:grid;grid-template-columns:minmax(0,1fr) 160px;align-content:start}
   #tsh-dialog[data-tsui-layout=workbench]>:is(.tsh-header,.tsh-hub-nav){grid-column:1/-1}
