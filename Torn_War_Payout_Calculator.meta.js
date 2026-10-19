@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.8.1
+// @version      1.8.2
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
 // @description  Standalone Script Hub war payouts, saved reports, cache estimates and secure weighted raffles.

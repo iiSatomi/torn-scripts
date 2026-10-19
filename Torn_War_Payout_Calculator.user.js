@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.8.1
+// @version      1.8.2
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
 // @description  Standalone Script Hub war payouts, saved reports, cache estimates and secure weighted raffles.
@@ -32,7 +32,7 @@
 (function () {
 'use strict';
 if (window.top !== window.self) return;
-const WAR_PAYOUT_RELEASE_VERSION = "1.8.1";
+const WAR_PAYOUT_RELEASE_VERSION = "1.8.2";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -268,7 +268,7 @@ function createTornScriptUI(options = {}) {
   // Independently updated scripts can arrive in either order. Upgrade older
   // shared CSS once, while leaving a future revision owned by a newer bundle.
   const styleRevision=Number(style.getAttribute('data-tsui-style-revision'));
-  if(!Number.isSafeInteger(styleRevision)||styleRevision<2){style.textContent=scriptUiKitCss();style.setAttribute('data-tsui-style-revision','2');}
+  if(!Number.isSafeInteger(styleRevision)||styleRevision<3){style.textContent=scriptUiKitCss();style.setAttribute('data-tsui-style-revision','3');}
   let launcherTray = doc.querySelector('[data-tsui-launchers="1"]');
   if (!launcherTray) {
     launcherTray = doc.createElement('div'); launcherTray.className = 'tsui-launchers';
@@ -721,7 +721,10 @@ function scriptUiKitCss() {
 .tsui-title{font-weight:750;flex:1;min-width:90px;cursor:move;touch-action:none;padding:6px}.tsui-controls{display:flex;flex-wrap:wrap;gap:4px}
 .tsui-drag-strip,.tsui-header-actions,.tsui-root .tsui-window-options-toggle{display:none}.tsui-window-options{display:contents}.tsui-section-footers{flex:none;max-height:44%;overflow:auto}.tsui-section-footers:empty,.tsui-section-footers:not(:has(.tsui-section-footer:not([hidden]))){display:none}.tsui-section-footer{border-top:1px solid var(--tsui-border);background:var(--tsui-raised);padding:10px}
 .tsui-root button,.tsui-launcher{font:inherit;cursor:pointer;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,6px);padding:6px 10px;min-height:var(--tsui-control-height,34px)}
-.tsui-root button:hover{background:var(--tsui-selection,#38455b)}.tsui-root :focus-visible,.tsui-launcher:focus-visible{outline:2px solid var(--tsui-focus,#8fbcff);outline-offset:2px}
+.tsui-root button:not(:disabled):hover{background:var(--tsui-selection,#38455b)}.tsui-root :focus-visible,.tsui-launcher:focus-visible{outline:2px solid var(--tsui-focus,#8fbcff);outline-offset:2px}
+.tsui-root :is(button,input,select,textarea):disabled{opacity:.55;cursor:default}
+.tsui-root .tsui-primary,.tsui-root .tsui-primary:not(:disabled):hover{background:var(--tsui-accent,#96b9ff);color:var(--tsui-on-accent,#101828);border-color:var(--tsui-accent,#96b9ff);font-weight:600}
+.tsui-root :is(.tsui-controls,.tsui-nav) button:focus-visible{outline-offset:-3px}
 .tsui-root input,.tsui-root select,.tsui-root textarea{font:inherit;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:4px;padding:8px;max-width:100%}
 .tsui-body{display:grid;grid-template-columns:140px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto auto;min-height:0;flex:1;overflow:auto}.tsui-root[data-tsui-layout=frostbite] .tsui-nav{background:var(--tsui-surface,#242d3c)}.tsui-nav{display:flex;flex-direction:column;gap:6px;padding:10px;border-right:1px solid var(--tsui-border,#506076);grid-row:1/-1}
 .tsui-nav:empty,.tsui-settings:empty,.tsui-inspector:empty{display:none}.tsui-body:not(:has(.tsui-nav button)){grid-template-columns:minmax(0,1fr)}
