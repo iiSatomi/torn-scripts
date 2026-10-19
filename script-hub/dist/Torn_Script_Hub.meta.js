@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Script Hub
 // @namespace    isatomi.torn.script-hub
-// @version      1.6.2
+// @version      1.6.3
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.

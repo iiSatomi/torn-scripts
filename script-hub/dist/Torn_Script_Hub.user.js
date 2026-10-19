@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Script Hub
 // @namespace    isatomi.torn.script-hub
-// @version      1.6.2
+// @version      1.6.3
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/script-hub/dist/Torn_Script_Hub.user.js
 // @description  Universal script UI, customizable themes, script menus and opt-in shared API keys.
@@ -2275,7 +2275,7 @@ try {
 } catch (_) {}
 
 const ICONS = {
-  hub: '<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="17" y="2" width="5" height="5" rx="1"/><rect x="2" y="17" width="5" height="5" rx="1"/><rect x="17" y="17" width="5" height="5" rx="1"/><path d="m7 7 3 3m4 4 3 3M17 7l-3 3m-4 4-3 3"/><rect x="10" y="10" width="4" height="4" rx="1" fill="currentColor" stroke="none"/>',
+  hub: '<g transform="scale(.75)"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4h17v19"/><path d="M4 28V10h8l3 4h9v14z"/><path d="m11 18-3 3 3 3m6-6 3 3-3 3" stroke-width="2.4"/></g></g>',
   settings: '<path d="M9 3h6l1 4 4 1v7l-4 1-1 5H9l-1-5-4-1V8l4-1z"/><circle cx="12" cy="12" r="3"/>',
   themes: '<path d="M12 3a9 9 0 1 0 0 18h2a2 2 0 0 0 0-4h-1a2 2 0 0 1 0-4h4a4 4 0 0 0 4-4c0-4-5-6-9-6z"/><path d="M7 9h.01M11 6h.01M16 7h.01M6 14h.01"/>',
   keys: '<circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-5-5 3-3m-1 5 3-3"/>',
