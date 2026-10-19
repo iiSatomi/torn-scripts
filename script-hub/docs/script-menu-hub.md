@@ -8,7 +8,7 @@ their source code, installable versions and actual hub screenshots.
 **API Keys** manages one global key or named per-script assignments, with an
 optional global fallback. See the [key manager guide](api-key-manager.md).
 
-The universal hub adds a connected-module Hub icon beside Torn's sidebar mail,
+The universal hub adds a folder-and-code Hub icon beside Torn's sidebar mail,
 events, and awards icons. It opens a dark grid of script menus. Each script has
 its own tile; **More** shows its additional menus. Rows grow automatically as
 compatible scripts register.

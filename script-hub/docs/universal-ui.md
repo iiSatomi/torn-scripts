@@ -23,7 +23,7 @@ changes rates, locks a run, credits a member or requests war data.
 
 ## User controls
 
-The Hub launcher uses a connected-module mark, distinct from the Scripts grid
+The Hub launcher uses a folder-and-code mark, distinct from the Scripts grid
 icon. Its surface, accent, focus and expanded state follow the shared palette;
 theme previews and Cancel update the launcher alongside the Hub. Frostbite
 launch cards include their favorite/actions footer within one border. Availability

@@ -13,6 +13,7 @@ async function main(){
   await page.evaluate(()=>localStorage.setItem('torn-script-hub:ui-theme:v1',JSON.stringify({layout:'stock',palette:'stock',mode:'dark'})));
   await page.evaluate(code=>(0,eval)(code),source);
   assert.equal(await page.locator('#tsh-launcher [data-tsh-icon="hub"]').count(),1,'launcher has a distinct Hub identity');
+  assert.equal(await page.locator('#tsh-launcher svg').evaluate(svg=>{const b=svg.getBBox(),v=svg.viewBox.baseVal;return b.x>=1&&b.y>=1&&b.x+b.width<=v.width-1&&b.y+b.height<=v.height-1;}),true,'logo leaves room for its strokes at launcher size');
   assert.equal(await page.locator('#tsh-launcher').getAttribute('data-tsui-layout'),'stock','saved launcher appearance applies before first opening');
   await page.click('#tsh-launcher');
   await page.evaluate(()=>{
