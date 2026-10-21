@@ -6,6 +6,7 @@ A compact panel in Script Hub lets faction members request an amount or **Full b
 
 ## What is included
 
+- [Install from Greasy Fork](https://greasyfork.org/en/scripts/601376-torn-banker-request-hub), including a public description, how-to and troubleshooting.
 - [Install from GitHub](https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/banker-request/dist/Torn_Banker_Request_Hub.user.js). Optional [Script Hub](https://greasyfork.org/en/scripts/600221-torn-script-hub) integration provides the shared menu and explicitly approved key sharing; the banker panel can also run on its own.
 - [Installable userscript](dist/Torn_Banker_Request_Hub.user.js) — import this file into your userscript manager or Torn PDA.
 - [Cloudflare backend](worker/worker.mjs) and [deployment configuration](worker/wrangler.jsonc).
@@ -140,6 +141,8 @@ node banker-request/tools/check.cjs --browser
 Node 24+ is required for the backend's real SQLite tests. Browser checks use Playwright and a dedicated **headless** Brave process, close exactly that process, and use synthetic Torn/API/Discord fixtures. They do not reuse your normal browser or read live keys. To use another Chromium executable, set `BANKER_BROWSER`. If Playwright is not available in the workspace runtime, run `npm install --no-save --ignore-scripts playwright@1.62.1` inside `banker-request` for development and provide your chosen browser executable; the userscript has no runtime dependencies or remote `@require`.
 
 The builder owns `.user.js` and `.meta.js`; edit `src/` and rebuild. GitHub installs check this script's own `.meta.js` feed and download its matching `.user.js`. Greasy Fork installs use Greasy Fork's update feed. Update timing is controlled by your script manager. This package is published separately from the managed Hub/War Payout workflow; publish only reviewed builds to its own paths. Never upload local deployment profiles, keys, webhook URLs or browser data.
+
+Greasy Fork listing **601376** uses Automatic source syncing from the raw GitHub `main` installer above. Update the existing listing rather than creating duplicates. Its additional description is maintained through Greasy Fork's Update page; [GREASY-FORK.md](GREASY-FORK.md) provides the public guide text.
 
 ## Verification status
 
