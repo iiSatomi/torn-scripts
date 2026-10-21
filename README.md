@@ -31,3 +31,7 @@ Actively maintained userscripts use GPL-3.0, matching the published OC Suite. Se
 ## Managed Script Hub and War Payout Calculator
 
 The Script Hub and standalone War Payout Calculator have independent automatic update feeds. Verified changes on `main` are built and checked by GitHub Actions before the generated scripts are published. See [automatic update setup](docs/managed-userscript-updates.md) for installation links, release rules, and secret checks.
+
+## Banker Request Hub
+
+[Install Banker Request](https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/banker-request/dist/Torn_Banker_Request_Hub.user.js) lets members request faction money without Discord. Each faction deploys its own Cloudflare relay; the public script contains no preconfigured faction or credentials. See the [administrator setup, member instructions and banker workflow](banker-request/README.md).

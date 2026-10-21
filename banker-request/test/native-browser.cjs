@@ -1,0 +1,81 @@
+const fs=require('node:fs');
+const path=require('node:path');
+const assert=require('node:assert/strict');
+let playwright;try{playwright=require('playwright');}catch(_){playwright=require('C:/Users/asato/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');}
+const {chromium}=playwright;
+const root=path.resolve(__dirname,'..');
+const fixture=`<html><body><section><form><input name="searchAccount" data-testid="autocomplete-input" value="Sample [123]"><div class="torn-react-autocomplete"><button type="button" class="item">Sample [123]</button></div><p class="formTitle___fixture">Sample&#96;s current balance is $12,500,000.25</p><div class="input-money-group"><input aria-label="How much money would you like to give to this player?" data-testid="legacy-money-input" data-money="20000000" data-second-money="12500000.25" value="0"><input type="hidden" data-testid="legacy-money-input" data-money="20000000" data-second-money="12500000.25" value="0"></div><input id="give-money" type="radio" checked><input id="add-money-to-balance" type="radio"><button type="submit">give money</button></form><ul><li class="listItem___fixture"><a href="/profiles.php?XID=123">Sample</a><a href="/factions.php?step=profile&ID=10">Faction</a><div class="editBalanceWrap___fixture">$12,500,000.25<span hidden><input data-testid="legacy-money-input" value="12500000.25"><input type="hidden" data-testid="legacy-money-input" value="12500000.25"></span><button aria-label="Edit balance">Edit</button></div></li></ul></section></body></html>`;
+(async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.BANKER_BROWSER||'C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe'});
+  try{
+    const page=await browser.newPage();
+    await page.route('https://www.torn.com/**',route=>route.fulfill({contentType:'text/html',body:fixture}));
+    await page.goto('https://www.torn.com/factions.php?step=your&type=1#/tab=controls');
+    await page.addScriptTag({content:fs.readFileSync(path.join(root,'src/domain.cjs'),'utf8').replace(/^module\.exports.*$/m,'')});
+    await page.addScriptTag({content:fs.readFileSync(path.join(root,'src/native.cjs'),'utf8').replace(/^module\.exports.*$/m,'')});
+    await page.evaluate(()=>{
+      window.awake=true;window.adapter=createBankerNativeAdapter({doc:document,win:window,awake:()=>window.awake});
+      window.request={token:'dc88f110-9e02-4ce0-a038-d004ee887399',requestId:'6bc34db5-3049-4015-af10-ae19c90a8617',userId:123,name:'Sample',factionId:10,kind:'amount',amount:5000000,createdAt:Date.now()-1000,expiresAt:Date.now()+60000,status:'sent'};
+      const form=document.querySelector('form');window.submits=0;form.addEventListener('submit',e=>{e.preventDefault();window.submits++;});
+      const visible=form.querySelector('input[aria-label]');visible.addEventListener('keyup',()=>{form.querySelector('input[type=hidden]').value=visible.value;if(window.drift)visible.dataset.secondMoney='3000000';});
+      document.querySelector('.item').addEventListener('click',()=>{document.querySelector('[name=searchAccount]').value='Sample [123]';});
+    });
+    assert.equal(await page.evaluate(()=>adapter.inspect(request).ready),true);
+    assert.equal((await page.evaluate(()=>adapter.prefill(request))).ready,true);
+    assert.equal(await page.locator('form input[aria-label]').inputValue(),'5000000');
+    assert.equal(await page.evaluate(()=>submits),0,'prefill must not submit');
+    await page.locator('form button[type=submit]').click();
+    assert.equal(await page.evaluate(()=>submits),1,'banker manually submits the verified form');
+    await page.evaluate(()=>{document.querySelector('form input[aria-label]').value='9000000';document.querySelector('form input[type=hidden]').value='9000000';});
+    await page.locator('form button[type=submit]').click();
+    await page.locator('form button[type=submit]').click();
+    assert.equal(await page.evaluate(()=>submits),1,'modified amount remains guarded on repeated clicks');
+    assert.equal(await page.locator('form input[aria-label]').inputValue(),'9000000','user-edited amount preserved');
+    await page.evaluate(()=>{document.querySelector('form input[aria-label]').value='0';document.querySelector('form input[type=hidden]').value='0';});
+    assert.equal((await page.evaluate(()=>adapter.prefill(request))).ready,true);
+    await page.evaluate(()=>{document.querySelector('[name=searchAccount]').value='Other [999]';});
+    await page.locator('form button[type=submit]').click();
+    await page.locator('form button[type=submit]').click();
+    assert.equal(await page.evaluate(()=>submits),1,'modified recipient remains guarded on repeated clicks');
+    assert.equal(await page.locator('form input[aria-label]').inputValue(),'0','helper-owned amount clears even when recipient changed');
+    await page.evaluate(()=>{document.querySelector('[name=searchAccount]').value='Sample [123]';});
+    assert.equal((await page.evaluate(()=>adapter.prefill(request))).ready,true);
+    await page.evaluate(()=>{document.querySelector('form input[aria-label]').dataset.secondMoney='3000000';});
+    await page.locator('form button[type=submit]').click();
+    assert.equal(await page.evaluate(()=>submits),1,'changed balance must block native submit');
+    await page.evaluate(()=>{document.querySelector('form input[aria-label]').dataset.secondMoney='12500000.25';document.querySelector('form input[type=hidden]').dataset.secondMoney='12500000.25';});
+    assert.equal(await page.evaluate(()=>adapter.inspect({...request,amount:20000000}).ready),false);
+    assert.equal(await page.evaluate(()=>adapter.inspect({...request,userId:999}).ready),false);
+    await page.evaluate(()=>{window.awake=false;});
+    assert.equal(await page.evaluate(()=>adapter.inspect(request).ready),false);
+    await page.evaluate(()=>{window.awake=true;document.querySelector('[name=searchAccount]').value='Other [999]';});
+    assert.equal(await page.evaluate(()=>adapter.inspect(request).ready),false);
+    await page.evaluate(()=>{document.querySelector('[name=searchAccount]').value='Sample [123]';window.drift=true;});
+    assert.equal((await page.evaluate(()=>adapter.prefill(request))).ready,false,'balance drift during write fails closed');
+    await page.evaluate(()=>{window.drift=false;adapter.dispose();});
+    assert.equal(await page.evaluate(()=>adapter.inspect(request).ready),false);
+    assert.equal(await page.evaluate(()=>submits),1);
+    // Exercise the Discord-link path with an initially empty native recipient.
+    await page.evaluate(()=>{
+      window.drift=false;window.awake=true;document.querySelector('form input[aria-label]').dataset.secondMoney='12500000.25';
+      document.querySelector('form input[aria-label]').value='0';document.querySelector('form input[type=hidden]').value='0';
+      document.querySelector('[name=searchAccount]').value='';
+      window.adapter=createBankerNativeAdapter({doc:document,win:window,awake:()=>window.awake});
+    });
+    assert.equal((await page.evaluate(()=>adapter.prefill(request))).ready,true,'empty recipient selects exact native option');
+    assert.equal(await page.locator('[name=searchAccount]').inputValue(),'Sample [123]');
+    assert.equal(await page.evaluate(()=>submits),1,'autocomplete never submits');
+    await page.evaluate(()=>{adapter.dispose();document.querySelector('[name=searchAccount]').value='';const duplicate=document.querySelector('.item').cloneNode(true);document.querySelector('.torn-react-autocomplete').append(duplicate);window.adapter=createBankerNativeAdapter({doc:document,win:window});});
+    assert.equal((await page.evaluate(()=>adapter.prefill(request))).ready,false,'ambiguous exact options fail closed');
+    await page.evaluate(()=>{adapter.dispose();document.querySelector('.torn-react-autocomplete').innerHTML='<button type="button" class="item">Sample [999]</button>';document.querySelector('[name=searchAccount]').value='';window.adapter=createBankerNativeAdapter({doc:document,win:window});window.lookup=adapter.prefill(request);});
+    await page.waitForFunction(()=>document.querySelector('[name=searchAccount]').value==='123');
+    assert.equal(await page.locator('form input[aria-label]').inputValue(),'0','wrong ID option cannot write money');
+    await page.evaluate(()=>{adapter.cancel();const option=document.querySelector('.item');option.textContent='Sample [123]';option.addEventListener('click',()=>document.querySelector('[name=searchAccount]').value='Sample [123]');});
+    assert.equal((await page.evaluate(()=>window.lookup)).ready,false,'cancelled lookup cannot finish');
+    await page.waitForTimeout(100);
+    assert.equal(await page.locator('form input[aria-label]').inputValue(),'0','late exact option cannot write money after cancellation');
+    await page.evaluate(()=>adapter.dispose());
+    assert.equal(await page.evaluate(()=>submits),1);
+    console.log('PASS native live-shape fixtures: exact recipient, balance cap, cents, explicit-only submit, changed-balance guard, inactivity, drift, disposal.');
+  }finally{await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});

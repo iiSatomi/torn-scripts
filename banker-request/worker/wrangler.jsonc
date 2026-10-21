@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "torn-banker-request-relay",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-10-15",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "vars": {
+    "FACTION_ID": "0",
+    "BANKER_IDS": "0",
+    "DISCORD_ROLE_IDS": "0",
+    "ENABLED": "false"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "BANKER_RELAY", "class_name": "BankerRelay" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BankerRelay"] }]
+}
