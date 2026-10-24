@@ -1,6 +1,6 @@
 # Torn Banker Request Hub
 
-**Version 1.0.6 · public release, separate from the old Banker Request script.**
+**Version 1.0.7 · public release, separate from the old Banker Request script.**
 
 A compact panel in Script Hub lets faction members request an amount or **Full balance**, without a Discord account. A Cloudflare service verifies their Torn account, limits requests, and posts a banker-role mention with a link back to Torn. Bankers can verify that request and prepare the native money form. The script never presses Give money or the payment confirmation.
 

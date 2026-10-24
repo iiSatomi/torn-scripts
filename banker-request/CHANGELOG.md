@@ -1,5 +1,10 @@
 # Changes
 
+## 1.0.7 — 2026-10-23
+
+- Fix account verification when Torn's mobile/PDA layout omits the desktop Name link. Compare the API-verified key owner with Torn's native banner bootstrap account ID, without another API call or persisted identity.
+- Keep wrong-account, missing-ID and conflicting-ID checks. Add PDA-adapted browser regressions at desktop, phone and landscape widths.
+
 ## 1.0.6 — 2026-10-21
 
 - Make the release faction-neutral: blank Cloudflare address, API key and requested amount on fresh installs. Preserve previously saved settings.

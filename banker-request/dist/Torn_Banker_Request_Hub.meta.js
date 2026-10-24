@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Banker Request Hub
 // @namespace    isatomi.torn.banker-request-hub
-// @version      1.0.6
+// @version      1.0.7
 // @description  Compact faction money requests, secure Cloudflare relay, Discord banker pings and balance-checked native payout preparation.
 // @author       iSatomi
 // @license      GPL-3.0

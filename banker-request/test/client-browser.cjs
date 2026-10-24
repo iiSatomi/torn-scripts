@@ -89,6 +89,7 @@ const uuid='dc88f110-9e02-4ce0-a038-d004ee887399';
   await require('./client-link.cjs')(browser,source);
   await require('./client-balance.cjs')(browser,source);
   await require('./client-roles.cjs')(browser,source);
+  await require('./client-page-identity.cjs')(browser,source);
   await page.reload();
   await page.evaluate(()=>{
    const saved={endpoint:'https://saved-faction.example.workers.dev',useHub:false,remember:false};

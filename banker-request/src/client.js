@@ -29,6 +29,14 @@ function installBankerRequestHub(){
     const anchors=[...document.querySelectorAll('a[aria-label^="Name:"][href*="profiles.php"],#sidebar a[href*="profiles.php?XID="]')].filter(a=>a.getAttribute('aria-label')?.startsWith('Name:')||(a.parentElement?.tagName==='P'&&/^Name\s*:/.test(a.parentElement.textContent.trim())));
     const ids=new Set();
     for(const a of anchors){try{const url=new URL(a.href);const values=url.searchParams.getAll('XID');if(url.origin!=='https://www.torn.com'||url.pathname!=='/profiles.php'||values.length!==1||!(/^[1-9][0-9]*$/).test(values[0]))return null;const value=Number(values[0]);if(!Number.isSafeInteger(value))return null;ids.add(value);}catch(_){return null;}}
+    // Torn's mobile layout omits the sidebar Name link. Read the native banner's
+    // exact logged-in user field, never a viewed profile, page global or tab UID.
+    for(const script of document.querySelectorAll('script:not([src])')){
+      const text=script.textContent||'';if(text.length>65536)continue;
+      const assignment=text.match(/^[\t ]*window\.topBannerInitData[\t ]*=[\t ]*(\{[^\r\n]*\})[\t ]*;?[\t ]*$/m);
+      if(!assignment)continue;
+      try{const value=JSON.parse(assignment[1])?.user?.data?.userID;if(!Number.isSafeInteger(value)||value<=0)return null;ids.add(value);}catch(_){return null;}
+    }
     return ids.size===1?[...ids][0]:null;
   }
   function say(text,error=false){if(!refs.status)return;refs.status.textContent=text;refs.status.dataset.error=String(error);ui?.status(error?'Action needs attention.':'Faction money requests');}

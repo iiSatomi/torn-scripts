@@ -1,6 +1,6 @@
 {
   "name": "torn-banker-request-hub",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "description": "Bundled banker request userscript and secure faction-scoped Cloudflare relay",
   "engines": {"node": ">=24"},
