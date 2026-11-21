@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Suite Codex
 // @namespace    torn_oc_suite_rebuild
-// @version      3.37.0-codex11
+// @version      3.37.0-codex24
 // @description  Full Organised Crime management for Torn faction leaders — fill slots by CPR, track loaned items and armory gaps, and see exactly who got paid what.
 // @author       iSatomi (3580191)
 // @license      GPL-3.0
@@ -15,16 +15,31 @@
 // @grant        GM.setValue
 // @connect      tornprobability.com
 // @connect      www.tornstats.com
-// @connect      ffscouter.com
 // @connect      api.torn.com
-// @connect      script.google.com
-// @connect      script.googleusercontent.com
-// @downloadURL https://update.greasyfork.org/scripts/573001/Torn%20OC%20Manager%20Dashboard.user.js
-// @updateURL https://update.greasyfork.org/scripts/573001/Torn%20OC%20Manager%20Dashboard.meta.js
+// @downloadURL https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_OC_Suite_Codex.user.js
+// @updateURL https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_OC_Suite_Codex.user.js
+// @grant        GM_deleteValue
+// @grant        GM_info
 // ==/UserScript==
 //
 //
 // Changelog (recent):
+// codex17: Remove duplicate embedded War and Usage Command modules and their settings.
+//          Keep Armory and loan copying within OC and restore standalone tool visibility.
+// codex16-mobile: OC-only navigation, touch-readable record cards, one page scroll,
+//                 preserved drafts/details/filters, bounded phone ledgers and
+//                 explicit historical-cost provenance. No live actions added.
+// codex15: Add modular Hub display/refresh preferences and private opt-in shared
+//          Torn key access; retain personal fallback keys and native controls.
+// codex14: Register OC Suite and its War, Consumables, Armoury and Settings menus
+//          with the standalone Torn Script Hub; preserve native launch controls.
+// v3.37.0-codex13 — Resolve Torn's selected armory tab container to its category
+//                    link; refresh stale armory activity and disable stale loan
+//                    shortcuts; paginate finance history and native payouts;
+//                    cancel superseded native Crimes waiters on SPA navigation.
+// v3.37.0-codex12 — Correct Codex update URLs; remount feature panes after SPA
+//                    replacement; scope native armory annotations and loan cards
+//                    to the active category and cancel stale navigation work.
 // v3.37.0-codex5 — Refined the restored 3.36 shell: removed remaining premium
 //                   input/button/glow leakage, restored classic stat ordering,
 //                   fixed an undefined hover token and stale loading copy, added
@@ -1248,100 +1263,13 @@
 // v3.3.2 — Member OC History in Analytics.
 // v3.3.1 — Stuck OCs section.
 // v3.3.0 — Recruits split, abroad flags, spawn reminder, last 5 OCs, heatmap fix.
-  // Exact crime/role coverage only: never substitute another role for a missing record.
-  function buildCprCoverage(memberMap, live = {}, ts = {}, archive = {}, history = {}) {
-    const members = Object.entries(memberMap || {}).map(([id, m]) => ({ uid: String(m.id || id), name: m.name || '#' + id }))
-      .filter(m => /^\d+$/.test(m.uid));
-    const roster = new Map(members.map(m => [m.uid, m.name]));
-    const crimes = new Map();
-    const norm = s => String(s || '').trim().toLowerCase().replace(/\s*#\d+$/, '');
-    const add = (uid, crime, role, value, source, at = 0) => {
-      if (!roster.has(String(uid)) || value == null || typeof value === 'boolean' || String(value).trim() === '') return;
-      const cpr = Number(value), ck = norm(crime), rk = norm(role);
-      if (!ck || !rk || !Number.isFinite(cpr) || cpr < 0 || cpr > 100) return;
-      if (!crimes.has(ck)) crimes.set(ck, { name: crime, roles: new Map() });
-      const bucket = crimes.get(ck).roles;
-      if (!bucket.has(rk)) bucket.set(rk, new Map());
-      const records = bucket.get(rk), old = records.get(String(uid));
-      const priority = { History: 1, TornStats: 2, Live: 3 };
-      if (old && (priority[old.source] > priority[source] || (old.source === source && old.at > at))) return;
-      records.set(String(uid), { uid: String(uid), name: roster.get(String(uid)), cpr, source, at });
-    };
-    for (const [uid, cs] of Object.entries(ts || {}))
-      for (const [crime, roles] of Object.entries(cs || {}))
-        for (const [role, value] of Object.entries(roles || {})) add(uid, crime, role, value, 'TornStats');
-    for (const [uid, cs] of Object.entries(history || {}))
-      for (const [crime, roles] of Object.entries(cs || {}))
-        for (const [role, entry] of Object.entries(roles || {}))
-          if (entry?.count > 0) add(uid, crime, role, entry.sum / entry.count, 'History');
-    for (const [uid, entry] of Object.entries(archive || {}))
-      for (const slot of Object.values(entry?.slots || {}))
-        if (Number(slot.executedAt) > 0) add(uid, slot.ocName, slot.role, slot.cpr, 'History', Number(slot.executedAt));
-    for (const [uid, cs] of Object.entries(live || {}))
-      for (const [crime, roles] of Object.entries(cs || {}))
-        for (const [role, value] of Object.entries(roles || {})) add(uid, crime, role, value, 'Live');
-    const byCrime = Object.create(null);
-    for (const { name, roles } of crimes.values())
-      byCrime[name] = Object.fromEntries([...roles].map(([role, records]) => [role, [...records.values()]]));
-    return { members, byCrime };
-  }
-
-  function renderTsCoverage(memberMap) {
-    const el = document.getElementById('ocm-tscoverage');
-    if (!el) return;
-    const model = buildCprCoverage(memberMap, {}, tsCprData, cprArchive(), window._ocmHistoryCpr || {});
-    const imported = new Set(), historical = new Set();
-    for (const roles of Object.values(model.byCrime))
-      for (const records of Object.values(roles))
-        for (const record of records) (record.source === 'TornStats' ? imported : historical).add(record.uid);
-    el.innerHTML = '<div style="padding:12px;line-height:1.6">'
-      + '<strong>' + model.members.length + ' faction members · ' + imported.size + ' with TornStats records</strong>'
-      + '<br>' + historical.size + ' members have historical fallback records for roles missing from TornStats.'
-      + '<br>Coverage varies by crime and role. One matching record is useful; a missing value is unknown, not 0%.'
-      + '<br>TornStats returns the records available to your key, not necessarily every faction member. Check faction CPR sharing on TornStats; refresh the import in Config → Fetch CPR.'
-      + '<br>History uses locally available completed OCs. It cannot recover records that have never been loaded.</div>';
-  }
-
-  function renderTsCprSection(memberMap, liveCprMap = {}) {
-    const el = document.getElementById('ocm-tscpr'), title = document.getElementById('ocm-title-tscpr');
-    if (!el) return;
-    const previous = el.querySelector('[data-cpr-crime]')?.value;
-    const model = buildCprCoverage(memberMap, liveCprMap, tsCprData, cprArchive(), window._ocmHistoryCpr || {});
-    const crimes = Object.keys(model.byCrime).sort((a, b) => a.localeCompare(b));
-    if (title) title.textContent = '📈 CPR Data — ' + model.members.length + ' faction members';
-    if (!crimes.length) {
-      el.innerHTML = '<p>No exact CPR records available from current slots, TornStats, or loaded completed OCs. Import CPR in Config or load OC history. Missing data is not a 0% pass rate.</p>';
-      return;
-    }
-    el.innerHTML = '<label>Crime <select data-cpr-crime style="max-width:100%;min-height:44px">'
-      + crimes.map(c => '<option value="' + esc(c) + '">' + esc(c) + '</option>').join('')
-      + '</select></label><p>Current slot → TornStats → historical fallback. History is a past observation, not a current guarantee. Repeated numbered positions share their role.</p>'
-      + '<div data-cpr-summary role="status"></div><div style="max-width:100%;overflow-x:auto" tabindex="0" aria-label="Member CPR table"><table class="ocm-tscpr-table"><thead></thead><tbody></tbody></table></div>';
-    const select = el.querySelector('[data-cpr-crime]');
-    if (crimes.includes(previous)) select.value = previous;
-    const draw = () => {
-      const roles = model.byCrime[select.value], names = Object.keys(roles).sort();
-      const records = new Map();
-      for (const role of names) for (const entry of roles[role]) {
-        if (!records.has(entry.uid)) records.set(entry.uid, {});
-        records.get(entry.uid)[role] = entry;
-      }
-      el.querySelector('[data-cpr-summary]').textContent = records.size + ' / ' + model.members.length
-        + ' members have at least one exact-role record · ' + (model.members.length - records.size) + ' have no records for this crime';
-      el.querySelector('thead').innerHTML = '<tr><th scope="col">Member</th>'
-        + names.map(r => '<th scope="col">' + esc(r) + '</th>').join('') + '</tr>';
-      el.querySelector('tbody').innerHTML = [...model.members].sort((a, b) => a.name.localeCompare(b.name)).map(m =>
-        '<tr><th scope="row">' + esc(m.name) + '</th>' + names.map(role => {
-          const entry = records.get(m.uid)?.[role];
-          return entry ? '<td>' + Math.round(entry.cpr * 10) / 10 + '%<small style="display:block">' + entry.source + '</small></td>'
-            : '<td title="No exact crime and role record">—<small style="display:block">Missing</small></td>';
-        }).join('') + '</tr>').join('');
-    };
-    select.addEventListener('change', draw);
-    draw();
-  }
 (function () {
   'use strict';
+  // Shared Torn keys stay in this script's private scope; legacy keys remain fallback.
+  let hubSharedTornKey = null;
+  function hubEffectiveTornKey() { return hubSharedTornKey || GM_getValue(GMK.API_KEY, ''); }
+  function hubStoreSharedTornKey(value) { hubSharedTornKey = typeof value === 'string' && /^[a-zA-Z0-9]{16}$/.test(value) ? value : null; }
+
 
   // ─── DUPLICATE GUARD ─────────────────────────────────────────────────────────
   if (window._ocmLoaded) return;
@@ -1453,8 +1381,6 @@
     THEME: 'ocs_theme',
     TS_CPR_CACHE: 'ocs_ts_cpr_cache',
     TS_KEY: 'ocs_ts_key',
-    FF_KEY: 'ocs_ff_key',
-    FF_CACHE: 'ocs_war_ff_cache',
     LOAN_SNAPSHOT: 'ocs_loan_snapshot', // {loans, returnable, itemTypes, ts} — lets the
                                           // native armory page show the worklist even
                                           // when landed on directly, without the Crimes
@@ -1628,33 +1554,6 @@
     return { init, getRaw, setRaw, delete: remove, flush, usage, snapshot };
   }
 
-  /**
-   * Older embedded modules wrote directly to the Torn page's localStorage.
-   * Copy those values into GM storage once so upgrades do not look unconfigured.
-   * The old value is deliberately retained for rollback; no contents are logged.
-   */
-  function migrateLegacyPageStorage(keys) {
-    if (typeof GM_getValue !== 'function' || typeof GM_setValue !== 'function') return 0;
-    let moved = 0;
-    for (const key of keys) {
-      try {
-        if (GM_getValue(key, null) !== null) continue;
-        const legacy = localStorage.getItem(key);
-        if (legacy === null) continue;
-        GM_setValue(key, legacy);
-        moved++;
-      } catch (_) {}
-    }
-    return moved;
-  }
-
-  migrateLegacyPageStorage([
-    'frostbiteUsage.ui.v1',
-    'frostbiteUsage.settings.v1',
-    'frostbiteUsage.callLog.v1',
-    'frostbiteUsage.psCache.v1',
-  ]);
-
   const OCBulkStore = createOcBulkStore(globalThis);
   const OC_BULK_KEYS = [
     GMK.OC_ARCHIVE,
@@ -1664,8 +1563,6 @@
     GMK.PAYOUT_EVENTS,
     GMK.CPR_ARCHIVE,
     GMK.TS_CPR_CACHE,
-    GMK.FF_CACHE,
-    'frostbiteUsage.psCache.v1',
   ];
   const _ocBulkReady = OCBulkStore.init(OC_BULK_KEYS).catch(error => {
     console.warn('[OC Suite] PDA bulk storage initialization failed; using GM fallback.', error);
@@ -2109,6 +2006,7 @@
   const TS_FAIL_COOLDOWN = 10 * 60 * 1000; // 10 minutes
   // In-flight guard so concurrent loadData() calls don't double-fire fetches
   let _tsFetchInFlight = false;
+  let _tsCacheRevision = 0;
   let _tsLastFailAt    = 0;
 
   // Load cached TS CPR data immediately so it's available on first render
@@ -2120,6 +2018,7 @@
   } catch(_) {}
 
   function saveTsCprCache(data) {
+    _tsCacheRevision += 1;
     tsCprData = data;
     OCBulkStore.setRaw(GMK.TS_CPR_CACHE, JSON.stringify({ ts: Date.now(), data }));
   }
@@ -2178,7 +2077,7 @@
       countdown: !!window._ocmTimer,
       refresh: !!window._ocmRefresh,
       sidebar: !!window._ocmSidebarTimer,
-      inject: !!_ocmInjectTimer,
+      inject: !!_ocmInjectObserver,
     };
     return {
       generatedAt: new Date().toISOString(),
@@ -3775,6 +3674,7 @@
       border-bottom: 1px solid var(--ocm-border);
     }
     .ocm-lowcpr-head .r { text-align: right; }
+    #ocm-lowcpr .ocm-lowcpr-mobile-label { display: none; }
 
     /* ── TORNSTATS CPR SECTION ───────────────────────────────────────── */
     .ocm-tscpr-oc-block {
@@ -4161,97 +4061,6 @@
     #ocm-root.ocm-ui2 .ocm-kchip-warn { color: var(--ocm-cpr-warn); border-color: rgba(191,159,90,.4); }
     #ocm-root.ocm-ui2 .ocm-kchip-crit { color: var(--ocm-cpr-crit); border-color: rgba(191,122,122,.4); }
 
-    /* ─── Codex Consumables — pulse first, ledger second ─── */
-    #ocm-root.ocm-ui2 #ocm-pane-consumables,
-    #ocm-root.ocm-ui2 .ocm-cons-shell,
-    #ocm-root.ocm-ui2 .ocm-cons-section,
-    #ocm-root.ocm-ui2 .ocm-cons-pulse { box-sizing: border-box; min-width: 0; max-width: 100%; width: 100%; }
-    #ocm-root.ocm-ui2 .ocm-cons-shell * { box-sizing: border-box; }
-    #ocm-root.ocm-ui2 .ocm-cons-shell { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; overflow-x: hidden; }
-    #ocm-root.ocm-ui2 .ocm-cons-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    #ocm-root.ocm-ui2 .ocm-cons-head h3 { margin: 0; color: var(--ocm-fb-br); font-size: 14px; letter-spacing: .2px; }
-    #ocm-root.ocm-ui2 .ocm-cons-head small { color: var(--ocm-text-faint); }
-    #ocm-root.ocm-ui2 .ocm-cons-actions { display: flex; gap: 6px; margin-left: auto; }
-    #ocm-root.ocm-ui2 .ocm-cons-action,
-    #ocm-root.ocm-ui2 .ocm-cons-period,
-    #ocm-root.ocm-ui2 .ocm-cons-sort { background: var(--ocm-bg-card); border: 1px solid var(--ocm-border); color: var(--ocm-text-dim); border-radius: 7px; padding: 6px 9px; font-size: 11px; cursor: pointer; }
-    #ocm-root.ocm-ui2 .ocm-cons-action:hover,
-    #ocm-root.ocm-ui2 .ocm-cons-period:hover,
-    #ocm-root.ocm-ui2 .ocm-cons-sort:hover { color: var(--ocm-fb-br); border-color: var(--ocm-fb); }
-    #ocm-root.ocm-ui2 .ocm-cons-action:focus-visible,
-    #ocm-root.ocm-ui2 .ocm-cons-period:focus-visible,
-    #ocm-root.ocm-ui2 .ocm-cons-sort:focus-visible,
-    #ocm-root.ocm-ui2 .ocm-cons-search:focus-visible { outline: 2px solid var(--ocm-fb); outline-offset: 2px; }
-    #ocm-root.ocm-ui2 .ocm-cons-periods { display: flex; gap: 5px; flex-wrap: wrap; padding-bottom: 8px; border-bottom: 1px solid var(--ocm-border); }
-    #ocm-root.ocm-ui2 .ocm-cons-period.active { color: var(--ocm-fb-br); border-color: var(--ocm-fb); background: rgba(61,184,245,.10); }
-    #ocm-root.ocm-ui2 .ocm-cons-pulse { background: linear-gradient(180deg, #10203a, #0c1322); border: 1px solid rgba(61,184,245,.28); border-radius: 10px; padding: 12px; }
-    #ocm-root.ocm-ui2 .ocm-cons-pulse-top { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-    #ocm-root.ocm-ui2 .ocm-cons-pulse-value { color: var(--ocm-text); font-size: 22px; font-weight: 800; line-height: 1.05; }
-    #ocm-root.ocm-ui2 .ocm-cons-pulse-value.accent { color: var(--ocm-fb-br); }
-    #ocm-root.ocm-ui2 .ocm-cons-pulse-label { color: var(--ocm-text-dim); font-size: 10px; margin-top: 3px; text-transform: uppercase; letter-spacing: .45px; }
-    #ocm-root.ocm-ui2 .ocm-cons-mix { display: grid; gap: 6px; margin-top: 12px; }
-    #ocm-root.ocm-ui2 .ocm-cons-mix-row { display: grid; grid-template-columns: 90px 1fr 38px; align-items: center; gap: 7px; color: var(--ocm-text-dim); font-size: 10px; }
-    #ocm-root.ocm-ui2 .ocm-cons-mix-track { height: 6px; border-radius: 4px; background: rgba(255,255,255,.08); overflow: hidden; }
-    #ocm-root.ocm-ui2 .ocm-cons-mix-track i { display: block; height: 100%; min-width: 2px; border-radius: inherit; background: var(--ocm-fb); }
-    #ocm-root.ocm-ui2 .ocm-cons-mix-row:nth-child(2n) .ocm-cons-mix-track i { background: #7cd4ff; }
-    #ocm-root.ocm-ui2 .ocm-cons-mix-row:nth-child(3n) .ocm-cons-mix-track i { background: #9ba7ff; }
-    #ocm-root.ocm-ui2 .ocm-cons-section { background: var(--ocm-bg-card); border: 1px solid var(--ocm-border); border-radius: 10px; padding: 11px; }
-    #ocm-root.ocm-ui2 .ocm-cons-section-head { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; }
-    #ocm-root.ocm-ui2 .ocm-cons-section-head h4 { margin: 0; color: var(--ocm-text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .55px; }
-    #ocm-root.ocm-ui2 .ocm-cons-section-head small { margin-left: auto; color: var(--ocm-text-faint); }
-    #ocm-root.ocm-ui2 .ocm-cons-attention-list { display: grid; gap: 5px; }
-    #ocm-root.ocm-ui2 .ocm-cons-attention-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 7px 8px; border-left: 2px solid var(--ocm-fb); background: rgba(61,184,245,.06); border-radius: 5px; }
-    #ocm-root.ocm-ui2 .ocm-cons-attention-name { color: var(--ocm-text); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #ocm-root.ocm-ui2 .ocm-cons-attention-note { color: var(--ocm-text-dim); font-size: 10px; }
-    #ocm-root.ocm-ui2 .ocm-cons-attention-total { color: var(--ocm-fb-br); font-weight: 800; white-space: nowrap; }
-    #ocm-root.ocm-ui2 .ocm-cons-toolbar { display: flex; flex-wrap:wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
-    #ocm-root.ocm-ui2 .ocm-cons-pager {display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}
-    #ocm-root.ocm-ui2 .ocm-cons-coverage {font-size:12px;line-height:1.6;color:var(--ocm-text-dim)}
-    #ocm-root.ocm-ui2 .ocm-cons-action:disabled {opacity:.5;cursor:default}
-    #ocm-root.ocm-ui2 .ocm-cons-shell summary {cursor:pointer;min-height:44px;padding:8px 0;color:var(--ocm-text)}
-    #ocm-root.ocm-ui2 .ocm-cons-shell summary:focus-visible {outline:2px solid var(--ocm-fb)}
-    #ocm-root.ocm-ui2 .ocm-cons-mobile-top>span:first-child {min-width:0;overflow-wrap:anywhere}
-    @media(max-width:900px){
-      #ocm-root.ocm-ui2 .ocm-cons-action,#ocm-root.ocm-ui2 .ocm-cons-period,#ocm-root.ocm-ui2 .ocm-cons-sort,#ocm-root.ocm-ui2 .ocm-cons-search{min-height:44px}
-      #ocm-root.ocm-ui2 .ocm-cons-sort,#ocm-root.ocm-ui2 .ocm-cons-search{font-size:16px!important;max-width:100%}
-      #ocm-root.ocm-ui2 .ocm-cons-search{flex-basis:100%}
-      #ocm-root.ocm-ui2 .ocm-cons-pager{font-size:12px}
-    }
-    #ocm-root.ocm-ui2 .ocm-cons-search { min-width: 0; flex: 1; background: #0b1322; border: 1px solid var(--ocm-border); color: var(--ocm-text); border-radius: 7px; padding: 7px 9px; font-size: 11px; }
-    #ocm-root.ocm-ui2 .ocm-cons-search::placeholder { color: var(--ocm-text-faint); }
-    #ocm-root.ocm-ui2 .ocm-cons-table-wrap { overflow-x: auto; }
-    #ocm-root.ocm-ui2 .ocm-cons-mobile-list { display: none; }
-    #ocm-root.ocm-ui2 .ocm-cons-mobile-row { padding: 9px 0; border-top: 1px solid var(--ocm-border-soft); }
-    #ocm-root.ocm-ui2 .ocm-cons-mobile-row:first-child { border-top: 0; }
-    #ocm-root.ocm-ui2 .ocm-cons-mobile-top { display: flex; justify-content: space-between; gap: 8px; color: var(--ocm-text); font-weight: 700; }
-    #ocm-root.ocm-ui2 .ocm-cons-mobile-total { color: var(--ocm-fb-br); }
-    #ocm-root.ocm-ui2 .ocm-cons-mobile-breakdown { color: var(--ocm-text-dim); font-size: 10px; line-height: 1.5; margin-top: 3px; }
-    #ocm-root.ocm-ui2 .ocm-cons-trend-list { display: grid; gap: 7px; }
-    #ocm-root.ocm-ui2 .ocm-cons-trend-row { display: grid; grid-template-columns: 90px 1fr 44px; align-items: center; gap: 8px; color: var(--ocm-text-dim); font-size: 10px; }
-    #ocm-root.ocm-ui2 .ocm-cons-trend-bar { height: 7px; background: rgba(255,255,255,.07); border-radius: 5px; overflow: hidden; }
-    #ocm-root.ocm-ui2 .ocm-cons-trend-bar i { display: block; height: 100%; min-width: 2px; background: var(--ocm-fb); border-radius: inherit; }
-    #ocm-root.ocm-ui2 .ocm-cons-empty { color: var(--ocm-text-dim); font-size: 12px; line-height: 1.5; }
-    #ocm-root.ocm-ui2 .ocm-cons-empty strong { color: var(--ocm-text); display: block; margin-bottom: 4px; }
-    #ocm-root.ocm-ui2 .ocm-cons-status { color: var(--ocm-text-faint); font-size: 10px; min-height: 14px; }
-    #ocm-root.ocm-ui2 .ocm-cons-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-    @media (max-width: 620px) {
-      #ocm-root.ocm-ui2 .ocm-cons-pulse-top { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 12px; }
-      #ocm-root.ocm-ui2 .ocm-cons-head h3 { font-size: 13px; }
-      #ocm-root.ocm-ui2 .ocm-cons-actions { margin-left: auto; }
-      #ocm-root.ocm-ui2 .ocm-cons-table-wrap { display: none; }
-      #ocm-root.ocm-ui2 .ocm-cons-mobile-list { display: block; }
-      #ocm-root.ocm-ui2 .ocm-cons-attention-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; }
-      #ocm-root.ocm-ui2 .ocm-cons-attention-note { grid-column: 1; }
-      #ocm-root.ocm-ui2 .ocm-cons-attention-total { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
-      #ocm-root.ocm-ui2 .ocm-cons-mix-row,
-      #ocm-root.ocm-ui2 .ocm-cons-trend-row { grid-template-columns: 76px 1fr 34px; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      #ocm-root.ocm-ui2 .ocm-cons-action,
-      #ocm-root.ocm-ui2 .ocm-cons-period,
-      #ocm-root.ocm-ui2 .ocm-cons-sort { transition: none !important; }
-    }
-
     /* ─── Crimes tab content, mapped onto the kit look (scoped overrides only) ─── */
     #ocm-root.ocm-classic .ocm-workspace-intro { margin:0 0 12px; padding:0 0 12px; border-bottom:1px solid var(--ocm-border-soft); }
     #ocm-root.ocm-classic .ocm-workspace-intro h3 { margin:0 0 4px; color:var(--ocm-text); font-size:17px; font-weight:700; }
@@ -4336,13 +4145,6 @@
     #ocm-root.ocm-ui2 .ocm-analytics-table th { background: rgba(0,0,0,.22); }
     #ocm-root.ocm-ui2 #ocm-refresh-btn:hover,
     #ocm-root.ocm-ui2 #ocm-rail-foot button:hover { color: var(--ocm-fb-br); border-color: var(--ocm-fb); }
-    /* embedded modules are launched from their tabs — hide their standalone floating buttons */
-    #frostbite-usage-command .fu-launcher { display: none !important; }
-    #twpr-fab { display: none !important; }
-    /* Consumables renders natively → keep Frostbite's floating shell hidden except when opening its settings modal */
-    #frostbite-usage-command .fu-shell { display: none !important; }
-    #frostbite-usage-command.ocm-fb-settings .fu-shell { display: flex !important; }
-    #twpr-overlay { display: none !important; }
     /* ── Config panel — premium (Frostbite) theming so every section matches the navy cards ── */
     #ocm-root.ocm-ui2 #ocm-config-panel {
       background: linear-gradient(180deg, #0f1728, #0c1322);
@@ -4663,26 +4465,6 @@
       font-size: 28px;
       filter: none;
     }
-    #ocm-root.ocm-ui2.ocm-classic .ocm-feature-launch {
-      padding: 7px 12px !important;
-      color: var(--ocm-link) !important;
-      font-size: 12px !important;
-      font-weight: 700 !important;
-      letter-spacing: 0 !important;
-      cursor: pointer;
-      background: none !important;
-      border: 1px solid var(--ocm-border) !important;
-      border-radius: 6px !important;
-      box-shadow: none !important;
-    }
-    #ocm-root.ocm-ui2.ocm-classic .ocm-feature-launch:hover,
-    #ocm-root.ocm-ui2.ocm-classic .ocm-feature-launch:focus-visible {
-      color: var(--ocm-text) !important;
-      background: var(--ocm-bg-hover) !important;
-      border-color: var(--ocm-link) !important;
-      outline: none;
-    }
-
     @media (max-width: 720px) {
       #ocm-root.ocm-ui2.ocm-classic { padding: 12px; }
       #ocm-root.ocm-ui2.ocm-classic #ocm-header {
@@ -4734,10 +4516,6 @@
       #ocm-root.ocm-ui2.ocm-classic #ocm-header button,
       #ocm-root.ocm-ui2.ocm-classic .ocm-subtab,
       #ocm-root.ocm-ui2.ocm-classic .ocm-cfg-btn,
-      #ocm-root.ocm-ui2.ocm-classic .ocm-feature-launch,
-      #ocm-root.ocm-ui2.ocm-classic .ocm-cons-action,
-      #ocm-root.ocm-ui2.ocm-classic .ocm-cons-period,
-      #ocm-root.ocm-ui2.ocm-classic .ocm-cons-sort,
       #ocm-root.ocm-ui2.ocm-classic #ocm-config-panel input:not([type=checkbox]):not([type=radio]):not([type=color]),
       #ocm-root.ocm-ui2.ocm-classic #ocm-config-panel select,
       #ocm-root.ocm-ui2.ocm-classic #ocm-config-close {
@@ -4760,6 +4538,217 @@
     }
     /* ═══════════ END CLASSIC 3.36 SHELL ADAPTER ═══════════ */
   `);
+
+  // OC MOBILE UI START
+// OC mobile reading and refresh state. No network, secrets or game actions.
+const OC_MOBILE_CSS = `
+#ocm-root .ocm-mobile-nav,#ocm-root .ocm-mobile-subnav{display:none}
+#ocm-root .ocm-home-go{font:inherit;background:transparent;border:1px solid var(--ocm-border);border-radius:6px;padding:8px;min-height:44px}
+#ocm-root .ocm-home-metrics>summary{cursor:pointer;padding:12px;font-weight:600}
+#ocm-root .ocm-record-pager{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 0}
+#ocm-root .ocm-record-pager button{min-width:64px;min-height:44px;font:inherit}
+#ocm-root .ocm-record-pager span{overflow-wrap:anywhere}
+#ocm-root [role=button]:focus-visible,#ocm-root summary:focus-visible{outline:2px solid var(--ocm-link);outline-offset:2px}
+@media(max-width:700px),(max-height:450px) and (max-width:900px){
+ #ocm-root.ocm-ui2.ocm-classic{box-sizing:border-box!important;width:100%!important;max-width:100%!important;min-width:0!important;height:auto!important;max-height:none!important;overflow:visible!important;font-size:calc(16px * var(--tsui-font-scale,1))!important;line-height:1.5}
+ #ocm-root.ocm-ui2.ocm-classic *{box-sizing:border-box}
+ #ocm-root.ocm-ui2.ocm-classic #ocm-body,#ocm-root .ocm-tab-pane,#ocm-root .ocm-subpane{max-height:none!important;overflow:visible!important;min-width:0}
+ #ocm-root.ocm-ui2.ocm-classic :is(div,span,small,p,table,thead,tbody,tr,td,th,label,a,button,input,select,textarea,summary){font-size:inherit!important}
+ #ocm-root.ocm-ui2.ocm-classic :is(button,input,select,textarea,summary){min-height:44px!important;max-width:100%;box-sizing:border-box}
+ #ocm-root.ocm-ui2.ocm-classic :is(input,select,textarea){font-size:max(16px,1em)!important}
+ #ocm-root.ocm-ui2.ocm-classic :is(button,.ocm-loan-go,.ocm-buy-btn){background:var(--ocm-bg-card)!important;color:var(--ocm-link)!important;border:1px solid var(--ocm-border)!important;border-radius:6px}
+ #ocm-root.ocm-ui2.ocm-classic #ocm-theme-customize-btn{background:var(--ocm-bg-card)!important;color:var(--ocm-link)!important;border-color:var(--ocm-border)!important}
+ #ocm-root.ocm-ui2.ocm-classic :is(input:not([type=checkbox]):not([type=radio]),select,textarea){background:var(--ocm-bg-card)!important;color:var(--ocm-text)!important;border:1px solid var(--ocm-border)!important}
+ #ocm-root.ocm-ui2.ocm-classic :is(button,a.ocm-loan-go,a.ocm-buy-btn){touch-action:manipulation}
+ #ocm-root #ocm-header{display:grid!important;grid-template-columns:minmax(0,1fr) repeat(3,44px);gap:8px!important;padding:12px!important}
+ #ocm-root #ocm-header h2{grid-column:auto;font-size:1.2em!important;margin:0}
+ #ocm-root #ocm-header :is(.ocm-ver,.ocm-hdr-gap){display:none}
+ #ocm-root #ocm-last-update{grid-column:1/-1;white-space:normal!important}
+ #ocm-root.ocm-ui2.ocm-classic #ocm-header button{margin:0!important;padding:8px 4px!important;white-space:normal!important;font-size:0!important}
+ #ocm-root #ocm-header button::before{content:attr(data-oc-short);font-size:20px}
+ #ocm-root #ocm-tabs,#ocm-root .ocm-subtabs{display:none!important}
+ #ocm-root .ocm-mobile-nav,#ocm-root .ocm-mobile-subnav{display:flex;align-items:center;gap:10px;padding:10px 0;min-width:0}
+ #ocm-root :is(.ocm-mobile-nav,.ocm-mobile-subnav) select{flex:1;min-width:0;width:100%;background:var(--ocm-bg-card);color:var(--ocm-text);border:1px solid var(--ocm-border);border-radius:8px;padding:8px}
+ #ocm-root .ocm-mobile-nav{border-bottom:1px solid var(--ocm-border)}
+ #ocm-root .ocm-mobile-subnav>span{max-width:5em}
+ #ocm-root .ocm-workspace-intro{display:none!important}
+ #ocm-root .ocm-workspace-intro h3{font-size:1.2em!important}
+ #ocm-root .ocm-workspace-context{display:flex!important;flex-wrap:wrap;align-items:center;gap:8px;padding:10px!important}
+ #ocm-root .ocm-context-help{min-width:0}
+ #ocm-root .ocm-context-help[open]{flex:1 0 100%}
+ #ocm-root .ocm-context-help>summary{cursor:pointer;padding:8px 0}
+ #ocm-root .ocm-workspace-links{display:flex;flex-wrap:wrap;gap:8px}
+ #ocm-root #ocm-stats-bar{display:block!important;padding:0!important}
+ #ocm-root .ocm-workload-details>summary{padding:12px 0;cursor:pointer;overflow-wrap:anywhere}
+ #ocm-root .ocm-workload-details .ocm-stats-row{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;width:100%;min-width:0}
+ #ocm-root .ocm-workload-details .ocm-stat{min-width:0!important;width:auto!important;padding:8px!important;white-space:normal}
+ #ocm-root .ocm-workload-details .ocm-stats-row-recruiting{display:flex!important;flex-wrap:wrap;width:100%;min-width:0!important}
+ #ocm-root .ocm-workspace-caption{display:none}
+ #ocm-root .ocm-home-attention .ocm-card-b>div{flex-wrap:wrap}
+ #ocm-root .ocm-home-attention .ocm-home-go{width:100%}
+ #ocm-root .ocm-home-metrics .ocm-kgrid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+ #ocm-root.ocm-ui2.ocm-classic .ocm-tile-v{font-size:1.5em!important}
+ #ocm-root #ocm-blocked .ocm-blocked-row{
+   grid-template-columns:minmax(0,3fr) minmax(0,2fr);column-gap:10px;row-gap:4px;padding:6px 12px 12px
+ }
+ #ocm-root #ocm-blocked .ocm-blocked-row>*{min-width:0;white-space:normal;overflow:visible;overflow-wrap:anywhere;text-overflow:clip}
+ #ocm-root #ocm-blocked :is(.ocm-blocked-name,.ocm-blocked-status){grid-column:1/-1}
+ #ocm-root #ocm-blocked .ocm-blocked-name{display:flex;align-items:center;min-height:44px;color:var(--ocm-link);font-weight:600;text-decoration:underline}
+ #ocm-root #ocm-blocked .ocm-blocked-timer{font-variant-numeric:tabular-nums}
+ #ocm-root #ocm-lowcpr>.ocm-lowcpr-head{display:none}
+ #ocm-root #ocm-lowcpr .ocm-lowcpr-row{
+   grid-template-columns:minmax(0,1fr) max-content;column-gap:10px;row-gap:4px;padding:6px 12px 12px
+ }
+ #ocm-root #ocm-lowcpr .ocm-lowcpr-row>*{min-width:0;white-space:normal;overflow:visible;overflow-wrap:anywhere;text-overflow:clip}
+ #ocm-root #ocm-lowcpr .ocm-lowcpr-name{grid-column:1;grid-row:1;display:flex;align-items:center;min-height:44px;color:var(--ocm-link);font-weight:600;text-decoration:underline}
+ #ocm-root #ocm-lowcpr .ocm-lowcpr-cpr{grid-column:2;grid-row:1}
+ #ocm-root #ocm-lowcpr :is(.ocm-lowcpr-oc,.ocm-lowcpr-role,.ocm-lowcpr-extras){grid-column:1/-1}
+ #ocm-root #ocm-lowcpr .ocm-lowcpr-extras:empty{display:none}
+ #ocm-root #ocm-lowcpr .ocm-lowcpr-mobile-label{display:inline;color:var(--ocm-text-muted);font-weight:normal}
+ #ocm-root .ocm-mobile-records{display:block!important;width:100%!important;min-width:0!important;table-layout:auto!important}
+ #ocm-root .ocm-record-container{max-height:none!important;height:auto!important;overflow:visible!important}
+ #ocm-root .ocm-mobile-records>thead{position:absolute!important;width:1px!important;height:1px!important;overflow:hidden!important;clip-path:inset(50%);white-space:nowrap}
+ #ocm-root .ocm-mobile-records>tbody{display:block!important;width:100%}
+ #ocm-root .ocm-mobile-records>tbody>tr{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px!important;margin-bottom:12px;border:1px solid var(--ocm-border)!important;border-radius:10px;background:var(--ocm-bg-card);min-width:0}
+ #ocm-root .ocm-mobile-records>tbody>tr{opacity:1!important}
+ #ocm-root .ocm-mobile-records>tbody>tr>td{display:flex!important;flex-direction:column;align-items:flex-start!important;text-align:left!important;white-space:normal!important;width:auto!important;min-width:0;padding:0!important;border:0!important;overflow-wrap:anywhere}
+ #ocm-root .ocm-mobile-records>tbody>tr>td:first-child,#ocm-root .ocm-mobile-records td.ocm-record-wide{grid-column:1/-1}
+ #ocm-root .ocm-mobile-records>tbody>tr>td:first-child{font-weight:600}
+ #ocm-root .ocm-mobile-records td[data-oc-label]::before{content:attr(data-oc-label);display:block;font-size:.875em;font-weight:400;color:var(--ocm-text-dim);margin-bottom:3px}
+ #ocm-root .ocm-mobile-records td>a{display:inline-flex;align-items:center;min-height:44px;max-width:100%;white-space:normal!important}
+ #ocm-root .ocm-mobile-records :is(.ocm-earn-detail:not(.is-open),.ocm-pay-detail:not(.is-open),.ocm-fin-detail[style*="none"]){display:none!important}
+ #ocm-root .ocm-mobile-records td[colspan]{grid-column:1/-1}
+ #ocm-root .ocm-mobile-records td[colspan]::before{content:none}
+ #ocm-root .ocm-arm-toolbar{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+ #ocm-root :is(.ocm-earn-row,.ocm-pay-row,.ocm-fin-ocrow){cursor:pointer}
+ #ocm-root .ocm-finance-pager{flex-wrap:wrap}
+ #ocm-root #ocm-config-panel{position:relative!important;max-height:none!important;overflow:visible!important;width:auto!important}
+ #ocm-root #ocm-config-head{position:sticky;top:0;z-index:2;background:var(--ocm-bg-card)}
+}
+@media(max-width:380px){#ocm-root .ocm-mobile-records>tbody>tr{grid-template-columns:minmax(0,1fr)}}
+@media(max-height:450px) and (max-width:900px){#ocm-root,#ocm-root #ocm-body{max-height:none!important;height:auto!important;overflow:visible!important}}
+`;
+GM_addStyle(OC_MOBILE_CSS);
+
+const ocMobileInstances = new WeakMap();
+function ocIsPhoneLayout(){return matchMedia('(max-width:700px),(max-height:450px) and (max-width:900px)').matches;}
+function ocViewKey(el, root) {
+  if (el.id) return '#' + CSS.escape(el.id);
+  const pane = el.closest('[id]');
+  for (const attr of ['data-oc','data-uid','name']) {
+    const value = el.getAttribute(attr);
+    if (value) return (pane && pane !== el ? '#' + CSS.escape(pane.id) + ' ' : '') + el.tagName.toLowerCase() +
+      (el.classList.contains('ocm-fin-detail') ? '.ocm-fin-detail' : el.classList.contains('ocm-pay-detail') ? '.ocm-pay-detail' : el.classList.contains('ocm-earn-detail') ? '.ocm-earn-detail' : '') +
+      '[' + attr + '="' + CSS.escape(value) + '"]' + (el.type === 'radio' ? '[value="' + CSS.escape(el.value) + '"]' : '');
+  }
+  const path=[];let node=el;
+  while(node&&node!==root&&!node.id){const parent=node.parentElement;if(!parent)break;path.unshift(node.tagName.toLowerCase()+':nth-child('+(Array.from(parent.children).indexOf(node)+1)+')');node=parent;}
+  if(node?.id&&path.length)return '#'+CSS.escape(node.id)+'>'+path.join('>');
+  return null;
+}
+function captureOcViewState(root) {
+  if (!root) return null;
+  const fields=[];
+  root.querySelectorAll('input:not([type=password]):not([type=hidden]),select,textarea,details,.ocm-fin-detail,.ocm-earn-detail,.ocm-pay-detail').forEach(el=>{
+    // Connections are owned by their existing controls, never copied by UI state.
+    // Armory filters are rendered from ARM.state, including explicit resets.
+    if (el.closest('#ocm-config-panel, .ocm-arm-filters')) return;
+    const key=ocViewKey(el,root);if(!key)return;
+    fields.push({key,value:el.value,checked:el.checked,open:el.open,detail:el.matches('.ocm-fin-detail,.ocm-earn-detail,.ocm-pay-detail'),isOpen:el.classList.contains('is-open'),display:el.style.display});
+  });
+  return {root,fields,focus:root.contains(document.activeElement)?ocViewKey(document.activeElement,root):null};
+}
+function restoreOcViewState(state) {
+  if(!state?.root?.isConnected)return;
+  ocMobileInstances.get(state.root)?.refresh();
+  for(const f of state.fields){
+    const el=state.root.querySelector(f.key);if(!el)continue;
+    if(f.value!==undefined && (el.tagName!=='SELECT'||Array.from(el.options).some(o=>o.value===f.value)))el.value=f.value;
+    if(f.checked!==undefined)el.checked=f.checked;
+    if(f.open!==undefined)el.open=f.open;
+    if(f.detail){el.classList.toggle('is-open',f.isOpen);el.style.display=f.display;}
+  }
+  if(state.focus)state.root.querySelector(state.focus)?.focus({preventScroll:true});
+  ocMobileInstances.get(state.root)?.refresh();
+}
+function initOcMobileUi(root) {
+  if(!root||ocMobileInstances.has(root))return;
+  let queued=false,observer;
+  const pagers=new WeakMap(),pageMemory=new Map();
+  const syncSelect=(bar,label,selector)=>{
+    const tabs=Array.from(bar.children).filter(t=>t.matches('[role=tab]'));
+    if(!tabs.length)return;
+    let wrapper=bar.previousElementSibling;
+    if(!wrapper?.classList.contains(selector)){
+      wrapper=document.createElement('label');wrapper.className=selector;
+      const caption=document.createElement('span');caption.textContent=label;
+      const select=document.createElement('select');select.setAttribute('aria-label',label);
+      wrapper.append(caption,select);bar.before(wrapper);
+      select.addEventListener('change',()=>tabs.find(t=>(t.dataset.tab||t.dataset.sub)===select.value)?.click());
+    }
+    const select=wrapper.querySelector('select');
+    for(const tab of tabs){const value=tab.dataset.tab||tab.dataset.sub;let option=Array.from(select.options).find(o=>o.value===value);
+      if(!option){option=document.createElement('option');option.value=value;select.append(option);}const text=tab.textContent.trim().replace(/\s+/g,' ');if(option.textContent!==text)option.textContent=text;
+      if(tab.classList.contains('active'))select.value=value;
+    }
+  };
+  const refresh=()=>{
+    queued=false;observer?.disconnect();
+    const bar=root.querySelector('#ocm-tabs');if(bar)syncSelect(bar,'Section','ocm-mobile-nav');
+    for(const [id,icon,label] of [['ocm-legend-btn','?','Legend'],['ocm-config-toggle','⚙','Settings'],['ocm-refresh-btn','↻','Refresh data']]){const button=root.querySelector('#'+id);if(button){button.dataset.ocShort=icon;button.setAttribute('aria-label',label);}}
+    root.querySelectorAll('.ocm-subtabs').forEach(bar=>syncSelect(bar,'View','ocm-mobile-subnav'));
+    root.querySelectorAll('.ocm-workspace-context>p').forEach(p=>{const details=document.createElement('details');details.className='ocm-context-help';const summary=document.createElement('summary');summary.textContent='Help';p.before(details);details.append(summary,p);});
+    const workload=root.querySelector('#ocm-stats-bar');
+    if(workload){let details=workload.querySelector('.ocm-workload-details');
+      if(!details){details=document.createElement('details');details.id='ocm-workload-details';details.className='ocm-workload-details';details.open=!ocIsPhoneLayout();const summary=document.createElement('summary');const content=document.createElement('div');content.append(...workload.childNodes);details.append(summary,content);workload.append(details);}
+      const number=id=>root.querySelector('#ocm-s-'+id)?.textContent.trim()||'0';
+      details.querySelector('summary').textContent=number('open')+' open · '+number('blocked')+' blocked · '+number('lowcpr')+' low CPR';
+    }
+    root.querySelectorAll('table').forEach(table=>{
+      const headers=Array.from(table.tHead?.rows?.[0]?.cells||[]);
+      if(!headers.length||headers.length>8)return; // CPR matrices retain their contained horizontal scroller.
+      table.classList.add('ocm-mobile-records');table.setAttribute('role','table');
+      table.parentElement?.classList.add('ocm-record-container');
+      const annotate=row=>Array.from(row.cells).forEach((cell,index)=>{
+        cell.dataset.ocLabel=cell.colSpan>1?'':headers[index]?.textContent.trim()||'';
+        cell.setAttribute('role','cell');
+        cell.classList.toggle('ocm-record-wide',cell.colSpan>1||!!cell.querySelector('button,select,.ocm-loan-go,.ocm-buy-btn'));
+      });
+      Array.from(table.tBodies).forEach(body=>{
+        let pager=pagers.get(body);
+        if(!pager){
+          const rows=Array.from(body.rows);rows.forEach(annotate);
+          // Keep expandable row pairs together; their existing ledger pager owns them.
+          if(rows.length>20&&!rows.some(r=>r.matches('.ocm-fin-detail,.ocm-earn-detail,.ocm-pay-detail')||r.querySelector('[colspan]'))){
+            const nav=document.createElement('div');nav.className='ocm-record-pager';nav.setAttribute('aria-label','Record pages');
+            const prev=document.createElement('button'),next=document.createElement('button'),info=document.createElement('span');prev.type=next.type='button';prev.textContent='Previous';next.textContent='Next';info.setAttribute('role','status');nav.append(prev,info,next);table.after(nav);
+            const pageKey=ocViewKey(table,root)||headers.map(h=>h.textContent).join('|');
+            const saved=pageMemory.get(pageKey)||{page:0,query:''};
+            const search=document.createElement('input');search.type='search';search.maxLength=120;search.placeholder='Find a member, OC or item';search.setAttribute('aria-label','Find in records');search.style.cssText='width:100%;margin:8px 0;padding:10px;font:inherit;box-sizing:border-box';search.value=saved.query;table.before(search);
+            pager={rows,page:Math.min(saved.page,Math.ceil(rows.length/20)-1),query:saved.query,nav,prev,next,info};pagers.set(body,pager);
+            const show=()=>{const filtered=rows.filter(row=>row.textContent.toLocaleLowerCase().includes(pager.query.toLocaleLowerCase()));pager.page=Math.min(pager.page,Math.max(0,Math.ceil(filtered.length/20)-1));const start=pager.page*20;body.replaceChildren(...filtered.slice(start,start+20));prev.disabled=start===0;next.disabled=start+20>=filtered.length;info.textContent=filtered.length?(start+1)+'–'+Math.min(start+20,filtered.length)+' of '+filtered.length:'No matching records';pageMemory.set(pageKey,{page:pager.page,query:pager.query});if(pageMemory.size>40)pageMemory.delete(pageMemory.keys().next().value);};
+            search.addEventListener('input',()=>{observer.disconnect();pager.query=search.value;pager.page=0;show();observe();});
+            prev.addEventListener('click',()=>{observer.disconnect();pager.page--;show();observe();});next.addEventListener('click',()=>{observer.disconnect();pager.page++;show();observe();});show();
+          }
+        } else Array.from(body.rows).forEach(annotate);
+      });
+    });
+    root.querySelectorAll('.ocm-earn-row,.ocm-pay-row,.ocm-fin-ocrow').forEach(row=>{
+      const fin=row.classList.contains('ocm-fin-ocrow'),pay=row.classList.contains('ocm-pay-row'),kind=fin?'fin':pay?'pay':'earn',attr=fin||pay?'oc':'uid',id=row.dataset[attr];
+      const detail=root.querySelector('.ocm-'+kind+'-detail[data-'+attr+'="'+CSS.escape(id||'')+'"]');
+      if(detail){if(!detail.id)detail.id='ocm-detail-'+kind+'-'+id;row.setAttribute('aria-controls',detail.id);row.setAttribute('aria-expanded',String(fin?detail.style.display!=='none':detail.classList.contains('is-open')));}
+      if(row.dataset.ocDisclosureReady)return;
+      row.dataset.ocDisclosureReady='true';row.tabIndex=0;row.setAttribute('role','button');row.setAttribute('aria-label','Expand record: '+row.textContent.trim().replace(/\s+/g,' ').slice(0,160));
+      row.addEventListener('keydown',event=>{if(event.target===row&&(event.key==='Enter'||event.key===' ')){event.preventDefault();row.click();}});
+    });
+    observe();
+  };
+  const observe=()=>observer.observe(root,{childList:true,subtree:true});
+  observer=new MutationObserver(()=>{if(!queued){queued=true;queueMicrotask(refresh);}});
+  root.addEventListener('click',()=>{if(!queued){queued=true;queueMicrotask(refresh);}});
+  ocMobileInstances.set(root,{refresh,dispose:()=>observer.disconnect()});refresh();
+}
+  // OC MOBILE UI END
 
   // ─── UTILITIES ───────────────────────────────────────────────────────────────
 
@@ -4879,6 +4868,13 @@
   function fmtCountdown(untilTs) {
     const diff = Math.max(0, untilTs - Math.floor(Date.now() / 1000));
     return fmtTime(diff);
+  }
+
+  /** A missing or invalid API rate is unknown, not a failed checkpoint. */
+  function readCheckpointPassRate(raw) {
+    const number = typeof raw === 'number' ? raw
+      : typeof raw === 'string' && /^\d+(?:\.\d+)?$/.test(raw.trim()) ? Number(raw) : NaN;
+    return Number.isFinite(number) && number >= 0 && number <= 100 ? number : null;
   }
 
   /** Returns the CSS class for a CPR value based on configured thresholds. */
@@ -5368,8 +5364,6 @@
     { tab: 'people',      icon: '👥', label: 'People',      countId: 'ocm-tab-count-people' },
     { tab: 'money',       icon: '💰', label: 'Finance' },
     { tab: 'armoury',     icon: '🛡️', label: 'Armory' },
-    { tab: 'consumables', icon: '🧪', label: 'Consumables' },
-    { tab: 'war',         icon: '⚔️', label: 'War' },
   ];
   function buildRailNav() {
     return OCM_NAV.map((v, i) =>
@@ -5402,12 +5396,12 @@
     root.className = 'ocm-ui2 ocm-classic';
     root.innerHTML = `
       <div id="ocm-header">
-        <h2>⚔ OC Suite</h2>
+        <h2>OC Suite</h2>
         <span class="ocm-ver">v${SCRIPT_VERSION}</span>
         <small id="ocm-last-update">Not loaded</small>
         <span class="ocm-hdr-gap"></span>
-        <button id="ocm-legend-btn" title="What do CPR, weight and the icons mean?">? Legend</button>
-        <button id="ocm-config-toggle" title="Settings">⚙ Config</button>
+        <button id="ocm-legend-btn" title="What do CPR, weight and the icons mean?">Legend</button>
+        <button id="ocm-config-toggle" title="Settings">⚙ Settings</button>
         <button id="ocm-refresh-btn" title="Refresh data">↻ Refresh</button>
       </div>
       <div id="ocm-legend" style="display:none"></div>
@@ -5474,43 +5468,6 @@
           </div>
         </div>
         <div class="ocm-cfg-section">
-          <div class="ocm-cfg-label">FFScouter API Key
-            <span style="font-size:10px;color:var(--ocm-text-dim);font-weight:normal;text-transform:none;letter-spacing:0;margin-left:6px">
-              Optional. Powers War → Contracts battle-stat/FF estimates. Get it from <a href="https://ffscouter.com" target="_blank" style="color:var(--ocm-link)">FFScouter</a>.
-            </span>
-          </div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <input id="ocm-ff-key-input" type="password" placeholder="FFScouter API key" style="flex:1;min-width:160px" />
-            <button id="ocm-ff-save-btn" class="ocm-cfg-btn">Save FF Key</button>
-          </div>
-          <div id="ocm-ff-status" style="font-size:11px;color:var(--ocm-text-dim);margin-top:4px"></div>
-        </div>
-        <div class="ocm-cfg-section">
-          <div class="ocm-cfg-label">Consumables — Usage Command
-            <span style="font-size:10px;color:var(--ocm-text-dim);font-weight:normal;text-transform:none;letter-spacing:0;margin-left:6px">
-              Powers the Consumables tab. From your Usage Command Google Apps Script deployment.
-            </span>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:10px">
-            <label style="display:block">
-              <span style="display:block;color:var(--ocm-text-dim);font-size:11px;margin-bottom:4px">Google Apps Script URL</span>
-              <input id="ocm-fu-sheet" type="text" placeholder="https://script.google.com/…/exec" style="background:var(--ocm-bg-card);border:1px solid var(--ocm-border-soft);border-radius:8px;color:var(--ocm-text);padding:9px 11px;font-size:12.5px;width:100%;box-sizing:border-box" />
-            </label>
-            <label style="display:block">
-              <span style="display:block;color:var(--ocm-text-dim);font-size:11px;margin-bottom:4px">Read secret</span>
-              <input id="ocm-fu-secret" type="password" placeholder="read secret" style="background:var(--ocm-bg-card);border:1px solid var(--ocm-border-soft);border-radius:8px;color:var(--ocm-text);padding:9px 11px;font-size:12.5px;width:100%;box-sizing:border-box" />
-            </label>
-            <label style="display:block">
-              <span style="display:block;color:var(--ocm-text-dim);font-size:11px;margin-bottom:4px">Torn API key <span style="color:var(--ocm-text-faint)">(optional — blank reuses the suite key above)</span></span>
-              <input id="ocm-fu-key" type="password" placeholder="Torn API key for personal-stats sync" style="background:var(--ocm-bg-card);border:1px solid var(--ocm-border-soft);border-radius:8px;color:var(--ocm-text);padding:9px 11px;font-size:12.5px;width:100%;box-sizing:border-box" />
-            </label>
-            <div style="display:flex;gap:10px;align-items:center;margin-top:2px">
-              <button id="ocm-fu-save" class="ocm-cfg-btn">💾 Save</button>
-              <span id="ocm-fu-status" style="font-size:11px;color:var(--ocm-cpr-good)"></span>
-            </div>
-          </div>
-        </div>
-        <div class="ocm-cfg-section">
           <div class="ocm-cfg-label">CPR Thresholds</div>
           <div class="ocm-cfg-row">
             <label>Warn below <input id="ocm-cfg-cpr-warn" type="number" min="0" max="100" value="${CPR_WARN}" class="ocm-cfg-num" />%</label>
@@ -5548,7 +5505,7 @@
             <button id="ocm-cfg-share-reset" class="ocm-join-btn"
                     style="padding:5px 10px;background:none;border-color:var(--ocm-border);color:var(--ocm-text-muted);margin-left:6px"
                     title="Back to 100 / 100 / 90 / 90 / 80…">Reset to defaults</button>
-            <span id="ocm-cfg-share-msg" style="font-size:11px;color:var(--ocm-cpr-good)"></span>
+            <span id="ocm-cfg-share-msg" role="status" style="font-size:11px;color:var(--ocm-cpr-good)"></span>
           </div>
           <div style="font-size:10px;color:var(--ocm-text-muted);margin-top:6px">Level 10 also covers anything above it.</div>
         </div>
@@ -5623,22 +5580,6 @@
             <div class="ocm-feature-icon">🏠</div>
             <h3 style="margin:10px 0 4px">Dashboard</h3>
             <div style="color:var(--ocm-text-dim);max-width:470px;margin:0 auto">Faction overview loads here as soon as the suite has usable faction data.</div>
-          </div>
-        </div>
-        <div class="ocm-tab-pane" id="ocm-pane-consumables" role="tabpanel" aria-labelledby="ocm-tab-consumables">
-          <div class="ocm-card ocm-feature-placeholder" style="text-align:center">
-            <div class="ocm-feature-icon">🧪</div>
-            <h3 style="margin:10px 0 6px">Consumables — Usage Command</h3>
-            <div style="color:var(--ocm-text-dim);max-width:480px;margin:0 auto 16px">Per-member faction item usage (drugs / medical / boosters / alcohol) and most-used overall — your Frostbite Usage Command, embedded.</div>
-            <button id="ocm-consumables-open" class="ocm-feature-launch">🧪 Open Usage Command ▸</button>
-          </div>
-        </div>
-        <div class="ocm-tab-pane" id="ocm-pane-war" role="tabpanel" aria-labelledby="ocm-tab-war">
-          <div class="ocm-card ocm-feature-placeholder" style="text-align:center">
-            <div class="ocm-feature-icon">⚔️</div>
-            <h3 style="margin:10px 0 6px">War Payout Report</h3>
-            <div style="color:var(--ocm-text-dim);max-width:480px;margin:0 auto 16px">Per-member payout breakdown (hits / losses / defends / respect), the Xanax drug analyzer, and the multi-war sweep — your War Payout Report, embedded.</div>
-            <button id="ocm-war-open" class="ocm-feature-launch">⚔️ Open War Payout Report ▸</button>
           </div>
         </div>
         <div class="ocm-tab-pane" id="ocm-pane-armoury" role="tabpanel" aria-labelledby="ocm-tab-armoury">
@@ -5748,7 +5689,7 @@
 
         <!-- ═══ MONEY — profit, payouts, costs ═══ -->
         <div class="ocm-tab-pane" id="ocm-pane-money" role="tabpanel" aria-labelledby="ocm-tab-money">
-          <header class="ocm-workspace-intro"><h3>OC finances</h3><p>Track earnings, reconcile payouts, and account for item costs. War-specific reports remain in War.</p></header>
+          <header class="ocm-workspace-intro"><h3>OC finances</h3><p>Track earnings, reconcile payouts, and account for item costs.</p></header>
           <div class="ocm-subtabs" role="tablist">
             <div class="ocm-subtab active" data-sub="summary" role="tab">📊 Summary</div>
             <div class="ocm-subtab"        data-sub="members" role="tab">👤 Member Earnings</div>
@@ -5805,12 +5746,12 @@
       ? items.map(([tone, tag, text, tab, sub, go]) =>
           '<div style="display:flex;align-items:center;gap:10px;background:var(--ocm-bg-card);border:1px solid var(--ocm-border);border-radius:9px;padding:9px 11px;margin-bottom:7px">'
           + OCUI.chip(tag, tone) + '<span style="flex:1">' + OCUI.esc(text) + '</span>'
-          + '<span class="ocm-home-go" data-go="' + tab + '" data-sub="' + sub + '" style="color:#7cd4ff;cursor:pointer;font-weight:700;font-size:12px">' + go + '</span></div>'
+          + '<button type="button" class="ocm-home-go" data-go="' + tab + '" data-sub="' + sub + '" style="color:#7cd4ff;cursor:pointer;font-weight:700;font-size:12px">' + go + '</button></div>'
         ).join('')
       : '<div style="text-align:center;color:var(--ocm-cpr-good);padding:6px">✓ Nothing needs you right now — every active OC is covered.</div>';
     pane.innerHTML =
-      '<div style="margin-bottom:14px">' + OCUI.grid(tiles, 6) + '</div>'
-      + OCUI.card({ title: '⚡ Needs you now', right: items.length + ' item' + (items.length !== 1 ? 's' : ''), body: todo });
+      '<div class="ocm-home-attention">' + OCUI.card({ title: 'Needs you now', right: items.length + ' item' + (items.length !== 1 ? 's' : ''), body: todo }) + '</div>'
+      + '<details id="ocm-home-metrics" class="ocm-home-metrics"' + (!ocIsPhoneLayout() ? ' open' : '') + '><summary>' + s.active + ' active · ' + s.open + ' open slots · ' + s.free + ' available</summary>' + OCUI.grid(tiles, 6) + '</details>';
     pane.querySelectorAll('.ocm-home-go').forEach(el =>
       el.addEventListener('click', () => {
         document.querySelector('#ocm-tabs .ocm-nav[data-tab="' + el.dataset.go + '"]')?.click();
@@ -5820,6 +5761,8 @@
   }
 
   function renderDashboard(faction, memberMap, armory, itemNames, lastOc, exMemberNames = {}, itemValues = {}, viewerId = null, loanedOut = [], itemTypes = {}) {
+    const _ocViewState = captureOcViewState(document.getElementById('ocm-root'));
+    try {
     // The dashboard DOM only exists while Torn's Crimes tab is showing — an async
     // fetch can outlive a SPA navigation away from it, so re-check before writing.
     if (!document.getElementById('ocm-root')) return;
@@ -5899,8 +5842,8 @@
         if (userId) assignedIds.add(userId);
         if (userId && mInfo[userId] && isBlocked(mInfo[userId].status)) blockedInOcCount++;
 
-        const cpr = slot.checkpoint_pass_rate ?? null;
-        if (cpr != null && userId && cpr < CPR_WARN) lowCprCount++;
+        const cpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
+        if (cpr !== null && userId && cpr < CPR_WARN) lowCprCount++;
         if (!userId) openSlots++;
 
         // Backfill tsCprData: if a member is in an OC with a known CPR but
@@ -6116,6 +6059,16 @@
       return { ocName, ocId, role, cpr, weight, difficulty: oc.difficulty ?? '?', score, exact, eligible, source, itemMissing, itemName };
     }
 
+    const openRecruitingSlots = [];
+    for (const [ocId, oc] of Object.entries(crimes)) {
+      if (!oc || (oc.status || '').toLowerCase() !== 'recruiting') continue;
+      const ocSlots = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots || []);
+      ocSlots.forEach((slot, slotIdx) => {
+        if (slot.user?.id) return;
+        openRecruitingSlots.push({ ocId, oc, slot, slotKey: `${ocId}:${slotIdx}` });
+      });
+    }
+
     /** Build the global assignment of available members → unique open slots.
      *  Greedy: at each step pick the highest-scoring eligible (member, slot) pair,
      *  lock both, and repeat. A member can only be assigned one slot, and each
@@ -6124,21 +6077,10 @@
      *  so they aren't left empty-handed.
      *  Returns Map<memberId, slotInfo>. */
     function buildBestSlotAssignment(memberIds) {
-      // Collect all open slots
-       const openSlots = [];
-      for (const [ocId, oc] of Object.entries(crimes)) {
-        if (!oc || (oc.status || '').toLowerCase() !== 'recruiting') continue;
-        const ocSlots = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots || []);
-        ocSlots.forEach((slot, slotIdx) => {
-          if (slot.user?.id) return;
-          openSlots.push({ ocId, oc, slot, slotKey: `${ocId}:${slotIdx}` });
-        });
-      }
-
       // Build all (member, slot) pairs with scores
       const pairs = [];
       for (const mid of memberIds) {
-        for (const os of openSlots) {
+        for (const os of openRecruitingSlots) {
           const info = scoreSlotForMember(mid, os.oc, os.ocId, os.slot);
           pairs.push({ memberId: mid, slotKey: os.slotKey, info });
         }
@@ -6210,11 +6152,13 @@
 
           let recCell, cprCell;
           if (!best) {
-            recCell = '<span style="color:var(--ocm-cpr-warn);font-weight:600">No CPR data</span> <span style="color:var(--ocm-text-faint);font-size:11px">— run any OC once</span>';
+            recCell = openRecruitingSlots.length
+              ? '<span style="color:var(--ocm-cpr-warn);font-weight:600">No CPR for open roles</span>'
+              : '<span style="color:var(--ocm-text-faint)">No open recruiting slots</span>';
             cprCell = '<span style="color:var(--ocm-text-faint)">—</span>';
           } else {
             const sourceTag = best.source === 'history'
-              ? ' <span style="font-size:9px;color:var(--ocm-text-muted)" title="From this member\'s OC history (no TornStats data)">hist</span>'
+              ? ' <span style="font-size:9px;color:var(--ocm-text-muted)" title="From this member\'s OC history (no TornStats data)">history</span>'
               : '';
             recCell = `<b style="color:var(--ocm-text)">${esc(best.role)}</b> <span style="color:var(--ocm-text-muted);font-size:11px">in</span> <span style="color:var(--ocm-text-dim)">${esc(best.ocName)}</span> <span style="color:var(--ocm-text-faint);font-size:10px">D${best.difficulty}</span>`;
             cprCell = `<span style="color:${cprCol(best.cpr)};font-weight:700">${best.cpr == null ? '?' : (best.exact ? '' : '~') + best.cpr + '%'}</span>${sourceTag}`;
@@ -6295,8 +6239,8 @@
       const slots = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots || []);
       for (const slot of slots) {
         if (!slot?.user?.id) continue;
-        const cpr = slot.checkpoint_pass_rate;
-        if (cpr == null) continue;
+        const cpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
+        if (cpr === null) continue;
         const uid     = String(slot.user.id);
         const roleKey = (slot.position_info?.label || slot.position || '').replace(/\s*#\d+$/, '').toLowerCase().trim();
         if (!roleKey) continue;
@@ -6331,6 +6275,7 @@
 
     updateTabCounts();
     startCountdowns();
+    } finally { restoreOcViewState(_ocViewState); }
   }
 
   /** Active OCs tab — planning/recruiting card grids (extracted from renderDashboard — receives the shared model as ctx). */
@@ -6718,8 +6663,10 @@
       const ocSlots      = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots || []);
 
       // ── status: the worst thing about this OC decides the accent colour
-      const hasCrit  = ocSlots.some(s => s.user?.id && s.checkpoint_pass_rate != null && s.checkpoint_pass_rate < CPR_CRIT);
-      const hasLow   = ocSlots.some(s => s.user?.id && s.checkpoint_pass_rate != null && s.checkpoint_pass_rate < CPR_WARN);
+      const slotRates = new Map(ocSlots.map(slot => [slot, slot.user?.id ? readCheckpointPassRate(slot.checkpoint_pass_rate) : null]));
+      const knownRates = [...slotRates.values()].filter(rate => rate !== null);
+      const hasCrit  = knownRates.some(rate => rate < CPR_CRIT);
+      const hasLow   = knownRates.some(rate => rate < CPR_WARN);
       const hasBlock = ocSlots.some(s => { const u = s.user?.id ? String(s.user.id) : null; return u && mInfo[u] && isBlocked(mInfo[u].status); });
       const hasMissing = ocSlots.some(s => s.user?.id && s.item_requirement && !s.item_requirement.is_available);
       let status = badgeLabel.toLowerCase();           // ready | blocked | planning | recruiting
@@ -6775,7 +6722,7 @@
         const uid    = user?.id ? String(user.id) : null;
         const member = uid ? mInfo[uid] : null;
         const role   = slot.position_info?.label || slot.position || 'Unknown';
-        const cpr    = slot.checkpoint_pass_rate ?? null;
+        const cpr    = slotRates.get(slot);
         const weight = getWeight(oc.name || '', role);
 
         // Weight is its own column now (it's a number, and numbers belong in a
@@ -7019,7 +6966,7 @@
       if (!assignedIds.has(mid) || !isBlocked(m.status?.state)) continue;
       let ocName = null, ocExecutesAt = null;
       for (const oc of Object.values(crimes)) {
-        if (!oc?.slots) continue;
+        if (!oc?.slots || !ACTIVE.has((oc.status || '').toLowerCase())) continue;
         const ocSlots = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots);
         if (!ocSlots.some(s => s.user?.id && String(s.user.id) === mid)) continue;
         ocName = oc.name || `OC #${oc.id}`;
@@ -7082,7 +7029,7 @@
       for (const slot of slots) {
         const uid = slot.user?.id ? String(slot.user.id) : null;
         if (!uid) continue;
-        const cpr = slot.checkpoint_pass_rate ?? null;
+        const cpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
         if (cpr === null || cpr >= CPR_WARN) continue;
         const roleName = slot.position_info?.label || slot.position || 'Unknown role';
         const weight   = getWeight(ocName, roleName);
@@ -7112,8 +7059,8 @@
             <a class="ocm-lowcpr-name" href="/profiles.php?XID=${r.uid}" target="_blank">${esc(r.name)}</a>
             <span class="ocm-lowcpr-oc" title="${r.ocName}">${r.ocName}</span>
             <span class="ocm-lowcpr-role" title="${r.roleName}">${r.roleName}</span>
-            <span class="ocm-lowcpr-extras">${weightHtml}${riskBadge}</span>
-            <span class="ocm-slot-cpr ${cprCls} ocm-lowcpr-cpr">${r.cpr}%</span>
+            <span class="ocm-lowcpr-extras">${weightHtml ? '<span class="ocm-lowcpr-mobile-label">Weight</span>' : ''}${weightHtml}${riskBadge}</span>
+            <span class="ocm-slot-cpr ${cprCls} ocm-lowcpr-cpr"><span class="ocm-lowcpr-mobile-label">CPR </span>${r.cpr}%</span>
           </div>`;
       }).join('');
     }
@@ -7156,7 +7103,7 @@
       for (const slot of slots) {
         const uid = slot?.user?.id ? String(slot.user.id) : null;
         if (!uid) continue;
-        const curCpr = slot.checkpoint_pass_rate ?? null;
+        const curCpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
         // Only consider members performing WELL in their current OC (>= warn).
         // A struggling member belongs in the Low CPR section, not here.
         if (curCpr === null || curCpr < CPR_WARN) continue;
@@ -7205,7 +7152,7 @@
       overEl.innerHTML = overHead + overRows.map(r => {
         const upCprCls = r.upCpr >= CPR_WARN ? 'cpr-good' : r.upCpr >= CPR_CRIT ? 'cpr-warn' : 'cpr-crit';
         const srcTag = r.upSource === 'history'
-          ? `<span style="font-size:9px;color:var(--ocm-text-muted);background:#1c1810;border:1px solid #3a3018;padding:0 4px;border-radius:2px;margin-left:3px" title="Estimate from this member's OC history">hist</span>`
+          ? `<span style="font-size:9px;color:var(--ocm-text-muted);background:#1c1810;border:1px solid #3a3018;padding:0 4px;border-radius:2px;margin-left:3px" title="Estimate from this member's OC history">history</span>`
           : '';
         return `
           <div class="ocm-lowcpr-row" title="${esc(r.name)} is doing well in a D${r.curDiff} OC and has real data showing they can clear a D${r.upDiff} OC">
@@ -7274,7 +7221,7 @@
         const uid = slot.user?.id ? String(slot.user.id) : null;
         if (!uid) continue;
         const role   = slot.position_info?.label || slot.position || 'Unknown';
-        const cpr    = slot.checkpoint_pass_rate ?? null;
+        const cpr    = readCheckpointPassRate(slot.checkpoint_pass_rate);
         const weight = getWeight(ocName, role);
         const name   = mInfo[uid]?.name || `#${uid}`;
         const blocked = mInfo[uid] ? isBlocked(mInfo[uid].status) : false;
@@ -7376,9 +7323,14 @@
       const slotRows = rows.filter(r => r.ocId === id).sort((a, b) => (b.weight ?? -1) - (a.weight ?? -1));
       const nRiskOc  = slotRows.filter(r => r.vClass === 'v-risk').length;
       const nUnderOc = slotRows.filter(r => r.vClass === 'v-under').length;
+      const nUnknown = slotRows.filter(r => r.vClass === 'v-none').length;
+      const nWeak = slotRows.filter(r => r.vClass === 'v-weak').length;
+      const coverage = [nWeak && (nWeak + ' weak'), nUnknown && (nUnknown + ' unknown CPR')].filter(Boolean).join(' / ');
       const diffBadge = meta.difficulty != null ? `<span class="ocm-badge" title="Difficulty level">D${meta.difficulty}</span> ` : '';
       const attn = nRiskOc ? `<span style="color:var(--ocm-cpr-crit);font-weight:700">${nRiskOc} misplaced</span>`
                  : nUnderOc ? `<span style="color:var(--ocm-link)">${nUnderOc} underused</span>`
+                 : coverage ? `<span style="color:var(--ocm-text-muted)">${coverage}</span>`
+                 : !slotRows.length ? '<span style="color:var(--ocm-text-muted)">no assigned members</span>'
                  : `<span style="color:var(--ocm-cpr-good)">all aligned</span>`;
       const memberRows = slotRows.map(r => `<tr>
         <td style="color:var(--ocm-text-muted);width:112px">${esc(r.role)}</td>
@@ -7501,9 +7453,10 @@
       const icon     = s === 'successful' ? '✅' : '❌';
       const col      = s === 'successful' ? 'var(--ocm-cpr-good)' : 'var(--ocm-cpr-crit)';
       const ocSlots  = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots || []);
-      const filled   = ocSlots.filter(sl => sl.user?.id);
-      const avgCpr   = filled.length > 0
-        ? (filled.reduce((a, sl) => a + (sl.checkpoint_pass_rate ?? 0), 0) / filled.length).toFixed(1)
+      const filled   = ocSlots.filter(sl => sl.user?.id).map(sl => ({ sl, cpr: readCheckpointPassRate(sl.checkpoint_pass_rate) }));
+      const knownCprs = filled.map(entry => entry.cpr).filter(cpr => cpr != null);
+      const avgCpr   = knownCprs.length > 0
+        ? (knownCprs.reduce((sum, cpr) => sum + cpr, 0) / knownCprs.length).toFixed(1)
         : null;
       const execDate = oc.executed_at
         ? new Date(oc.executed_at * 1000).toLocaleDateString('en-GB', { timeZone:'UTC', day:'2-digit', month:'short', year:'2-digit' })
@@ -7522,11 +7475,10 @@
       if (respect && Number(respect) > 0) rewardParts.push(`⭐ ${respect} resp`);
 
       // Per-member detail rows for the expandable section
-      const memberDetailRows = filled.map(sl => {
+      const memberDetailRows = filled.map(({ sl, cpr }) => {
         const uid  = String(sl.user.id);
         const name = mInfo[uid]?.name || exMemberNames[uid] || `#${uid}`;
         const role = sl.position_info?.label || sl.position || '?';
-        const cpr  = sl.checkpoint_pass_rate ?? null;
         const w    = getWeight(oc.name || '', role);
         const cprCol = cpr == null ? '#555' : cpr >= CPR_WARN ? 'var(--ocm-cpr-good)' : cpr >= CPR_CRIT ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)';
         const wCol   = w   == null ? '#555' : w >= WEIGHT_HIGH ? 'var(--ocm-cpr-warn)' : w >= WEIGHT_MID ? '#aaa' : '#555';
@@ -7779,18 +7731,21 @@
       }
 
       const entries   = record.entries;
-      const total     = entries.length;
-      const successes = entries.filter(e => e.outcome === 'successful').length;
-      const rate      = total > 0 ? Math.round(successes / total * 100) : 0;
-      const cprs      = entries.filter(e => e.cpr != null).map(e => e.cpr);
+      // TornStats reports current CPR, not a recorded run or outcome.
+      const runs      = entries.filter(e => !e.tsSourced);
+      const total     = runs.length;
+      const outcomes  = runs.filter(e => ['successful', 'failure', 'expired'].includes(e.outcome));
+      const successes = outcomes.filter(e => e.outcome === 'successful').length;
+      const rate      = outcomes.length > 0 ? Math.round(successes / outcomes.length * 100) : null;
+      const cprs      = runs.map(e => readCheckpointPassRate(e.cpr)).filter(cpr => cpr != null);
       const avgCpr    = cprs.length > 0 ? (cprs.reduce((a, b) => a + b, 0) / cprs.length).toFixed(1) : null;
 
       // Most-played role
-      const roleCounts = {};
-      for (const e of entries) roleCounts[e.role] = (roleCounts[e.role] || 0) + 1;
+      const roleCounts = Object.create(null);
+      for (const e of runs) roleCounts[e.role] = (roleCounts[e.role] || 0) + 1;
       const topRole = Object.entries(roleCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—';
 
-      const rateCol = rate >= 85 ? 'var(--ocm-cpr-good)' : rate >= 65 ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)';
+      const rateCol = rate == null ? 'var(--ocm-text-muted)' : rate >= 85 ? 'var(--ocm-cpr-good)' : rate >= 65 ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)';
 
       // Summary bar
       summaryEl.style.display = 'flex';
@@ -7801,7 +7756,7 @@
         </div>
         <div class="ocm-mh-sum-item">
           <span class="ocm-mh-sum-label">Success Rate</span>
-          <span class="ocm-mh-sum-value" style="color:${rateCol}">${rate}%</span>
+          <span class="ocm-mh-sum-value" style="color:${rateCol}">${rate == null ? 'No data' : rate + '%'}</span>
         </div>
         <div class="ocm-mh-sum-item">
           <span class="ocm-mh-sum-label">Avg CPR</span>
@@ -7809,7 +7764,7 @@
         </div>
         <div class="ocm-mh-sum-item">
           <span class="ocm-mh-sum-label">Most Played Role</span>
-          <span class="ocm-mh-sum-value" style="font-size:11px;padding-top:2px">${topRole}</span>
+          <span class="ocm-mh-sum-value" style="font-size:11px;padding-top:2px">${esc(topRole)}</span>
         </div>`;
 
       // History table
@@ -7817,8 +7772,9 @@
         const dateStr   = e.executedAt
           ? new Date(e.executedAt * 1000).toLocaleDateString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: '2-digit' })
           : '—';
-        const cprStr    = e.cpr != null ? `${e.cpr}%` : '—';
-        const cprCls    = e.cpr != null ? cprClass(e.cpr) : '';
+        const cpr       = readCheckpointPassRate(e.cpr);
+        const cprStr    = cpr != null ? `${cpr}%` : '—';
+        const cprCls    = cpr != null ? cprClass(cpr) : '';
         const wStr      = e.weight != null ? `${e.weight.toFixed(0)}%` : '—';
         const wCls      = e.weight != null ? (e.weight >= WEIGHT_HIGH ? 'w-high' : e.weight >= WEIGHT_MID ? 'w-mid' : 'w-low') : '';
         // Respect — only shown on successful OCs; dim/dash on failure or expired
@@ -7911,7 +7867,7 @@
           ocmToast(res.filled > 0 ? `Cached ${res.filled} CPRs from TornStats.` : 'Already up to date.', 'ok');
           // Re-render so newly-cached CPRs show; the archive merge happens on render.
           const last = GM_getValue(GMK.MH_LAST, '');
-          if (last) loadData(GM_getValue(GMK.API_KEY, ''));
+          if (last) loadData(hubEffectiveTornKey());
         } catch (e) {
           if (mhCacheStatus) mhCacheStatus.textContent = 'Failed: ' + (e.message || 'TornStats error');
           ocmToast('CPR cache failed: ' + (e.message || 'error'), 'crit');
@@ -8006,10 +7962,10 @@
           const name = mInfo[uid]?.name || exMemberNames[uid] || `#${uid}`;
           const role = sl.position_info?.label || sl.position || '?';
           const w    = getWeight(oc.name || '', role);
-          const cpr  = sl.checkpoint_pass_rate ?? null;
+          const cpr  = readCheckpointPassRate(sl.checkpoint_pass_rate);
           return { name, uid, role, weight: w, cpr };
         });
-      // Avg CPR across filled slots
+      // Avg of reported CPR across occupied slots
       const cprs   = slotDetail.filter(s => s.cpr != null).map(s => s.cpr);
       const avgCpr = cprs.length > 0 ? cprs.reduce((a, b) => a + b, 0) / cprs.length : null;
 
@@ -9145,9 +9101,18 @@
    *  from the ACTIVE tab's own href — the URL hash is not a reliable indicator
    *  (see armouryGoToSub). */
   function activeArmourySub() {
-    const a = [...document.querySelectorAll('#faction-armoury-tabs li.ui-tabs-active a, #faction-armoury-tabs [aria-selected="true"]')].find(el => el.offsetParent !== null);
-    const m = a && (a.getAttribute('href') || '').match(/(?:[?&#])sub=([a-z]+)(?:&|$)/i);
-    return m ? m[1].toLowerCase() : null;
+    const selected = document.querySelectorAll('#faction-armoury-tabs li.ui-tabs-active a, #faction-armoury-tabs [aria-selected="true"]');
+    for (const el of selected) {
+      if (el.offsetParent === null) continue;
+      // Torn marks the containing LI selected as well as its anchor. The LI
+      // has no href, and a second selected anchor may just point to #nogo.
+      const links = el.matches('a[href]') ? [el] : el.querySelectorAll('a[href]');
+      for (const link of links) {
+        const match = (link.getAttribute('href') || '').match(/(?:[?&#])sub=([a-z]+)(?:&|$)/i);
+        if (link.offsetParent !== null && match) return match[1].toLowerCase();
+      }
+    }
+    return null;
   }
   /** The clickable tab anchor for a sub-tab. Torn renders more than one match
    *  (desktop + a hidden variant), so take the first VISIBLE one. */
@@ -9364,6 +9329,14 @@
   let _armoryNeed = null;
   let _ocmArmoryObserver = null;
   let _ocmArmoryObservedRoot = null;
+  let _armoryAnnotationGeneration = 0;
+
+  function nativeArmouryWrap() {
+    if (!location.hash.includes('tab=armoury')) return null;
+    const sub = activeArmourySub();
+    if (!NATIVE_LOAN_SUBS.has(sub)) return null;
+    return document.getElementById(`tab=armoury&sub=${sub}`) || null;
+  }
 
   /** Build "who needs what right now" from the faction's active OCs. */
   async function fetchArmoryNeed(apiKey) {
@@ -9488,27 +9461,35 @@
    *   (blank)       — not loaned out; nothing to say
    */
   async function initArmoryAnnotations() {
+    const generation = ++_armoryAnnotationGeneration;
+    if (_ocmArmoryObserver) _ocmArmoryObserver.disconnect();
+    _ocmArmoryObserver = null;
+    _ocmArmoryObservedRoot = null;
     if (!location.href.includes('factions.php')) return;
     if (!location.hash.includes('tab=armoury')) return;
 
-    const apiKey = GM_getValue(GMK.API_KEY, '');
+    const apiKey = hubEffectiveTornKey();
     if (!apiKey) return;
 
-    const firstRow = await waitForEl('.item-list li .img-wrap[data-itemid]', 15000);
+    const cancelled = () => generation !== _armoryAnnotationGeneration || !location.hash.includes('tab=armoury');
+    const firstRow = await waitForEl('.item-list li .img-wrap[data-itemid]', 15000,
+      el => nativeArmouryWrap()?.contains(el), cancelled);
     if (!firstRow) return;
-    if (!NATIVE_LOAN_SUBS.has(activeArmourySub())) return;
-    const wrap = firstRow.closest('.armoury-tabs') || document.querySelector('.armoury-temporary-wrap');
+    const wrap = nativeArmouryWrap();
     if (!wrap) return;
 
     if (!_armoryNeed) {
       try {
         _armoryNeed = await fetchArmoryNeed(apiKey);
       } catch (e) {
+        if (cancelled() || nativeArmouryWrap() !== wrap || !wrap.isConnected) return;
         wrap.classList.remove('ocm-armory-annotated');   // don't leave the layout broken
         ocmToast('Could not load OC status for the armory: ' + e.message, 'warn');
         return;
       }
     }
+
+    if (cancelled() || nativeArmouryWrap() !== wrap || !wrap.isConnected) return;
 
     paintArmoryColumn(wrap, _armoryNeed);
 
@@ -9519,7 +9500,7 @@
     _ocmArmoryObservedRoot = wrap;
     let painting = false;
     const obs = new MutationObserver(() => {
-      if (!wrap.isConnected) {
+      if (cancelled() || nativeArmouryWrap() !== wrap || !wrap.isConnected) {
         obs.disconnect();
         if (_ocmArmoryObserver === obs) {
           _ocmArmoryObserver = null;
@@ -9537,20 +9518,26 @@
       fetchArmoryNeed(apiKey)
         .then(n => { _armoryNeed = n; })
         .catch(() => {})
-        .finally(() => { paintArmoryColumn(wrap, _armoryNeed); painting = false; });
+        .finally(() => {
+          if (!cancelled() && wrap.isConnected && nativeArmouryWrap() === wrap) paintArmoryColumn(wrap, _armoryNeed);
+          painting = false;
+        });
     });
     _ocmArmoryObserver = obs;
     obs.observe(wrap, { childList: true, subtree: true });
   }
 
   /** Poll for an element to appear (the armory list renders async). */
-  function waitForEl(selector, timeoutMs = 10000) {
+  function waitForEl(selector, timeoutMs = 10000, accept = () => true, cancelled = () => false) {
     return new Promise(resolve => {
-      const found = document.querySelector(selector);
+      if (cancelled()) return resolve(null);
+      const find = () => [...document.querySelectorAll(selector)].find(accept);
+      const found = find();
       if (found) return resolve(found);
       const deadline = Date.now() + timeoutMs;
       const t = setInterval(() => {
-        const el = document.querySelector(selector);
+        if (cancelled()) { clearInterval(t); resolve(null); return; }
+        const el = find();
         if (el) { clearInterval(t); resolve(el); }
         else if (Date.now() > deadline) { clearInterval(t); resolve(null); }
       }, 250);
@@ -9568,6 +9555,7 @@
   // Roll-up state — a session-scoped toggle (not persisted to storage), so it
   // resets on a fresh page load but survives re-renders (hashchange between subs).
   let _nativeLoansCollapsed = false;
+  let _nativeLoanListGeneration = 0;
 
   function nativeLoanCardHtml(snap) {
     const wrapStyle = 'background:#0f1728;border:1px solid #223a58;border-radius:8px;padding:12px 14px;margin:0 0 14px;color:#dbe6f5;font:12px/1.6 Arial,Helvetica,sans-serif';
@@ -9584,6 +9572,10 @@
     }
     const ageM = Math.max(0, Math.round((Date.now() / 1000 - (snap.ts || 0)) / 60));
     const ageTxt = ageM < 1 ? 'just now' : ageM < 60 ? `${ageM}m ago` : `${Math.round(ageM / 60)}h ago`;
+    if (ageM > 5) {
+      return `<div id="ocm-native-loans-inner" style="${wrapStyle}">${head(`<span style="color:#e0a83a;font-size:10.5px">as of ${ageTxt}</span>`)}
+        <div id="ocm-native-loans-body" style="${_nativeLoansCollapsed ? 'display:none;' : ''}margin-top:6px">This loan worklist is out of date. <a href="/factions.php?step=your#/tab=crimes" style="color:#5ad1e0">Open Crimes and refresh OC Suite</a> before preparing loans or retrieving items.</div></div>`;
+    }
     const loans = snap.loans || [];
     const returnable = snap.returnable || [];
     const types = snap.itemTypes || {};
@@ -9617,15 +9609,18 @@
 
   /** Mount (or refresh) the native-page loans card above the item list. */
   async function mountNativeLoanList() {
+    const generation = ++_nativeLoanListGeneration;
     if (!location.href.includes('factions.php')) return;
     if (!location.hash.includes('tab=armoury')) return;
     const subMatch = location.hash.match(/sub=([a-z]+)/i);
     const sub = activeArmourySub() || (subMatch ? subMatch[1].toLowerCase() : '');
     if (!NATIVE_LOAN_SUBS.has(sub)) return; // Loot/Points/Deposit aren't give-able
 
-    const firstRow = await waitForEl('.item-list li .img-wrap[data-itemid]', 15000);
+    const cancelled = () => generation !== _nativeLoanListGeneration || !location.hash.includes('tab=armoury');
+    const firstRow = await waitForEl('.item-list li .img-wrap[data-itemid]', 15000,
+      el => nativeArmouryWrap()?.contains(el), cancelled);
     if (!firstRow) return;
-    const wrap = firstRow.closest('.armoury-tabs') || document.querySelector('.armoury-temporary-wrap');
+    const wrap = nativeArmouryWrap();
     if (!wrap || !wrap.parentElement) return;
 
     let card = document.getElementById('ocm-native-loans');
@@ -9699,6 +9694,7 @@
   let _ocMoneyPainting = false;
   let _ocmMoneyObserver = null;
   let _ocmMoneyObservedRoot = null;
+  let _ocmMoneyInitGeneration = 0;
   function annotateNativeOcCards() {
     if (_ocMoneyPainting) return;
     _ocMoneyPainting = true;
@@ -9732,10 +9728,16 @@
 
   /** Paint the native cards, and keep them painted across Torn's own re-renders. */
   async function initNativeOcMoney() {
+    const generation = ++_ocmMoneyInitGeneration;
+    if (_ocmMoneyObserver) _ocmMoneyObserver.disconnect();
+    _ocmMoneyObserver = null;
+    _ocmMoneyObservedRoot = null;
     if (!location.href.includes('factions.php')) return;
-    const root = (await waitForEl('#faction-crimes-root', 15000))
+    if (!location.hash.includes('tab=crimes')) return;
+    const cancelled = () => generation !== _ocmMoneyInitGeneration || !location.hash.includes('tab=crimes');
+    const root = (await waitForEl('#faction-crimes-root', 15000, () => true, cancelled))
               || document.querySelector('[data-oc-id]')?.parentElement?.parentElement;
-    if (!root) return;
+    if (!root || cancelled()) return;
     if (!root.isConnected) return;
     annotateNativeOcCards();
     if (_ocmMoneyObservedRoot === root && _ocmMoneyObserver) return;
@@ -9747,7 +9749,7 @@
     // retrigger it.
     let t = null;
     const observer = new MutationObserver(() => {
-      if (!root.isConnected) {
+      if (cancelled() || !root.isConnected) {
         observer.disconnect();
         if (_ocmMoneyObserver === observer) {
           _ocmMoneyObserver = null;
@@ -9931,8 +9933,8 @@
 
       if (retrieving) {
         const rBtn = row.querySelector('a[data-role="retrieve"]');
-        if (!rBtn) {
-          ocmToast('No Retrieve option on that row — take it back manually.', 'warn');
+        if (!rBtn || rBtn.getAttribute('aria-disabled') === 'true' || rBtn.classList.contains('disabled')) {
+          ocmToast('No enabled Retrieve option on that row. Check faction permissions or handle it manually.', 'warn');
           return;
         }
         rBtn.click();
@@ -10082,12 +10084,21 @@
    * every refresh, so without an explicit sync one of them would happily sit there
    * showing stale values and quietly disagreeing with the other.
    */
+  const SHARE_SAVE_UNVERIFIED = 'Could not verify that member shares were saved. Check the values and try again.';
   function saveShareByDiff(table) {
-    GM_setValue(GMK.SHARE_BY_DIFF, JSON.stringify(table));
+    const payload = JSON.stringify(table);
+    let verified = false;
+    // Torn PDA's GM bridge may return normally when shared storage rejects a write.
+    try {
+      GM_setValue(GMK.SHARE_BY_DIFF, payload);
+      verified = GM_getValue(GMK.SHARE_BY_DIFF, null) === payload;
+    } catch (_) {}
+    if (!verified) table = loadShareByDiff();
     for (const inp of document.querySelectorAll('.ocm-share-lv, .ocm-cfg-share-lv')) {
       const v = table[inp.dataset.lv];
       if (v != null) inp.value = v;
     }
+    return verified;
   }
 
   /** Read whichever editor was edited into a clean, clamped table. */
@@ -10471,7 +10482,22 @@ ${tables}
   // Shared OC + armoury inputs, stashed each render so the Armoury → OC Stock
   // view can call analyseOcItems() without re-fetching.
   let _armDataCache = null;
+  const _financePages = { ocs: 0, paid: 0, unpaid: 0 };
+  function financePage(rows, key) {
+    const mobilePageSize = ocIsPhoneLayout() ? 10 : 50;
+    const pages = Math.max(1, Math.ceil(rows.length / mobilePageSize));
+    const page = _financePages[key] = Math.max(0, Math.min(_financePages[key] || 0, pages - 1));
+    return {
+      rows: rows.slice(page * mobilePageSize, (page + 1) * mobilePageSize),
+      controls: `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0" role="group" aria-label="${key === 'ocs' ? 'OC history' : key + ' payouts'} pages">
+        <button type="button" data-fin-page="${key}" data-step="-1" ${page === 0 ? 'disabled' : ''} style="min-height:44px">Previous</button>
+        <span>${rows.length} records · ${page + 1} / ${pages}</span>
+        <button type="button" data-fin-page="${key}" data-step="1" ${page >= pages - 1 ? 'disabled' : ''} style="min-height:44px">Next</button></div>`,
+    };
+  }
   function renderFinanceSection(crimes, armory = {}, itemNames = {}, itemValues = {}, loanedOut = [], memberNames = {}, itemTypes = {}) {
+    const _ocViewState = captureOcViewState(document.getElementById('ocm-root'));
+    try {
     // v3.17 split the old single #ocm-finance pane into separate Money and People
     // containers. Guard on one that actually exists — guarding on the deleted
     // #ocm-finance made this whole function return on line 2, silently emptying
@@ -10546,7 +10572,7 @@ ${tables}
       const live = liveByid[String(r.id)];
       if (live) return computeOcCost(live, itemValues);
       anyUnknownCost = true;
-      return { cost: 0, costItems: {} };
+      return { cost: 0, costItems: {}, unknownCost: true };
     };
     const resolveParticipants = (r) => {
       if (r.participants && Object.keys(r.participants).length) return r.participants;
@@ -10610,7 +10636,7 @@ ${tables}
     for (const r of records) {
       const name = normName(r.name);
       const rev = r.money + r.itemValue;
-      const { cost, costItems } = resolveCost(r);
+      const { cost, costItems, unknownCost } = resolveCost(r);
       const net = rev - cost;
       const participants = resolveParticipants(r);
       // Torn's own payout record is the source of truth. Fall back to the manual
@@ -10633,7 +10659,7 @@ ${tables}
         if (!byItemCost[iid]) byItemCost[iid] = { qty: 0, unit, total: 0 };
         byItemCost[iid].qty += qty; byItemCost[iid].total += unit * qty;
       }
-      perOc.push({ id: r.id, name, revenue: rev, cost, net, executedAt: r.executedAt || 0,
+      perOc.push({ id: r.id, name, revenue: rev, cost, costKnown: !unknownCost, net, executedAt: r.executedAt || 0,
                    status: r.status ?? null, difficulty: r.difficulty ?? null,
                    money: r.money, itemValue: r.itemValue, respect: r.respect,
                    items: r.items || {}, costItems, participants, paid, native });
@@ -10856,9 +10882,8 @@ ${tables}
         const pNames = Object.values(r.participants);
         const pCount = pNames.length;
         const pct = splitOf(r);
-        const pctSrc = r.native?.percentage != null
-          ? `Torn's recorded payout: ${pct}%`
-          : `${pct}% — your setting for a level ${r.difficulty ?? '?'} OC (not paid out yet)`;
+        const hasRecordedSplit = r.native?.percentage != null;
+        const pctSrc = hasRecordedSplit ? 'recorded payout split' : `level ${r.difficulty ?? '?'} setting`;
         const perHead = (r.money > 0 && pCount > 0) ? (r.money * pct / 100) / pCount : 0;
         const rewardLines = Object.entries(r.items).map(([iid, qty]) => {
           const unit = Number(itemValues[iid]) || 0;
@@ -10867,7 +10892,7 @@ ${tables}
         const costLines = Object.entries(r.costItems).map(([iid, ci]) => {
           const unit = Number(ci.unit) || Number(itemValues[iid]) || 0;
           return `<div>· <a href="${marketUrlOf(iid)}" target="_blank" style="color:var(--ocm-link);text-decoration:none">${esc(itemName(iid))}</a> ×${ci.qty}${unit?` <span style="color:var(--ocm-text-muted)">@ ${fmtMoney(unit)} = ${fmtMoney(unit*ci.qty)}</span>`:''}</div>`;
-        }).join('') || '<div style="color:var(--ocm-text-muted)">none (no consumed materials)</div>';
+        }).join('') || (r.costKnown === false ? '<div class="ocm-cost-unknown" style="color:var(--ocm-cpr-warn)">Unknown — this OC predates item cost tracking.</div>' : '<div style="color:var(--ocm-text-muted)">none (no consumed materials)</div>');
         return `
           <div style="display:flex;gap:18px;flex-wrap:wrap;padding:10px 12px;background:var(--ocm-bg);border-radius:6px;font-size:11px;line-height:1.6">
             <div style="flex:1;min-width:180px">
@@ -10889,7 +10914,7 @@ ${tables}
                     ? `<span style="color:var(--ocm-cpr-good)" title="Matched a ${fmtMoney(cl.matched.amount)} give on ${dateStr(cl.matched.ts)}${cl.matched.mode==='lump'?' (lump sum covering '+cl.matched.covers+' OCs)':''}">${esc(nm)} ✓</span>`
                     : `<span style="color:var(--ocm-cpr-warn)" title="No matching give found — owed ${fmtMoney(cl.expected)}">${esc(nm)} •</span>`;
                 }).join(', ') : '<span style="color:var(--ocm-text-muted)">unknown — recorded before v3.12 and out of API window</span>'}</div>
-              ${perHead > 0 ? `<div style="margin-top:2px">Suggested split: <b>${fmtMoney(perHead)}</b> each <span style="color:var(--ocm-text-muted)">(${pCount} × ${sharePct}% of cash)</span></div>` : ''}
+              ${r.money > 0 && pCount > 0 ? `<div style="margin-top:2px">${hasRecordedSplit ? 'Calculated' : 'Estimated'} per member: <b>${fmtMoney(perHead)}</b> <span style="color:var(--ocm-text-muted)">(${pct}% of cash split among ${pCount}; ${esc(pctSrc)})</span></div>` : ''}
               ${r.native
                 ? `<div style="margin-top:6px;font-size:11px;color:${r.native.paid?'var(--ocm-cpr-good)':'var(--ocm-cpr-warn)'}" title="From Torn's own OC payout record — not editable here.">${r.native.paid
                     ? `✓ Paid ${dateStr(r.native.at)}${r.native.percentage!=null?` · ${r.native.percentage}% to members`:''}`
@@ -10898,12 +10923,13 @@ ${tables}
             </div>
           </div>`;
       };
-      const rows = perOc.map(r => `<tr class="ocm-fin-ocrow" data-oc="${esc(String(r.id))}" style="cursor:pointer">
+      const ocPage = financePage(perOc, 'ocs');
+      const rows = ocPage.rows.map(r => `<tr class="ocm-fin-ocrow" data-oc="${esc(String(r.id))}" style="cursor:pointer">
           <td style="color:var(--ocm-text-muted);white-space:nowrap">${dateStr(r.executedAt)}</td>
           <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.name)} — click for full breakdown">▸ ${esc(r.name)}</td>
           <td class="td-right" style="color:var(--ocm-text-dim)">${fmtMoney(r.revenue)}</td>
-          <td class="td-right" style="color:var(--ocm-cpr-crit)">${negCost(r.cost)}</td>
-          <td class="td-right" style="color:${netColor(r.net)};font-weight:bold">${fmtMoney(r.net)}</td>
+          <td class="td-right" style="color:var(--ocm-cpr-crit)">${r.costKnown === false ? '<span class="ocm-cost-unknown" style="color:var(--ocm-cpr-warn)">Unknown</span>' : negCost(r.cost)}</td>
+          <td class="td-right" style="color:${netColor(r.net)};font-weight:bold">${r.costKnown === false ? '~ ' : ''}${fmtMoney(r.net)}</td>
           <td style="text-align:center" title="${paidCell(r).title}">${paidCell(r).icon}</td>
         </tr>
         <tr class="ocm-fin-detail" data-oc="${esc(String(r.id))}" style="display:none"><td colspan="6" style="padding:4px 6px 10px">${detailHtml(r)}</td></tr>`).join('');
@@ -10917,9 +10943,8 @@ ${tables}
         </div>
         <div id="ocm-share-panel" style="display:none;border:1px solid var(--ocm-border-soft);border-radius:6px;padding:10px 12px;margin-bottom:10px;background:var(--ocm-bg-card)">
           <div style="font-size:11px;color:var(--ocm-text-muted);line-height:1.6;margin-bottom:8px">
-            The cut members get, per OC level. Used to work out earnings for OCs that
-            <b>haven't been paid yet</b> — for anything Torn has actually paid out, the real recorded
-            percentage always wins, because that's what genuinely happened.
+            Set the estimated member share per OC level when Torn has no recorded payout split.
+            Changing these settings does not affect recorded splits.
             <br>Level 10 also covers anything higher, so "5+" just means levels 5–10 share a value.
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end">
@@ -10933,7 +10958,7 @@ ${tables}
             <button id="ocm-share-save" class="ocm-join-btn" style="padding:5px 12px;margin-left:6px">Save</button>
             <button id="ocm-share-reset" class="ocm-join-btn" style="padding:5px 10px;background:none;border-color:var(--ocm-border);color:var(--ocm-text-muted)"
               title="Back to 100/100/90/90/80…">Reset</button>
-            <span id="ocm-share-msg" style="font-size:11px;color:var(--ocm-cpr-good);margin-left:4px"></span>
+            <span id="ocm-share-msg" role="status" style="font-size:11px;color:var(--ocm-cpr-good);margin-left:4px"></span>
           </div>
         </div>
         <div style="font-size:10px;color:var(--ocm-text-muted);margin-bottom:6px">Click a row for the full breakdown — rewards, consumed materials, crew, suggested split, and the Paid toggle. Paid ✓/• column tracks which cash payouts you've distributed.</div>
@@ -10942,7 +10967,7 @@ ${tables}
             <thead><tr><th style="width:56px">Date</th><th style="width:auto">OC</th>
               <th class="td-right" style="width:76px">Revenue</th><th class="td-right" style="width:70px">Cost</th>
               <th class="td-right" style="width:78px">Net</th><th style="width:38px;text-align:center">Paid</th></tr></thead>
-            <tbody>${rows}</tbody></table></div>`;
+            <tbody>${rows}</tbody></table></div>${ocPage.controls}`;
     }
 
     // — Trends pane
@@ -11133,7 +11158,10 @@ ${tables}
         </tr>
         ${paid ? `<tr class="ocm-pay-detail" data-oc="${esc(String(r.id))}"><td colspan="7"><div class="ocm-pay-crewwrap">${crewDetail(r)}</div></td></tr>` : ''}`;
       }).join('');
-      const ocTable = (rows, title, note, paid) => !rows.length ? '' : `
+      const ocTable = (rows, title, note, paid) => {
+        if (!rows.length) return '';
+        const page = financePage(rows, paid ? 'paid' : 'unpaid');
+        return `
         <div class="ocm-section-title" style="margin-top:16px">${title}</div>
         ${note ? `<div style="font-size:11px;color:var(--ocm-text-muted);margin-bottom:8px;line-height:1.5">${note}</div>` : ''}
         <table class="ocm-pay-table">
@@ -11145,7 +11173,8 @@ ${tables}
             <th style="width:96px;text-align:right" title="What each participant received">Each</th>
             <th style="width:86px;text-align:right">Paid</th>
           </tr></thead>
-          <tbody>${ocRows(rows, paid)}</tbody></table>`;
+          <tbody>${ocRows(page.rows, paid)}</tbody></table>${page.controls}`;
+      };
 
       payoutsPane = kpis + memberTable
         + ocTable(unpaidOcs, `⏳ Awaiting Payout (${unpaidOcs.length})`,
@@ -11513,7 +11542,7 @@ ${tables}
     if (bfBtn && !bfBtn.__wired) {
       bfBtn.__wired = true;
       bfBtn.addEventListener('click', async () => {
-        const key = GM_getValue(GMK.API_KEY, '');
+        const key = hubEffectiveTornKey();
         if (!key) { bfStatus.innerHTML = '<span style="color:var(--ocm-cpr-crit)">Set your API key in Config first.</span>'; return; }
         bfBtn.disabled = true;
         bfBtn.textContent = 'Working…';
@@ -11530,7 +11559,7 @@ ${tables}
               bfStatus.innerHTML = `Fetching… ${p.total} OCs archived, back to ${p.oldest.toLocaleDateString()} (${p.calls} calls)`;
             }
           });
-          setTimeout(() => loadData(GM_getValue(GMK.API_KEY, '')), 800);
+          setTimeout(() => loadData(hubEffectiveTornKey()), 800);
         } catch (e) {
           bfStatus.innerHTML = `<span style="color:var(--ocm-cpr-crit)">Backfill failed: ${esc(e.message)}</span>`;
         } finally {
@@ -11637,6 +11666,13 @@ ${tables}
 
     // ── wire paid toggles (stopPropagation so the row doesn't collapse)
     const rerender = () => renderFinanceSection(crimes, armory, itemNames, itemValues, loanedOut, memberNames, itemTypes);
+    el.querySelectorAll('[data-fin-page]').forEach(button => button.addEventListener('click', () => {
+      const key = button.dataset.finPage;
+      if (!Object.hasOwn(_financePages, key)) return;
+      _financePages[key] += Number(button.dataset.step);
+      rerender();
+      el.querySelector(`[data-fin-page="${key}"][data-step="${button.dataset.step}"]`)?.focus();
+    }));
     el.querySelectorAll('.ocm-paid-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -11676,15 +11712,15 @@ ${tables}
         shareToggle.textContent = open ? '⚖ Member share by level' : '× Close';
       });
     }
-    document.getElementById('ocm-share-save')?.addEventListener('click', () => {
-      saveShareByDiff(readShareInputs('.ocm-share-lv'));
-      if (shareMsg) shareMsg.textContent = '✓ Saved';
-      rerender();
-    });
-    document.getElementById('ocm-share-reset')?.addEventListener('click', () => {
-      saveShareByDiff({ ...DEFAULT_SHARE_BY_DIFF });
-      rerender();
-    });
+    const commitShares = table => {
+      if (saveShareByDiff(table)) rerender();
+      else if (shareMsg) {
+        shareMsg.style.color = 'var(--ocm-cpr-warn)';
+        shareMsg.textContent = SHARE_SAVE_UNVERIFIED;
+      }
+    };
+    document.getElementById('ocm-share-save')?.addEventListener('click', () => commitShares(readShareInputs('.ocm-share-lv')));
+    document.getElementById('ocm-share-reset')?.addEventListener('click', () => commitShares({ ...DEFAULT_SHARE_BY_DIFF }));
 
     // ── wire profit controls (full re-render)
     el.querySelectorAll('.ocm-profit-view-btn').forEach(btn => {
@@ -11698,190 +11734,102 @@ ${tables}
     });
     const clearBtn = document.getElementById('ocm-profit-since-clear');
     if (clearBtn) clearBtn.addEventListener('click', () => { GM_setValue(GMK.PROFIT_SINCE, 0); rerender(); });
+    } finally { restoreOcViewState(_ocViewState); }
   }
 
 
-  /**
-   * TornStats Coverage checker — cross-references the faction roster against the
-   * TornStats CPR data we have, showing who has CPR data in TornStats and who
-   * doesn't. Members without data either haven't shared their CPRs with the faction
-   * on TornStats, or haven't visited the crimes page to submit them.
-   */
+  // Exact crime/role coverage only: never substitute another role for a missing record.
+  function buildCprCoverage(memberMap, live = {}, ts = {}, archive = {}, history = {}) {
+    const members = Object.entries(memberMap || {}).map(([id, m]) => ({ uid: String(m.id || id), name: m.name || '#' + id }))
+      .filter(m => /^\d+$/.test(m.uid));
+    const roster = new Map(members.map(m => [m.uid, m.name]));
+    const crimes = new Map();
+    const norm = s => String(s || '').trim().toLowerCase().replace(/\s*#\d+$/, '');
+    const add = (uid, crime, role, value, source, at = 0) => {
+      if (!roster.has(String(uid)) || value == null || typeof value === 'boolean' || String(value).trim() === '') return;
+      const cpr = Number(value), ck = norm(crime), rk = norm(role);
+      if (!ck || !rk || !Number.isFinite(cpr) || cpr < 0 || cpr > 100) return;
+      if (!crimes.has(ck)) crimes.set(ck, { name: crime, roles: new Map() });
+      const bucket = crimes.get(ck).roles;
+      if (!bucket.has(rk)) bucket.set(rk, new Map());
+      const records = bucket.get(rk), old = records.get(String(uid));
+      const priority = { History: 1, TornStats: 2, Live: 3 };
+      if (old && (priority[old.source] > priority[source] || (old.source === source && old.at > at))) return;
+      records.set(String(uid), { uid: String(uid), name: roster.get(String(uid)), cpr, source, at });
+    };
+    for (const [uid, cs] of Object.entries(ts || {}))
+      for (const [crime, roles] of Object.entries(cs || {}))
+        for (const [role, value] of Object.entries(roles || {})) add(uid, crime, role, value, 'TornStats');
+    for (const [uid, cs] of Object.entries(history || {}))
+      for (const [crime, roles] of Object.entries(cs || {}))
+        for (const [role, entry] of Object.entries(roles || {}))
+          if (entry?.count > 0) add(uid, crime, role, entry.sum / entry.count, 'History');
+    for (const [uid, entry] of Object.entries(archive || {}))
+      for (const slot of Object.values(entry?.slots || {}))
+        if (Number(slot.executedAt) > 0) add(uid, slot.ocName, slot.role, slot.cpr, 'History', Number(slot.executedAt));
+    for (const [uid, cs] of Object.entries(live || {}))
+      for (const [crime, roles] of Object.entries(cs || {}))
+        for (const [role, value] of Object.entries(roles || {})) add(uid, crime, role, value, 'Live');
+    const byCrime = Object.create(null);
+    for (const { name, roles } of crimes.values())
+      byCrime[name] = Object.fromEntries([...roles].map(([role, records]) => [role, [...records.values()]]));
+    return { members, byCrime };
+  }
+
   function renderTsCoverage(memberMap) {
     const el = document.getElementById('ocm-tscoverage');
     if (!el) return;
-
-    const tsKey   = GM_getValue(GMK.TS_KEY, '');
-    const members = Object.values(memberMap || {});
-    if (!tsKey) {
-      el.innerHTML = '<div style="color:var(--ocm-text-dim);font-size:12px;padding:12px;line-height:1.5">'
-        + 'No TornStats API key set. Add one in Config to see which members have CPR data on TornStats.</div>';
-      return;
-    }
-    if (!members.length) {
-      el.innerHTML = '<div style="color:var(--ocm-text-dim);font-size:12px;padding:12px">No member roster loaded.</div>';
-      return;
-    }
-
-    // A member is only useful to us if TornStats has enough crime+role records to
-    // actually match the role we're asking about. Someone with a single entry is
-    // technically "on TornStats" but the odds it's the crime+role you need are
-    // negligible — the lookup falls through to a fuzzy guess. Counting them as
-    // covered produced a reassuring 94% that meant nothing.
-    const TS_THIN = 5;   // fewer than this many crime+role records = not usable
-
-    const good = [];     // enough data to answer a specific crime+role
-    const thin = [];     // on TornStats, but barely anything recorded
-    const missing = [];  // nothing at all
-    for (const m of members) {
-      const uid  = String(m.id);
-      const data = tsCprData[uid];
-      let cprCount = 0;
-      if (data && typeof data === 'object') {
-        for (const roles of Object.values(data)) cprCount += Object.keys(roles || {}).length;
-      }
-      const rec = { uid, name: m.name || `#${uid}`, cprCount };
-      if (cprCount === 0) missing.push(rec);
-      else if (cprCount < TS_THIN) thin.push(rec);
-      else good.push(rec);
-    }
-    good.sort((a, b) => b.cprCount - a.cprCount);
-    thin.sort((a, b) => b.cprCount - a.cprCount || a.name.localeCompare(b.name));
-    missing.sort((a, b) => a.name.localeCompare(b.name));
-
-    const total   = members.length;
-    const covPct  = total > 0 ? Math.round(good.length / total * 100) : 0;
-    const covCol  = covPct >= 80 ? 'var(--ocm-cpr-good)' : covPct >= 50 ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)';
-    const noUse   = thin.length + missing.length;
-
-    const chip = (m, bg, border, col, label) => `<a href="/profiles.php?XID=${m.uid}" target="_blank" style="text-decoration:none"
-        title="${esc(m.name)} — ${m.cprCount} crime/role CPR${m.cprCount === 1 ? '' : 's'} recorded on TornStats.${label}">
-        <span style="display:inline-block;background:${bg};border:1px solid ${border};border-radius:4px;padding:3px 8px;font-size:11px;color:${col}">
-          ${esc(m.name)} <b style="opacity:.75;font-weight:600">${m.cprCount}</b>
-        </span></a>`;
-
-    const summary = `
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        ${kpiTile('Usable', `${covPct}%`, `${good.length} of ${total} members`, covCol)}
-        ${kpiTile('Good data', good.length, `${TS_THIN}+ roles recorded`, 'var(--ocm-cpr-good)')}
-        ${kpiTile('Barely any', thin.length, `1–${TS_THIN - 1} roles — not usable`, thin.length ? 'var(--ocm-cpr-warn)' : 'var(--ocm-text-dim)')}
-        ${kpiTile('Nothing', missing.length, 'no CPR data at all', missing.length ? 'var(--ocm-cpr-crit)' : 'var(--ocm-cpr-good)')}
-      </div>
-      <div style="font-size:11px;color:var(--ocm-text-muted);line-height:1.6;margin-bottom:10px">
-        The number on each name is how many <b>crime + role</b> CPRs TornStats has for them — not a CPR.
-        A member with <b>1</b> is on TornStats but effectively useless: the odds that single record is the exact
-        role you're checking are tiny, so the lookup falls back to a guess. That's why they're counted as
-        <b style="color:var(--ocm-cpr-warn)">Barely any</b> here rather than as coverage.
-        <br>This matters less than it used to — the script now prefers its own recorded CPRs from completed OCs,
-        so these gaps close themselves as people actually run crimes.
-      </div>`;
-
-    const missingList = missing.length === 0
-      ? ''
-      : `<div class="ocm-section-title" style="margin-top:4px">❌ Nothing on TornStats (${missing.length})</div>
-         <div style="font-size:10px;color:var(--ocm-text-muted);margin:4px 0 6px">No CPR data at all. They haven't shared CPRs with the faction (TornStats → Settings → Share CPR with Faction), or have never submitted them.</div>
-         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
-           ${missing.map(m => `<a href="/profiles.php?XID=${m.uid}" target="_blank" style="text-decoration:none">
-             <span style="display:inline-block;background:#1c1410;border:1px solid #4a2820;border-radius:4px;padding:3px 8px;font-size:11px;color:var(--ocm-cpr-crit)">${esc(m.name)}</span>
-           </a>`).join('')}
-         </div>`;
-
-    const thinList = thin.length === 0
-      ? ''
-      : `<div class="ocm-section-title" style="margin-top:14px">⚠ Barely Any Data (${thin.length})</div>
-         <div style="font-size:10px;color:var(--ocm-text-muted);margin:4px 0 6px">On TornStats, but with fewer than ${TS_THIN} crime/role records — treat these as having no usable data. They'll improve on their own as they run OCs.</div>
-         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
-           ${thin.map(m => chip(m, '#2a2416', '#5a4a2a', 'var(--ocm-cpr-warn)', ' Too few to match a specific role reliably.')).join('')}
-         </div>`;
-
-    const goodList = good.length === 0
-      ? '<div style="color:var(--ocm-text-faint);font-size:12px;padding:8px 0">No member has usable TornStats data yet.</div>'
-      : `<div class="ocm-section-title" style="margin-top:14px">✓ Good Data (${good.length})</div>
-         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">
-           ${good.map(m => chip(m, '#14241a', '#2f4a34', 'var(--ocm-cpr-good)', ' Enough records to match a specific crime + role.')).join('')}
-         </div>`;
-
-    el.innerHTML = summary + missingList + thinList + goodList;
+    const model = buildCprCoverage(memberMap, {}, tsCprData, cprArchive(), window._ocmHistoryCpr || {});
+    const imported = new Set(), historical = new Set();
+    for (const roles of Object.values(model.byCrime))
+      for (const records of Object.values(roles))
+        for (const record of records) (record.source === 'TornStats' ? imported : historical).add(record.uid);
+    el.innerHTML = '<div style="padding:12px;line-height:1.6">'
+      + '<strong>' + model.members.length + ' faction members · ' + imported.size + ' with TornStats records</strong>'
+      + '<br>' + historical.size + ' members have historical fallback records for roles missing from TornStats.'
+      + '<br>Coverage varies by crime and role. One matching record is useful; a missing value is unknown, not 0%.'
+      + '<br>TornStats returns the records available to your key, not necessarily every faction member. Check faction CPR sharing on TornStats; refresh the import in Config → Fetch CPR.'
+      + '<br>History uses locally available completed OCs. It cannot recover records that have never been loaded.</div>';
   }
 
   function renderTsCprSection(memberMap, liveCprMap = {}) {
     const el = document.getElementById('ocm-tscpr'), title = document.getElementById('ocm-title-tscpr');
     if (!el) return;
-    if (!tsCprData || Object.keys(tsCprData).length === 0) {
-      if (title) title.textContent = '📈 TornStats CPR';
-      el.innerHTML = '<span style="color:var(--ocm-text-faint);font-size:11px">No data. Add TornStats key in \u2699 Config \u2192 \u2b07 Fetch CPR.</span>';
+    const previous = el.querySelector('[data-cpr-crime]')?.value;
+    const model = buildCprCoverage(memberMap, liveCprMap, tsCprData, cprArchive(), window._ocmHistoryCpr || {});
+    const crimes = Object.keys(model.byCrime).sort((a, b) => a.localeCompare(b));
+    if (title) title.textContent = '📈 CPR Data — ' + model.members.length + ' faction members';
+    if (!crimes.length) {
+      el.innerHTML = '<p>No exact CPR records available from current slots, TornStats, or loaded completed OCs. Import CPR in Config or load OC history. Missing data is not a 0% pass rate.</p>';
       return;
     }
-    const idToName = {};
-    if (memberMap) for (const m of Object.values(memberMap)) idToName[String(m.id)] = m.name || `#${m.id}`;
-    const byCrime = {};
-    for (const [uid, crimes] of Object.entries(tsCprData))
-      for (const [crime, roles] of Object.entries(crimes))
-        for (const [role, cpr] of Object.entries(roles)) {
-          if (!byCrime[crime]) byCrime[crime] = {};
-          if (!byCrime[crime][role]) byCrime[crime][role] = [];
-          byCrime[crime][role].push({ uid, name: idToName[uid] || `#${uid}`, cpr });
-        }
-    const diffMap = window._ocmCrimeDiffMap || {};
-    const crimeNames = Object.keys(byCrime).sort((a, b) => {
-      const da = diffMap[a.toLowerCase().trim()] ?? 999;
-      const db = diffMap[b.toLowerCase().trim()] ?? 999;
-      return da - db || a.localeCompare(b);
-    });
-    if (title) title.textContent = `📈 TornStats CPR \u2014 ${Object.keys(tsCprData).length} members, ${crimeNames.length} crimes`;
-    let html = '';
-    for (const crime of crimeNames) {
-      const crimeKey = crime.toLowerCase().trim();
-      const roles = Object.keys(byCrime[crime]).sort();
-      const ms = new Map();
-      for (const role of roles) for (const e of byCrime[crime][role]) if (!ms.has(e.uid)) ms.set(e.uid, e.name);
-
-      // cprs[uid][role] = { cpr, live } — live flag set when overridden by a current slot
-      const cprs = {};
-      for (const role of roles) {
-        const roleKey = role.replace(/\s*#\d+$/, '').toLowerCase().trim();
-        for (const { uid, cpr } of byCrime[crime][role]) {
-          if (!cprs[uid]) cprs[uid] = {};
-          const live = liveCprMap[uid]?.[crimeKey]?.[roleKey];
-          cprs[uid][role] = (live != null) ? { cpr: live, live: true } : { cpr, live: false };
-        }
+    el.innerHTML = '<label>Crime <select data-cpr-crime style="max-width:100%;min-height:44px">'
+      + crimes.map(c => '<option value="' + esc(c) + '">' + esc(c) + '</option>').join('')
+      + '</select></label><p>Current slot → TornStats → historical fallback. History is a past observation, not a current guarantee. Repeated numbered positions share their role.</p>'
+      + '<div data-cpr-summary role="status"></div><div style="max-width:100%;overflow-x:auto" tabindex="0" aria-label="Member CPR table"><table class="ocm-tscpr-table"><thead></thead><tbody></tbody></table></div>';
+    const select = el.querySelector('[data-cpr-crime]');
+    if (crimes.includes(previous)) select.value = previous;
+    const draw = () => {
+      const roles = model.byCrime[select.value], names = Object.keys(roles).sort();
+      const records = new Map();
+      for (const role of names) for (const entry of roles[role]) {
+        if (!records.has(entry.uid)) records.set(entry.uid, {});
+        records.get(entry.uid)[role] = entry;
       }
-      const sorted = [...ms.keys()].sort((a, b) =>
-        Math.min(...Object.values(cprs[a] || {}).map(o => o.cpr)) -
-        Math.min(...Object.values(cprs[b] || {}).map(o => o.cpr)));
-
-      // Header columns: role name + its weight (from getWeight)
-      const thCols = roles.map(r => {
-        const w = getWeight(crime, r.replace(/\s*#\d+$/, ''));
-        const wLabel = w != null
-          ? `<span style="color:var(--ocm-cpr-warn);font-weight:normal;font-size:9px;display:block;line-height:1.2">W ${w.toFixed(0)}%</span>`
-          : '';
-        return `<th style="text-align:right;min-width:62px">${r}${wLabel}</th>`;
-      }).join('');
-
-      const diff = diffMap[crimeKey];
-      const diffBadge = diff != null ? `<span style="color:var(--ocm-link);font-size:10px;margin-left:6px;font-weight:normal">D${diff}</span>` : '';
-      const rows = sorted.map(uid => {
-        const cells = roles.map(role => {
-          const entry = cprs[uid]?.[role];
-          if (entry == null) return '<td style="text-align:right;color:var(--ocm-text-faint)">\u2013</td>';
-          const v = entry.cpr;
-          const col = v >= CPR_WARN ? 'var(--ocm-cpr-good)' : v >= CPR_CRIT ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)';
-          // Live (currently-slotted) values get a small dot + tooltip so it's clear
-          // this is their REAL current CPR, not the TornStats estimate.
-          const liveMark = entry.live
-            ? `<span title="Live CPR from their current OC slot (overrides TornStats estimate)" style="color:var(--ocm-link);font-size:9px;margin-right:2px">\u25cf</span>`
-            : '';
-          return `<td style="text-align:right;font-weight:bold;color:${col}">${liveMark}${v}%</td>`;
-        }).join('');
-        return `<tr><td><a href="/profiles.php?XID=${uid}" target="_blank" style="color:var(--ocm-text-card);text-decoration:none">${esc(ms.get(uid))}</a></td>${cells}</tr>`;
-      }).join('');
-      html += `<div class="ocm-tscpr-oc-block"><div class="ocm-tscpr-oc-header collapsed"><span class="ocm-tscpr-arrow">\u25bc</span>${crime}${diffBadge} <span style="color:var(--ocm-text-muted);font-weight:normal;font-size:10px">(${sorted.length} members)</span></div><div class="ocm-tscpr-oc-body" style="display:none"><table class="ocm-tscpr-table"><thead><tr><th>Member</th>${thCols}</tr></thead><tbody>${rows}</tbody></table></div></div>`;
-    }
-    el.innerHTML = html;
-    el.querySelectorAll('.ocm-tscpr-oc-header').forEach(h => h.addEventListener('click', () => { const b = h.nextElementSibling; const vis = b.style.display === 'none'; b.style.display = vis ? '' : 'none'; h.classList.toggle('collapsed', !vis); }));
+      el.querySelector('[data-cpr-summary]').textContent = records.size + ' / ' + model.members.length
+        + ' members have at least one exact-role record · ' + (model.members.length - records.size) + ' have no records for this crime';
+      el.querySelector('thead').innerHTML = '<tr><th scope="col">Member</th>'
+        + names.map(r => '<th scope="col">' + esc(r) + '</th>').join('') + '</tr>';
+      el.querySelector('tbody').innerHTML = [...model.members].sort((a, b) => a.name.localeCompare(b.name)).map(m =>
+        '<tr><th scope="row">' + esc(m.name) + '</th>' + names.map(role => {
+          const entry = records.get(m.uid)?.[role];
+          return entry ? '<td>' + Math.round(entry.cpr * 10) / 10 + '%<small style="display:block">' + entry.source + '</small></td>'
+            : '<td title="No exact crime and role record">—<small style="display:block">Missing</small></td>';
+        }).join('') + '</tr>').join('');
+    };
+    select.addEventListener('change', draw);
+    draw();
   }
-
   function injectTsBadges(el) {
     if (!tsCprData || Object.keys(tsCprData).length === 0) return;
     el.querySelectorAll('a[href*="profiles.php"]').forEach(link => {
@@ -11899,18 +11847,22 @@ ${tables}
 
   /** Entry point for a data refresh. Falls back to member mode silently on faction API error. */
   let _ocmLoadInFlight = false;
+  let _ocmRefreshOwner = 0;
   // Torn replaces the Crimes pane during SPA navigation. Keep one route watcher
   // for the lifetime of this userscript; adding one from every off-route inject()
   // call retains a closure (and, through it, the whole suite) forever.
   let _ocmInjectRouteHandler = null;
   let _ocmInjectTimer = null;
-  function clearInjectTimer() {
-    if (_ocmInjectTimer) {
-      clearInterval(_ocmInjectTimer);
-      _ocmInjectTimer = null;
-    }
+  let _ocmInjectObserver = null;
+  function clearInjectWait() {
+    _ocmInjectObserver?.disconnect();
+    _ocmInjectObserver = null;
+    clearTimeout(_ocmInjectTimer);
+    _ocmInjectTimer = null;
   }
   async function loadData(apiKey) {
+    apiKey = hubEffectiveTornKey();
+    if (!apiKey || (typeof hubBindingAwake === 'function' && !hubBindingAwake())) return;
     // Concurrency guard: loadData fires from the 60s auto-refresh AND from button
     // clicks / settings changes. Without this, a slow fetch overlapping the next
     // interval tick would run two renders concurrently and interleave DOM writes.
@@ -11921,6 +11873,8 @@ ${tables}
     // stop the auto-refresh rather than throwing on null elements every tick.
     if (!errEl || !btn) { clearInterval(window._ocmRefresh); return; }
     _ocmLoadInFlight = true;
+    const refreshOwner = ++_ocmRefreshOwner;
+    if (typeof hubBindingPending !== 'undefined') hubBindingPending = false;
     errEl.style.display = 'none';
     btn.innerHTML = '<span class="ocm-spinner"></span>Loading…';
     btn.disabled  = true;
@@ -11941,22 +11895,22 @@ ${tables}
         // The await above can outlive a SPA navigation away from the Crimes tab —
         // re-check before touching any DOM (renderMemberDashboard self-guards, but
         // the key-status line below doesn't go through it).
-        if (!document.getElementById('ocm-root')) { _ocmLoadInFlight = false; return; }
+        if (!btn.isConnected) { _ocmLoadInFlight = false; if (typeof hubBindingPending !== 'undefined' && hubBindingPending) hubBindingQueueRefresh(); return; }
         window._ocmDebug = { mode: 'member', fetchedAt: Date.now(), data, forced: true };
         renderMemberDashboard(data);
         document.getElementById('ocm-key-status').textContent = `Key saved ✓ · Member Mode (forced) · ↻${REFRESH_S}s`;
         btn.innerHTML = '↻ Refresh';
         btn.disabled  = false;
-        _ocmLoadInFlight = false;
+        _ocmLoadInFlight = false; if (typeof hubBindingPending !== 'undefined' && hubBindingPending) hubBindingQueueRefresh();
         return;
       } catch (memberErr) {
-        if (!document.getElementById('ocm-root')) { _ocmLoadInFlight = false; return; }
+        if (!btn.isConnected) { _ocmLoadInFlight = false; if (typeof hubBindingPending !== 'undefined' && hubBindingPending) hubBindingQueueRefresh(); return; }
         document.getElementById('ocm-body').style.display = 'block';
         errEl.innerHTML = `&#9888; Member mode fetch failed: ${memberErr.message}`;
         errEl.style.display = 'block';
         btn.innerHTML = '↻ Refresh';
         btn.disabled  = false;
-        _ocmLoadInFlight = false;
+        _ocmLoadInFlight = false; if (typeof hubBindingPending !== 'undefined' && hubBindingPending) hubBindingQueueRefresh();
         return;
       }
     }
@@ -11965,7 +11919,7 @@ ${tables}
       const { faction, members, armory, itemNames, itemValues, itemTypes, lastOc, exMemberNames, viewerId, loanedOut } = await fetchAll(apiKey);
       // The await above can outlive a SPA navigation away from the Crimes tab —
       // renderDashboard self-guards, but the mmSection/TornStats code below doesn't.
-      if (!document.getElementById('ocm-root')) { _ocmLoadInFlight = false; return; }
+      if (!btn.isConnected) { _ocmLoadInFlight = false; if (typeof hubBindingPending !== 'undefined' && hubBindingPending) hubBindingQueueRefresh(); return; }
       // Stash for debug snapshot — sanitised on demand, not here
       window._ocmDebug = { mode: 'leader', fetchedAt: Date.now(), faction, members, armory, itemNames, lastOc, exMemberNames };
       renderDashboard(faction, members, armory, itemNames, lastOc, exMemberNames, itemValues, viewerId, loanedOut, itemTypes);
@@ -11975,12 +11929,21 @@ ${tables}
       const _tsK = GM_getValue(GMK.TS_KEY, '');
       if (_tsK && !isTsCprCacheFresh() && !_tsFetchInFlight && (Date.now() - _tsLastFailAt > TS_FAIL_COOLDOWN)) {
         _tsFetchInFlight = true;
+        const cacheRevision = _tsCacheRevision;
+        const sameImport = () => cacheRevision === _tsCacheRevision
+          && hubEffectiveTornKey() === apiKey && GM_getValue(GMK.TS_KEY, '') === _tsK;
         fetchTornStatsCpr(_tsK)
           .then(d => {
+            if (!sameImport()) return;
             saveTsCprCache(d);
-            renderDashboard(faction, members, armory, itemNames, lastOc, exMemberNames, itemValues, viewerId, loanedOut, itemTypes);
+            // Keep valid imported CPR for the next refresh, but never redraw a superseded Torn snapshot.
+            if (refreshOwner === _ocmRefreshOwner && btn.isConnected
+                && document.getElementById('ocm-refresh-btn') === btn && !GM_getValue(GMK.FORCE_MEMBER, false)) {
+              renderDashboard(faction, members, armory, itemNames, lastOc, exMemberNames, itemValues, viewerId, loanedOut, itemTypes);
+            }
           })
           .catch(err => {
+            if (!sameImport()) return;
             // Record failure so we don't keep hammering the API every refresh
             _tsLastFailAt = Date.now();
             console.warn('[OCM] TornStats fetch failed, backing off for 10 min:', err);
@@ -11992,14 +11955,14 @@ ${tables}
       console.warn('[OCM] Leader mode failed, falling back to member mode:', leaderErr);
       try {
         const data = await fetchMember(apiKey);
-        if (!document.getElementById('ocm-root')) { _ocmLoadInFlight = false; return; }
+        if (!btn.isConnected) { _ocmLoadInFlight = false; if (typeof hubBindingPending !== 'undefined' && hubBindingPending) hubBindingQueueRefresh(); return; }
         window._ocmDebug = { mode: 'member', fetchedAt: Date.now(), data, leaderErr: leaderErr.message };
         renderMemberDashboard(data);
         document.getElementById('ocm-key-status').textContent = `Key saved ✓ · Member Mode · ↻${REFRESH_S}s · (leader: ${leaderErr.message})`;
       } catch (memberErr) {
         // Both failed — show error and open config panel. Also possible the DOM
         // itself is gone (SPA navigated away mid-fetch) — bail quietly, not a crash.
-        if (!document.getElementById('ocm-root')) { _ocmLoadInFlight = false; return; }
+        if (!btn.isConnected) { _ocmLoadInFlight = false; if (typeof hubBindingPending !== 'undefined' && hubBindingPending) hubBindingQueueRefresh(); return; }
         document.getElementById('ocm-body').style.display = 'block';
         document.getElementById('ocm-config-panel').style.display = 'block';
         errEl.innerHTML = `&#9888; Could not load data: ${memberErr.message}<br>
@@ -12009,14 +11972,14 @@ ${tables}
     } finally {
       btn.innerHTML = '↻ Refresh';
       btn.disabled  = false;
-      _ocmLoadInFlight = false;
+      _ocmLoadInFlight = false; if (typeof hubBindingPending !== 'undefined' && hubBindingPending) hubBindingQueueRefresh();
     }
   }
 
   /** Schedule the auto-refresh interval. Clears any existing interval first. */
   function scheduleRefresh(apiKey) {
     clearInterval(window._ocmRefresh);
-    window._ocmRefresh = setInterval(() => loadData(apiKey), REFRESH_S * 1000);
+    window._ocmRefresh = setInterval(() => loadData(hubEffectiveTornKey()), REFRESH_S * 1000);
     document.getElementById('ocm-footer').textContent = `Auto-refreshes every ${REFRESH_S}s`;
   }
 
@@ -12157,28 +12120,29 @@ ${tables}
     const inputs = document.querySelectorAll('.ocm-cfg-share-lv');
     if (!inputs.length) return;
     const msg = document.getElementById('ocm-cfg-share-msg');
-    const flash = () => {
+    const flash = verified => {
       if (!msg) return;
-      msg.textContent = '✓ Saved';
       clearTimeout(msg.__t);
-      msg.__t = setTimeout(() => { msg.textContent = ''; }, 1800);
+      msg.style.color = verified ? 'var(--ocm-cpr-good)' : 'var(--ocm-cpr-warn)';
+      msg.textContent = verified ? '✓ Saved' : SHARE_SAVE_UNVERIFIED;
+      if (verified) msg.__t = setTimeout(() => { msg.textContent = ''; }, 1800);
     };
     // Refresh the same way every other Config setting does.
     const refresh = () => {
-      const key = GM_getValue(GMK.API_KEY, '');
+      const key = hubEffectiveTornKey();
       if (key) loadData(key);
     };
     for (const inp of inputs) {
       inp.addEventListener('change', () => {
-        saveShareByDiff(readShareInputs('.ocm-cfg-share-lv'));
-        flash();
-        refresh();
+        const verified = saveShareByDiff(readShareInputs('.ocm-cfg-share-lv'));
+        flash(verified);
+        if (verified) refresh();
       });
     }
     document.getElementById('ocm-cfg-share-reset')?.addEventListener('click', () => {
-      saveShareByDiff({ ...DEFAULT_SHARE_BY_DIFF });
-      flash();
-      refresh();
+      const verified = saveShareByDiff({ ...DEFAULT_SHARE_BY_DIFF });
+      flash(verified);
+      if (verified) refresh();
     });
   }
 
@@ -12249,6 +12213,8 @@ ${tables}
         p.classList.toggle('active', selected);
         p.setAttribute('aria-hidden', String(!selected));
       });
+      const mobileNav = document.querySelector('#ocm-root .ocm-mobile-nav select');
+      if (mobileNav) mobileNav.value = tabName;
       GM_setValue(GMK.ACTIVE_TAB, tabName);
     }
 
@@ -12310,6 +12276,8 @@ ${tables}
           const controller = subtabs.find(b => `ocm-sub-${b.dataset.sub}` === p.id);
           if (controller) p.setAttribute('aria-labelledby', controller.id);
         });
+        const mobileSub = pane.querySelector('.ocm-mobile-subnav select');
+        if (mobileSub) mobileSub.value = sub;
         GM_setValue(key, sub);
       };
       subtabs.forEach(b => b.addEventListener('click', () => show(b.dataset.sub)));
@@ -12380,2424 +12348,27 @@ ${tables}
     // Money badge is owned by the finance render (OCs awaiting payout).
   }
 
-  // ─── INJECT MAIN DASHBOARD ───────────────────────────────────────────────────
-
-  /** Inject the dashboard into the OC tab when the URL matches. */
-  // War tab — NATIVE render (premium look) driven by the embedded TWPR engine.
-  // ═══ NATIVE WAR SUB-APP — rebuilt from the War Payout Report, driven by the TWPR engine ═══
-  const _num  = n => Math.round(Number(n) || 0).toLocaleString('en-US');
-  const _fmt2 = n => { const v = Number(n) || 0; return Number.isInteger(v) ? v.toLocaleString('en-US') : v.toFixed(2); };
-  const _nameLink = (name, id) => id
-    ? `<a href="/profiles.php?XID=${id}" target="_blank" style="color:var(--ocm-link);font-weight:600;text-decoration:none">${OCUI.esc(name)}</a>`
-    : `<span style="font-weight:600">${OCUI.esc(name)}</span>`;
-  // One grouped stat strip — big number + label + sub-label, divider between each. items: [{v,l1,l2,color}]
-  function _warOverview(items) {
-    const stat = it => `<div style="display:flex;flex-direction:column;gap:3px;min-width:92px"><span style="font-size:22px;font-weight:800;line-height:1${it.color ? ';color:' + it.color : ''}">${it.v}</span><span style="color:var(--ocm-text);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em">${it.l1}</span><span style="color:var(--ocm-text-faint);font-size:10.5px">${it.l2 || ''}</span></div>`;
-    const div = '<div style="width:1px;align-self:stretch;background:var(--ocm-border-soft)"></div>';
-    return `<div class="ocm-card" style="padding:14px 18px;margin-bottom:8px"><div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">${items.map(stat).join(div)}</div></div>`;
-  }
-  const _selStyle   = 'background:var(--ocm-bg);border:1px solid var(--ocm-border-soft);border-radius:8px;color:var(--ocm-text);padding:7px 10px;font-size:12px';
-  const _genBtnStyle = 'background:linear-gradient(180deg,#2ea0e6,#1c7fd0);border:none;color:#04121f;font-weight:800;border-radius:8px;padding:8px 16px;font-size:12.5px;cursor:pointer';
-  const _warTabs = [
-    { key: 'command', label: '🎯 Battle overview', group: 'battle' }, { key: 'contracts', label: '📜 Contracts', group: 'battle' }, { key: 'planner', label: '🧮 Score planner', group: 'battle' },
-    { key: 'report', label: '⚔️ War report', group: 'reports' }, { key: 'drugs', label: '💊 Drug usage', group: 'reports' },
-    { key: 'sweep', label: '📊 Multi-war', group: 'reports' }, { key: 'raffle', label: '🎟️ Raffle', group: 'reports' }, { key: 'guide', label: 'ℹ️ Guide', group: 'reports' },
-  ];
-  const _warGroups = [ { key: 'battle', label: '⚔️ Battle' }, { key: 'reports', label: '📊 Reports' } ];
-  const _warLastTab = { battle: 'command', reports: 'report' };
-  const _warState = { ctx: null, wars: null, war: null, report: null, drugs: null, od: null,
-                      sortKey: 'wins', sortDir: -1, lossScope: 'all', tab: 'command', group: 'battle',
-                      planner: { ours: 0, theirs: 0, ourPace: 0, theirPace: 0, ourRph: 0, theirRph: 0, warlord: 17 },
-                      contracts: { loading: false, ours: [], enemies: [], estimates: {}, pairs: [] },
-                      drugLead: 4, drugTail: 6, drugFilter: 'all', drugFmt: 'shown',
-                      sweep: null, sweepOd: null, sweepSel: null,
-                      sweepLead: 4, sweepTail: 6, sweepCache: true, sweepSkipLive: false, sweepAutoOd: false,
-                      sweepShow: 'all', sweepThresh: 10, sweepBasis: 'total', sweepOnlyTook: false, sweepHideOd: false, sweepFmt: 'csv',
-                      raffleW: { loss: 1, wins: 0, respect: 0, defHeld: 0, assists: 0, enemyOn: 0, flat: 0 },
-                      raffleN: 1, raffleCap: 0, raffleMin: 1, raffleWinners: null };
-  const _ENERGY_PER_XANAX = 250, _HITS_PER_XANAX = 10;
-  let _warMounted = false;
-  const _warUi = { query: '', page: 0, request: 0, pulling: false };
-
-  function _warWorkspaceStyle() {
-    return `<style>
-      #ocm-pane-war{min-width:0;overflow-wrap:anywhere}
-      #ocm-pane-war *,#ocm-pane-war *:before{box-sizing:border-box}
-      #ocm-pane-war .ocm-war-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-      #ocm-pane-war .ocm-war-intro{color:var(--ocm-text-dim);line-height:1.6;margin:0 0 12px}
-      #ocm-pane-war button,#ocm-pane-war select,#ocm-pane-war input:not([type=checkbox]){max-width:100%;min-height:36px}
-      #ocm-pane-war button:disabled{opacity:.5;cursor:default}
-      #ocm-pane-war button:focus-visible,#ocm-pane-war input:focus-visible,#ocm-pane-war select:focus-visible,#ocm-pane-war a:focus-visible{outline:2px solid var(--ocm-fb);outline-offset:2px}
-      #ocm-pane-war .ocm-war-tabbtn[aria-pressed=true],#ocm-pane-war .ocm-war-grpbtn[aria-pressed=true]{box-shadow:inset 0 -2px var(--ocm-fb)}
-      #ocm-pane-war #ocm-war-status{padding:8px 0;line-height:1.5}
-      #ocm-pane-war #ocm-war-context{font-size:12px;line-height:1.6;color:var(--ocm-text-dim);margin:8px 0}
-      #ocm-pane-war .ocm-war-pager{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:12px 0}
-      #ocm-pane-war th button{background:none;border:0;color:inherit;font:inherit;cursor:pointer;padding:4px}
-      #ocm-pane-war .ocm-war-scroll{overflow:auto;max-width:100%}
-      @media(max-width:900px){
-        #ocm-pane-war button,#ocm-pane-war select,#ocm-pane-war input:not([type=checkbox]){min-height:44px!important}
-        #ocm-pane-war input:not([type=checkbox]),#ocm-pane-war select{font-size:16px!important}
-        #ocm-pane-war #ocm-war-select,#ocm-pane-war #ocm-war-search{width:100%;flex-basis:100%;min-width:0!important}
-        #ocm-pane-war [style*="grid-template-columns"]{grid-template-columns:minmax(0,1fr)!important}
-        #ocm-pane-war .ocm-card{min-width:0;max-width:100%}
-        #ocm-pane-war .ocm-war-toolbar label{width:100%}
-        #ocm-pane-war .ocm-war-report-table thead{display:none}
-        #ocm-pane-war .ocm-war-report-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:8px;border-bottom:1px solid var(--ocm-border-soft)}
-        #ocm-pane-war .ocm-war-report-table td{display:flex;gap:8px;justify-content:space-between;white-space:normal!important;border:0}
-        #ocm-pane-war .ocm-war-report-table td:first-child{grid-column:1/-1;font-weight:bold}
-        #ocm-pane-war .ocm-war-report-table td[data-label]:before{content:attr(data-label);color:var(--ocm-text-dim);font-size:11px}
-      }
-    </style>`;
-  }
-
-  function _warStatus(msg, isErr) {
-    const el = document.getElementById('ocm-war-status');
-    if (!el) return;
-    el.textContent = msg || '';
-    el.style.color = isErr ? 'var(--ocm-cpr-crit)' : 'var(--ocm-text-faint)';
-    // Routine ready-state copy wastes vertical space; retain loading, outcomes, and failures.
-    el.style.display = (!msg || /^\d+ war\(s\).*cached$/i.test(msg)) ? 'none' : 'block';
-  }
-  function _warCopy(text, okMsg) {
-    const done = () => _warStatus(okMsg || 'Copied.');
-    const fallback = () => {
-      const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
-      let copied = false;
-      try { copied = document.execCommand('copy'); } catch (_) {}
-      finally { ta.remove(); }
-      if (copied) done(); else _warStatus('Copy failed. Your browser did not allow clipboard access.', true);
-    };
-    try { if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, fallback); return; } } catch (_) {}
-    fallback();
-  }
-  const _scopedLoss = r => _warState.lossScope === 'enemy' ? r.lossEnemy : r.lossAll;
-  function _warSortedRows() {
-    const query = _warUi.query.trim().toLowerCase();
-    const list = (_warState.report?.list || []).filter(row => !query || String(row.name).toLowerCase().includes(query) || String(row.id).includes(query));
-    const k = _warState.sortKey, dir = _warState.sortDir;
-    list.sort((a, b) => {
-      let av, bv;
-      if (k === 'loss') { av = _scopedLoss(a); bv = _scopedLoss(b); }
-      else if (k === 'enemyHits') { av = a.enemyOn + a.stealthOn; bv = b.enemyOn + b.stealthOn; }
-      else if (k === 'name') { return a.name.localeCompare(b.name) * dir; }
-      else { av = a[k]; bv = b[k]; }
-      return (av - bv) * dir;
-    });
-    return list;
-  }
-  function _warReportRows() {
-    return _warSortedRows()
-      .filter(r => r.wins || r.lossAll || r.defHeld || r.assists || r.stalemates)
-      .map(r => ({
-        name: r.name, id: r.id, player: `${r.name} [${r.id}]`,
-        hits: r.wins, loss: _scopedLoss(r), lossAll: r.lossAll, enemy: r.lossEnemy,
-        enemyHits: r.enemyOn + r.stealthOn, enemyConfirmed: r.enemyOn, stealth: r.stealthOn,
-        held: r.defHeld, stale: r.stalemates, assist: r.assists, offlost: r.offLost,
-        respect: (r.respect.toFixed ? r.respect.toFixed(2) : r.respect),
-      }));
-  }
-  function _warSummaryLine() {
-    const rep = _warState.report; if (!rep) return '';
-    const logEnemy = rep.totalEnemyOn + rep.totalStealthOn;
-    const enemy = rep.enemyReportHits != null ? `${_num(rep.enemyReportHits)} (war report)` : `~${_num(logEnemy)} (attack-log estimate)`;
-    const when = _warState.war ? (_warState.war.oppName || 'enemy') : 'enemy';
-    return `War vs ${when} — our hits: ${_num(rep.totalHits)} · our losses: ${_num(rep.totalLosses)} · enemy hits on us: ${enemy}`;
-  }
-  const _WAR_COPY_COLS = [
-    ['Member', r => r.name], ['ID', r => r.id], ['Hits', r => r.hits], ['Losses', r => r.loss], ['LossesAll', r => r.lossAll],
-    ['LossesEnemy', r => r.enemy], ['EnemyHits', r => r.enemyHits], ['EnemyConfirmed', r => r.enemyConfirmed],
-    ['Stealthed', r => r.stealth], ['Defended', r => r.held], ['Stalemates', r => r.stale], ['Assists', r => r.assist],
-    ['OffLost', r => r.offlost], ['Respect', r => r.respect],
-  ];
-  function _warBuildAligned(rows) {
-    const headers = ['Player', 'Hits', 'Loss', 'Enmy', 'EnHits', 'Def', 'Stl', 'Ast', 'Respect'];
-    const body = rows.map(r => [r.player, String(r.hits), String(r.loss), String(r.enemy), String(r.enemyHits), String(r.held), String(r.stale), String(r.assist), String(r.respect)]);
-    const all = [headers, ...body];
-    const w = headers.map((_, i) => Math.max(...all.map(row => row[i].length)));
-    const line = row => row.map((c, i) => i === 0 ? c.padEnd(w[i]) : c.padStart(w[i])).join('  ');
-    return [line(headers), w.map(x => '-'.repeat(x)).join('  '), ...body.map(line)].join('\n');
-  }
-  function _warBuildDelimited(rows, delim, quoteNames) {
-    const head = _WAR_COPY_COLS.map(c => c[0]).join(delim);
-    const lines = [head];
-    for (const r of rows) lines.push(_WAR_COPY_COLS.map(c => {
-      let v = String(c[1](r) ?? '');
-      if (c[0] === 'Member' && /^[\s]*[=+@-]/.test(v)) v = "'" + v;
-      return (quoteNames && c[0] === 'Member') || v.includes(delim) || /["\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
-    }).join(delim));
-    return lines.join('\n');
-  }
-  function _warExport() {
-    if (!_warState.report) return;
-    const rows = _warReportRows();
-    if (!rows.length) { _warStatus('No active members to copy.', true); return; }
-    const mode = document.getElementById('ocm-war-fmt')?.value || 'aligned';
-    const summary = _warSummaryLine();
-    let text, label;
-    if (mode === 'aligned')      { text = summary + '\n\n' + _warBuildAligned(rows);                    label = 'Aligned table copied.'; }
-    else if (mode === 'discord') { text = '```\n' + summary + '\n\n' + _warBuildAligned(rows) + '\n```'; label = 'Discord block copied.'; }
-    else if (mode === 'tsv')     { text = _warBuildDelimited(rows, '\t', false); label = 'TSV copied — paste into a spreadsheet.'; }
-    else                         { text = _warBuildDelimited(rows, ',', true);   label = 'CSV copied.'; }
-    _warCopy(text, label);
-  }
-
-  function _warTabBar() {
-    const groupBtn = 'background:var(--ocm-bg);border:1px solid var(--ocm-border-soft);color:var(--ocm-text-dim);border-radius:8px;padding:7px 15px;font-size:12.5px;font-weight:700;cursor:pointer';
-    const toggle = _warGroups.map(g => `<button class="ocm-war-grpbtn" data-group="${g.key}" style="${groupBtn}">${g.label}</button>`).join('');
-    return '<div id="ocm-war-grouprow" style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 8px">' + toggle + '</div>' +
-      '<div id="ocm-war-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 4px"></div>';
-  }
-  // Paint the group toggle + rebuild the sub-tab pill row for the active group, then wire clicks.
-  function warRenderNav() {
-    const paint = (b, on) => { b.setAttribute('aria-pressed', String(on)); b.style.color = on ? 'var(--ocm-fb-br,#7fdfff)' : 'var(--ocm-text-dim)'; b.style.borderColor = on ? 'var(--ocm-fb,#3db8f5)' : 'var(--ocm-border-soft)'; };
-    document.querySelectorAll('#ocm-war-grouprow .ocm-war-grpbtn').forEach(b => paint(b, b.dataset.group === _warState.group));
-    const pills = document.getElementById('ocm-war-pills');
-    if (!pills) return;
-    pills.innerHTML = _warTabs.filter(t => t.group === _warState.group).map(t => `<button class="ocm-war-tabbtn" data-tab="${t.key}" style="${_pillStyle}">${t.label}</button>`).join('');
-    pills.querySelectorAll('.ocm-war-tabbtn').forEach(b => {
-      paint(b, b.dataset.tab === _warState.tab);
-      b.addEventListener('click', () => { _warState.tab = b.dataset.tab; warRenderTab(); document.querySelector('#ocm-war-pills [aria-pressed="true"]')?.focus(); });
-    });
-  }
-  function warRenderTab() {
-    const host = document.getElementById('ocm-war-tabcontent');
-    if (!host) return;
-    const t = _warTabs.find(x => x.key === _warState.tab);
-    if (t) { _warState.group = t.group; _warLastTab[t.group] = t.key; }
-    warRenderNav();
-    const context = document.getElementById('ocm-war-context');
-    if (context) context.textContent = _warState.war ? `Selected: ${_warState.war.oppName} · ${_warState.war.end ? 'Completed war' : 'Live war'}${_warState.report ? ' · Report loaded' : ' · No report loaded'}` : 'Select a war to begin. Planner and Guide are available without a report.';
-    switch (_warState.tab) {
-      case 'command': warRenderCommand(host); break;
-      case 'planner': warRenderPlanner(host); break;
-      case 'contracts': warRenderContracts(host); break;
-      case 'report': warRenderReport(host); break;
-      case 'drugs':  warRenderDrugs(host);  break;
-      case 'sweep':  warRenderSweep(host);  break;
-      case 'raffle': warRenderRaffle(host); break;
-      case 'guide':  warRenderGuide(host);  break;
-      default:       host.innerHTML = OCUI.card({ title: _warTabs.find(t => t.key === _warState.tab).label, body: '<div style="color:var(--ocm-text-dim)">Being rebuilt natively — coming in this build.</div>' });
-    }
-  }
-
-  // === War Command / Planner / Contracts ===
-  const WARX = (() => {
-    const baseRespect = level => 1 + (Math.max(1, Math.min(100, Number(level) || 1)) - 1) * (0.5 / 99);
-    const project = (level, ff, warlord = 0, perk = 0) => Number(ff) > 0 ? baseRespect(level) * Number(ff) * 2 * (1 + Number(warlord || 0) / 100) * (1 + Number(perk || 0) / 100) : null;
-    const hits = (target, rph) => Number(rph) > 0 ? Math.ceil(Math.max(0, Number(target) || 0) / Number(rph)) : null;
-    const end = (a, b) => {
-      if (!a || !b || !(a.hits >= 0) || !(b.hits >= 0) || !(a.pace > 0) || !(b.pace > 0)) return null;
-      const ah = a.hits / a.pace, bh = b.hits / b.pace, hours = Math.max(ah, bh);
-      return { ah, bh, hours, at: Date.now() + hours * 3600e3, limiting: ah >= bh ? 'Frostbite' : 'Opponent' };
-    };
-    return { baseRespect, project, hits, end };
-  })();
-  const _warFmt = n => n == null || !Number.isFinite(n) ? 'Unknown' : Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
-  const _warDate = t => t ? new Date(t).toLocaleString() : 'Unknown';
-  function _warPlanDefaults() {
-    const p = _warState.planner;
-    const rep = _warState.report;
-    if (rep && rep.totalHits > 0 && rep.totalRespect > 0 && !p.ourRph) p.ourRph = rep.totalRespect / rep.totalHits;
-    if (rep && rep.enemyReportHits && rep.totalRespect > 0 && !p.theirRph) p.theirRph = rep.totalRespect / rep.enemyReportHits;
-    if (p.ours <= 0 && rep?.totalRespect) p.ours = Math.round(rep.totalRespect);
-  }
-  function _warPlannerResult() {
-    const p = _warState.planner; const mul = 1 + p.warlord / 100;
-    const ourRph = p.ourRph > 0 ? p.ourRph * mul : 0, theirRph = p.theirRph > 0 ? p.theirRph * mul : 0;
-    const ours = { hits: WARX.hits(p.ours, ourRph), pace: p.ourPace };
-    const theirs = { hits: WARX.hits(p.theirs, theirRph), pace: p.theirPace };
-    return { ours, theirs, ourRph, theirRph, end: WARX.end(ours, theirs) };
-  }
-  // Elapsed/duration in compact human form (1.5h, 18h, 3.2d).
-  function _warElapsed(fromSec, toSec) {
-    if (!fromSec) return '';
-    const h = Math.max(0, ((toSec && toSec > 0 ? toSec : Math.floor(Date.now() / 1000)) - fromSec)) / 3600;
-    return h < 48 ? (h < 10 ? h.toFixed(1) : Math.round(h)) + 'h' : (h / 24).toFixed(1) + 'd';
-  }
-  function warRenderCommand(host) {
-    _warPlanDefaults(); const p = _warState.planner, r = _warPlannerResult(), war = _warState.war, rep = _warState.report;
-    // ── Live status from real war data (not planner placeholders) ──
-    const live = war ? !(war.end && war.end > 0) : false;
-    const lead = war ? war.myScore - war.oppScore : 0;
-    const scoreColor = !war ? '' : lead > 0 ? 'var(--ocm-cpr-good,#5fd48a)' : lead < 0 ? 'var(--ocm-cpr-crit,#f2727d)' : '';
-    const statusVal = !war ? '—' : live ? 'LIVE' : 'Ended';
-    const statusSub = !war ? 'choose a war above' : live ? 'running ' + _warElapsed(war.start) : 'lasted ' + _warElapsed(war.start, war.end);
-    const tiles = _warOverview([
-      { v: war ? OCUI.esc(war.oppName || 'Opponent') : '—', l1: 'Opponent', l2: war ? 'ranked war' : 'none selected' },
-      { v: war ? `${_num(war.myScore)}–${_num(war.oppScore)}` : '—', l1: 'Score', l2: !war ? '' : lead > 0 ? `+${_num(lead)} ahead` : lead < 0 ? `${_num(lead)} behind` : 'level', color: scoreColor },
-      { v: statusVal, l1: 'Status', l2: statusSub, color: live ? 'var(--ocm-fb-br,#7fdfff)' : '' },
-      { v: rep ? _fmt2(rep.totalRespect) : '—', l1: 'Our respect', l2: rep ? `${_num(rep.totalHits)} hits · ${_num(rep.totalLosses)} losses` : 'pull report for live totals' },
-    ]);
-    // ── Inline target/pace inputs so the forecast is fillable right here ──
-    const inp = (id, val, label, hint) => `<label style="font-size:11px;color:var(--ocm-text-dim);display:block">${label}<br><input id="${id}" type="number" min="0" step="0.01" value="${val || ''}" style="${_selStyle};width:118px;margin-top:3px"><span style="display:block;font-size:10px;color:var(--ocm-text-faint);margin-top:2px">${hint}</span></label>`;
-    const warlord = [0,15,17,19].map(n => `<button class="ocm-cmd-warlord" data-v="${n}" style="${p.warlord === n ? _genBtnStyle : _pillStyle}">+${n}%</button>`).join('');
-    const forecast = r.end
-      ? `<b style="font-size:16px;color:var(--ocm-fb-br)">~${Math.ceil(r.end.hours)}h · ${_warDate(r.end.at)}</b><div style="color:var(--ocm-text-dim);margin-top:3px">${r.end.limiting} is the slower side (${r.end.ah.toFixed(1)}h vs ${r.end.bh.toFixed(1)}h).</div>`
-      : '<span style="color:var(--ocm-text-dim)">Enter a target respect + hits/hour for <b>both</b> sides to forecast the timeout.</span>';
-    const need = side => { const s = r[side]; return s.hits == null ? 'set rate' : _num(s.hits) + ' hits'; };
-    const cmdCard = OCUI.card({
-      title: '🎯 War targets',
-      right: `<span style="color:var(--ocm-text-faint);font-size:11px;margin-right:8px">Warlord</span><span style="display:inline-flex;gap:4px">${warlord}</span>`,
-      body:
-        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">' +
-        `<div class="ocm-card" style="padding:12px"><b>🔵 Frostbite</b> <span style="color:var(--ocm-text-faint);font-size:11px">→ ${need('ours')}</span><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">${inp('ocm-cmd-our-target', p.ours, 'Target respect', 'goal')}${inp('ocm-cmd-our-rph', p.ourRph, 'Respect / hit', 'history or override')}${inp('ocm-cmd-our-pace', p.ourPace, 'Hits / hour', 'pace')}</div></div>` +
-        `<div class="ocm-card" style="padding:12px"><b>🔴 Opponent</b> <span style="color:var(--ocm-text-faint);font-size:11px">→ ${need('theirs')}</span><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">${inp('ocm-cmd-their-target', p.theirs, 'Target respect', 'goal')}${inp('ocm-cmd-their-rph', p.theirRph, 'Respect / hit', 'history or override')}${inp('ocm-cmd-their-pace', p.theirPace, 'Hits / hour', 'pace')}</div></div>` +
-        '</div>' +
-        `<div style="margin-top:12px;padding:11px 13px;border:1px solid var(--ocm-border-soft);border-radius:9px;background:var(--ocm-bg)"><div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ocm-text-faint);margin-bottom:4px">⏱️ Forecast timeout</div>${forecast}</div>` +
-        '<div style="font-size:10px;color:var(--ocm-text-faint);margin-top:7px">Updates as you type. Open the full Planner for the side-by-side view.</div>'
-    });
-    const jumps = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">' +
-      `<button class="ocm-war-jump" data-go="contracts" style="${_genBtnStyle}">📜 Open Contracts</button>` +
-      `<button class="ocm-war-jump" data-go="planner" style="${_btnStyle}">🧮 Full Planner</button>` +
-      (rep ? `<button class="ocm-war-jump" data-go="report" style="${_btnStyle}">⚔️ War Report</button>` : '') +
-      '</div>';
-    host.innerHTML = tiles + cmdCard + jumps;
-    const bind = (id, key) => document.getElementById(id)?.addEventListener('input', e => { p[key] = Math.max(0, Number(e.target.value) || 0); warRenderCommand(host); document.getElementById(id)?.focus(); });
-    bind('ocm-cmd-our-target','ours'); bind('ocm-cmd-our-rph','ourRph'); bind('ocm-cmd-our-pace','ourPace');
-    bind('ocm-cmd-their-target','theirs'); bind('ocm-cmd-their-rph','theirRph'); bind('ocm-cmd-their-pace','theirPace');
-    host.querySelectorAll('.ocm-cmd-warlord').forEach(b => b.addEventListener('click', () => { p.warlord = Number(b.dataset.v); warRenderCommand(host); }));
-    host.querySelectorAll('.ocm-war-jump').forEach(b => b.addEventListener('click', () => { _warState.tab = b.dataset.go; warRenderTab(); }));
-  }
-  function warRenderPlanner(host) {
-    _warPlanDefaults(); const p = _warState.planner, x = _warPlannerResult();
-    const inp = (id, val, label, hint) => `<label style="font-size:11px;color:var(--ocm-text-dim);display:block;flex:1;min-width:100px">${label}<br><input id="${id}" type="number" min="0" step="0.01" value="${val || ''}" style="${_selStyle};width:100%;margin-top:3px;box-sizing:border-box"><span style="display:block;font-size:10px;color:var(--ocm-text-faint);margin-top:3px">${hint}</span></label>`;
-    const row = (name, accent, target, rph, pace, side) => {
-      const res = x[side === 'our' ? 'ours' : 'theirs'];
-      return `<div class="ocm-card" style="padding:14px;border-top:2px solid ${accent}"><div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:13px">${name}</b><span style="font-size:11px;color:var(--ocm-text-dim)">Need <b style="color:var(--ocm-text)">${res.hits == null ? '—' : _num(res.hits) + ' hits'}</b></span></div><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:11px">${inp('ocm-plan-' + side + '-target', target, 'Target respect', 'goal')}${inp('ocm-plan-' + side + '-rph', rph, 'Respect / hit', 'history / override')}${inp('ocm-plan-' + side + '-pace', pace, 'Hits / hour', 'pace')}</div><div style="margin-top:9px;font-size:11px;color:var(--ocm-text-faint)">Warlord-adjusted respect/hit: <b style="color:var(--ocm-text-dim)">${_warFmt(side === 'our' ? x.ourRph : x.theirRph)}</b></div></div>`;
-    };
-    const scenarios = [0,15,17,19].map(n => `<button class="ocm-plan-warlord" data-v="${n}" style="${p.warlord === n ? _genBtnStyle : _pillStyle}">+${n}%</button>`).join('');
-    const ending = x.end
-      ? `<b style="font-size:19px;color:var(--ocm-fb-br)">~${Math.ceil(x.end.hours)} hours</b> <span style="color:var(--ocm-text-dim)">· ${_warDate(x.end.at)}</span><div style="color:var(--ocm-text-dim);margin-top:5px">${x.end.limiting} is the limiting side (${x.end.ah.toFixed(1)}h vs ${x.end.bh.toFixed(1)}h).</div>`
-      : '<span style="color:var(--ocm-text-dim)">Enter a target respect, respect/hit, and hits/hour for <b>both</b> factions to forecast the timeout.</span>';
-    host.innerHTML = OCUI.card({
-        title: '🧮 War timeout planner',
-        right: `<span style="color:var(--ocm-text-faint);font-size:11px;margin-right:7px">Warlord</span><span style="display:inline-flex;gap:4px">${scenarios}</span>`,
-        body: '<div style="font-size:11px;color:var(--ocm-text-faint);margin-bottom:11px">Updates live as you type — no submit needed. The slower side sets the timeout.</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px">' + row('🔵 Frostbite','var(--ocm-fb,#3db8f5)',p.ours,p.ourRph,p.ourPace,'our') + row('🔴 Opponent','var(--ocm-cpr-crit,#f2727d)',p.theirs,p.theirRph,p.theirPace,'enemy') + '</div>'
-      }) + OCUI.card({
-        title: '⏱️ Forecast',
-        right: `<button id="ocm-plan-reset" style="${_btnStyle}">Reset</button>`,
-        body: ending + '<div style="font-size:10.5px;color:var(--ocm-text-faint);margin-top:10px">Estimate only. It projects both sides reaching their entered targets at their entered pace; Torn\'s live war conditions can change the actual end.</div>'
-      });
-    const bind = (id, key) => document.getElementById(id)?.addEventListener('input', e => { p[key] = Math.max(0, Number(e.target.value) || 0); warRenderPlanner(host); document.getElementById(id)?.focus(); });
-    bind('ocm-plan-our-target','ours'); bind('ocm-plan-enemy-target','theirs'); bind('ocm-plan-our-rph','ourRph'); bind('ocm-plan-enemy-rph','theirRph'); bind('ocm-plan-our-pace','ourPace'); bind('ocm-plan-enemy-pace','theirPace');
-    host.querySelectorAll('.ocm-plan-warlord').forEach(b => b.addEventListener('click', () => { p.warlord = Number(b.dataset.v); warRenderPlanner(host); }));
-    document.getElementById('ocm-plan-reset')?.addEventListener('click', () => { Object.assign(p, { ours: 0, theirs: 0, ourPace: 0, theirPace: 0, ourRph: 0, theirRph: 0, warlord: 17 }); warRenderPlanner(host); });
-  }
-  const WARC = (() => {
-    const CACHE_TTL = 24 * 3600e3;
-    const list = raw => Array.isArray(raw) ? raw : Object.entries(raw || {}).map(([id, v]) => ({ id, ...v }));
-    const cacheLoad = () => { try { return JSON.parse(OCBulkStore.getRaw(GMK.FF_CACHE, '{}')) || {}; } catch (_) { return {}; } };
-    const cacheSave = x => OCBulkStore.setRaw(GMK.FF_CACHE, JSON.stringify(x));
-    const norm = (raw, factionId, factionName) => list(raw).map(m => ({ id: String(m.id ?? m.ID ?? ''), name: m.name || 'Unknown', level: Number(m.level) || 0, factionId: String(factionId || ''), factionName: factionName || '', st: String(m.status?.state || m.status || '').toLowerCase(), bs: null, ff: null, estimateAt: 0 })).filter(m => m.id);
-    async function estimates(ids) {
-      const key = GM_getValue(GMK.FF_KEY, ''); if (!key) throw new Error('Add an FFScouter API key in Config first.');
-      const cache = cacheLoad(), now = Date.now(), stale = [...new Set(ids.map(String))].filter(id => !cache[id] || now - Number(cache[id].ts || 0) > CACHE_TTL);
-      if (stale.length) {
-        const json = await gmFetch(`https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(key)}&targets=${stale.join(',')}`);
-        const rows = Array.isArray(json) ? json : (Array.isArray(json?.results) ? json.results : []);
-        for (const r of rows) { const id = String(r.player_id ?? r.playerId ?? r.id ?? ''); if (id) cache[id] = { ts: now, src: 'ffs', ff: Number(r.fair_fight ?? r.ff) || null, bs: Number(r.bs_estimate ?? r.bs ?? null) || null, upd: r.last_updated || null }; }
-        cacheSave(cache);
-      }
-      return cache;
-    }
-    async function load(war) {
-      const tornKey = GM_getValue(GMK.API_KEY, ''); if (!tornKey) throw new Error('Set your Torn API key in Config first.');
-      const [oursRaw, theirsRaw] = await Promise.all([
-        apiFetch('/faction?selections=members', tornKey),
-        apiFetch(`/faction/${war.oppId}/members`, tornKey).catch(() => apiFetch(`/faction/${war.oppId}?selections=members`, tornKey)),
-      ]);
-      const ours = norm(oursRaw.members, oursRaw.faction_id || oursRaw.ID, oursRaw.name || 'Frostbite');
-      const enemies = norm(theirsRaw.members, war.oppId, war.oppName);
-      // FFScouter estimates are best-effort enrichment — a failed/expired key or rate-limit
-      // must NOT discard the rosters we already fetched. Fall back to cached estimates + warn.
-      let est, warn = null;
-      try { est = await estimates([...ours, ...enemies].map(m => m.id)); }
-      catch (e) { est = cacheLoad(); warn = 'FFScouter estimates unavailable (' + (e.message || 'request failed') + ') — showing rosters with unknown stats.'; }
-      for (const m of [...ours, ...enemies]) Object.assign(m, { ff: est[m.id]?.ff ?? null, bs: est[m.id]?.bs ?? null, estimateAt: est[m.id]?.ts ?? 0 });
-      return { ours, enemies, estimates: est, warn };
-    }
-    const active = m => !/federal|travel|abroad/.test(m.st || '');
-    function score(our, enemy, warlord) {
-      const ours = WARX.project(enemy.level, enemy.ff, warlord), theirs = WARX.project(our.level, our.ff, warlord);
-      const known = our.bs > 0 && enemy.bs > 0 && our.ff > 0 && enemy.ff > 0;
-      const ratio = known ? Math.max(our.bs, enemy.bs) / Math.max(1, Math.min(our.bs, enemy.bs)) : null;
-      const viable = ratio == null ? 'unknown' : ratio <= 3 ? 'likely' : ratio <= 10 ? 'uneven' : 'risky';
-      const mutual = ours != null && theirs != null ? Math.min(ours, theirs) : 0;
-      const balance = ours && theirs ? Math.min(ours, theirs) / Math.max(ours, theirs) : 0;
-      const score = (known ? 100 : 0) + mutual * 100 * balance - (ratio ? Math.max(0, ratio - 1) * 8 : 0);
-      const rationale = viable === 'likely' ? 'reciprocal hits likely' : viable === 'uneven' ? 'return hit may be uneven' : viable === 'risky' ? 'very one-sided stats' : 'insufficient estimates';
-      return { ours, theirs, known, viable, mutual, balance, score, rationale };
-    }
-    return { load, active, score };
-  })();
-  const _contractKey = warId => `ocs_war_contracts_${warId}`;
-  const _contractsLoad = warId => { try { return JSON.parse(GM_getValue(_contractKey(warId), '[]')) || []; } catch (_) { return []; } };
-  const _contractsSave = (warId, rows) => GM_setValue(_contractKey(warId), JSON.stringify(rows));
-  const _contractPfp = (m, cls) => `<img class="${cls}" data-mid="${m.id}" src="${_armPfpFallback(m.name)}" alt="${OCUI.esc(m.name)}" style="width:34px;height:34px;border-radius:50%;object-fit:cover;background:var(--ocm-bg);vertical-align:middle;margin-right:7px">`;
-  function _contractHydrate(members) { setTimeout(() => _armHydratePfps(members), 20); }
-  async function _contractsLoadData() {
-    const war = _warState.war; if (!war || _warState.contracts.loading) return;
-    _warState.contracts.loading = true; _warStatus('Loading both rosters and FFScouter estimates…'); warRenderTab();
-    try { const d = await WARC.load(war); if (_warState.war !== war) return; Object.assign(_warState.contracts, d); _warState.contracts.pairs = _contractsLoad(war.warId); _warStatus(d.warn || `Loaded ${d.ours.length} Frostbite + ${d.enemies.length} opponent members.`, !!d.warn); }
-    catch (e) { _warStatus(e.message || 'Could not load contract data.', true); }
-    finally { _warState.contracts.loading = false; warRenderTab(); }
-  }
-  function warRenderContracts(host) {
-    const war = _warState.war, c = _warState.contracts, p = _warState.planner;
-    if (!war) { host.innerHTML = OCUI.card({ title: '📜 Contracts', body: '<div style="color:var(--ocm-text-dim)">Select a ranked war below first. Contracts automatically use that war\'s opponent.</div>' }); return; }
-    if (!c.ours.length) {
-      const hasKey = !!GM_getValue(GMK.FF_KEY, '');
-      host.innerHTML = OCUI.card({ title: '📜 Med-out contracts · ' + OCUI.esc(war.oppName || 'Opponent'), body: hasKey
-        ? `<div style="color:var(--ocm-text-dim);line-height:1.5">Pull both rosters and FFScouter estimates before matching. Unknown stats are never labelled safe.</div><button id="ocm-contract-load" style="${_genBtnStyle};margin-top:10px" ${c.loading ? 'disabled' : ''}>${c.loading ? 'Loading…' : 'Load estimates ▸'}</button>`
-        : '<div style="color:var(--ocm-text-dim);line-height:1.55">Add your FFScouter API key in <b>⚙ Config</b> first. Contracts use it for battle-stat and fair-fight estimates; without it the suite will not fake safe matchups.</div>' });
-      document.getElementById('ocm-contract-load')?.addEventListener('click', _contractsLoadData); return;
-    }
-    const pairs = c.pairs || [], reservedEnemy = new Set(pairs.map(x => String(x.enemyMemberId))), pairedOur = new Set(pairs.map(x => String(x.ourMemberId)));
-    const card = our => {
-      const choices = c.enemies.filter(e => WARC.active(e) && !reservedEnemy.has(e.id)).map(e => ({ e, s: WARC.score(our, e, p.warlord) })).sort((a,b) => b.s.score - a.s.score).slice(0,3);
-      const stat = m => `~${m.bs ? _num(m.bs) + ' BS' : 'BS ?'} · FF ${m.ff ? _warFmt(m.ff) : '?'}`;
-      const choice = x => `<div style="padding:9px 0;border-top:1px solid var(--ocm-border-soft)"><div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">${_contractPfp(x.e,'ocm-contract-pfp')}<b>${_nameLink(x.e.name,x.e.id)}</b><span style="color:var(--ocm-text-faint);font-size:11px">Lv ${x.e.level} · ${stat(x.e)}</span><button class="ocm-contract-pair" data-our="${our.id}" data-enemy="${x.e.id}" style="${_btnStyle};margin-left:auto">Pair</button></div><div style="font-size:11px;color:var(--ocm-text-dim);margin-top:4px">Us → them: <b>${_warFmt(x.s.ours)}</b> RP · Them → us: <b>${_warFmt(x.s.theirs)}</b> RP · ${x.s.rationale}</div><div style="font-size:10px;color:var(--ocm-text-faint);margin-top:2px">Warlord +15/+17/+19: ${_warFmt(WARX.project(x.e.level,x.e.ff,15))} / ${_warFmt(WARX.project(x.e.level,x.e.ff,17))} / ${_warFmt(WARX.project(x.e.level,x.e.ff,19))} RP (our hit)</div></div>`;
-      return `<div class="ocm-card" style="padding:13px"><div style="display:flex;align-items:center">${_contractPfp(our,'ocm-contract-pfp')}<div><b>${_nameLink(our.name,our.id)}</b><div style="font-size:11px;color:var(--ocm-text-faint)">Lv ${our.level} · ${stat(our)}</div></div></div><div style="font-size:10.5px;color:var(--ocm-text-dim);margin:9px 0 3px">Best available reciprocal partners</div>${choices.length ? choices.map(choice).join('') : '<div style="color:var(--ocm-text-faint);font-size:12px">No unreserved opponent estimates available.</div>'}</div>`;
-    };
-    const confirmed = pairs.map(row => { const a=c.ours.find(m=>m.id===String(row.ourMemberId)), b=c.enemies.find(m=>m.id===String(row.enemyMemberId)); if(!a||!b)return ''; const s=WARC.score(a,b,p.warlord); return `<div style="display:flex;align-items:center;gap:6px;padding:8px 0;border-top:1px solid var(--ocm-border-soft)">${_contractPfp(a,'ocm-contract-pfp')}<b>${OCUI.esc(a.name)}</b><span>⇄</span>${_contractPfp(b,'ocm-contract-pfp')}<b>${OCUI.esc(b.name)}</b><span style="font-size:11px;color:var(--ocm-text-dim);margin-left:auto">${_warFmt(s.ours)} / ${_warFmt(s.theirs)} RP</span><button class="ocm-contract-unpair" data-our="${a.id}" style="${_btnStyle}">Unpair</button></div>`; }).join('');
-    host.innerHTML = OCUI.card({ title: '📜 Med-out contracts · ' + OCUI.esc(war.oppName), right: `<button id="ocm-contract-refresh" style="${_btnStyle}">🔄 Refresh estimates</button>`, body: `<div style="font-size:11px;color:var(--ocm-text-dim);margin-bottom:10px">Current scenario: Warlord +${p.warlord}%. Values are estimated ranked-war respect per hit; faction perk unknown — not applied.</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px">${c.ours.filter(WARC.active).filter(m=>!pairedOur.has(m.id)).map(card).join('')}</div>` }) + OCUI.card({ title:'🤝 Confirmed deals', right: `${pairs.length}`, body: confirmed || '<div style="color:var(--ocm-text-faint)">Pair an opponent to reserve them globally.</div>' });
-    _contractHydrate([...c.ours,...c.enemies]);
-    document.getElementById('ocm-contract-refresh')?.addEventListener('click', _contractsLoadData);
-    host.querySelectorAll('.ocm-contract-pair').forEach(b => b.addEventListener('click', () => { const rows=_contractsLoad(war.warId).filter(x=>String(x.ourMemberId)!==b.dataset.our && String(x.enemyMemberId)!==b.dataset.enemy); rows.push({ourMemberId:b.dataset.our,enemyMemberId:b.dataset.enemy,createdAt:Date.now()}); c.pairs=rows; _contractsSave(war.warId,rows); warRenderContracts(host); }));
-    host.querySelectorAll('.ocm-contract-unpair').forEach(b => b.addEventListener('click', () => { c.pairs=_contractsLoad(war.warId).filter(x=>String(x.ourMemberId)!==b.dataset.our); _contractsSave(war.warId,c.pairs); warRenderContracts(host); }));
-  }
-
-  function warRenderReport(host) {
-    const rep = _warState.report;
-    if (!rep) {
-      host.innerHTML = OCUI.card({ title: '⚔️ War report', body:
-        '<div style="color:var(--ocm-text-dim)">Pick a war above and press <b>Pull report</b>.<br>The other tabs work without it — Multi-war only needs the war list.</div>' });
-      return;
-    }
-    const logEnemy = rep.totalEnemyOn + rep.totalStealthOn;
-    const enemyTile = rep.enemyReportHits != null ? _num(rep.enemyReportHits) : '~' + _num(logEnemy);
-    const cards = OCUI.grid([
-      OCUI.statTile({ value: _num(rep.totalHits),   label: 'War hits',        tone: 'good' }),
-      OCUI.statTile({ value: _num(rep.totalLosses), label: 'Our losses',      tone: rep.totalLosses > 0 ? 'warn' : 'neutral' }),
-      OCUI.statTile({ value: enemyTile,             label: 'Enemy hits on us', tone: 'info' }),
-      OCUI.statTile({ value: _fmt2(rep.totalRespect), label: 'Respect',       tone: 'neutral' }),
-    ].join(''), 4);
-    const rows = _warSortedRows();
-    const pageCount = Math.max(1, Math.ceil(rows.length / 25));
-    _warUi.page = Math.max(0, Math.min(_warUi.page, pageCount - 1));
-    const visibleRows = rows.slice(_warUi.page * 25, (_warUi.page + 1) * 25);
-    const cols = [
-      ['name', 'Member', 'l'], ['wins', 'Hits', 'n'], ['loss', 'Losses', 'n'], ['lossEnemy', 'vs Enemy', 'n'],
-      ['enemyHits', 'Enemy Hits', 'n'], ['defHeld', 'Defended', 'n'], ['stalemates', 'Stale', 'n'], ['assists', 'Assist', 'n'], ['respect', 'Respect', 'n'],
-    ];
-    const caret = k => _warState.sortKey === k ? (_warState.sortDir < 0 ? ' ▾' : ' ▴') : '';
-    const ths = cols.map(c => `<th scope="col" class="${c[2]}" aria-sort="${_warState.sortKey === c[0] ? _warState.sortDir < 0 ? 'descending' : 'ascending' : 'none'}"><button type="button" data-k="${c[0]}">${c[1]}${caret(c[0])}</button></th>`).join('');
-    const body = visibleRows.map(r =>
-      `<tr><td class="l">${_nameLink(r.name, r.id)}</td>` +
-      `<td class="n" data-label="Hits">${_num(r.wins)}</td><td class="n" data-label="Losses">${_num(_scopedLoss(r))}</td><td class="n" data-label="vs Enemy">${_num(r.lossEnemy)}</td>` +
-      `<td class="n" data-label="Enemy hits">${_num(r.enemyOn + r.stealthOn)}</td><td class="n" data-label="Defended">${_num(r.defHeld)}</td><td class="n" data-label="Stalemates">${_num(r.stalemates)}</td>` +
-      `<td class="n" data-label="Assists">${_num(r.assists)}</td><td class="n" data-label="Respect">${_fmt2(r.respect)}</td></tr>`).join('');
-    const fought = rows.filter(r => r.wins || r.lossAll || r.defHeld || r.assists || r.stalemates).length;
-    const scopeSel = `<select id="ocm-war-lossscope" aria-label="Loss scope" style="${_selStyle}">
-      <option value="all"${_warState.lossScope === 'all' ? ' selected' : ''}>All losses during war (any attacker)</option>
-      <option value="enemy"${_warState.lossScope === 'enemy' ? ' selected' : ''}>Losses to enemy faction only</option></select>`;
-    const fmtSel = `<select id="ocm-war-fmt" aria-label="Copy format" style="${_selStyle}">
-      <option value="aligned">Aligned table</option><option value="discord">Discord (code block)</option>
-      <option value="tsv">Spreadsheet (TSV)</option><option value="csv">CSV</option></select>`;
-    host.innerHTML =
-      cards +
-      `<p class="ocm-war-intro">Totals cover the whole war. Search filters the member table and copied active-member rows across all pages.</p><div class="ocm-war-toolbar"><label for="ocm-war-search">Find member</label><input id="ocm-war-search" type="search" placeholder="Name or player ID" value="${OCUI.esc(_warUi.query)}" style="${_selStyle}"><label for="ocm-war-sort">Sort</label><select id="ocm-war-sort" style="${_selStyle}">${cols.map(c=>`<option value="${c[0]}"${c[0]===_warState.sortKey?' selected':''}>${c[1]}</option>`).join('')}</select><button id="ocm-war-direction" style="${_btnStyle}">${_warState.sortDir < 0 ? 'Descending ↓' : 'Ascending ↑'}</button></div>` +
-      `<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px"><span style="color:var(--ocm-text-dim);font-size:12px">Count "losses" as</span>${scopeSel}</div>` +
-      `<div class="ocm-card" style="margin-top:12px"><div class="ocm-card-h">PER-MEMBER BREAKDOWN<span class="ocm-card-r">${fought} fought</span></div>` +
-      `<div class="ocm-war-scroll"><table class="ocm-members-table ocm-war-report-table"><thead><tr>${ths}</tr></thead><tbody>${body || '<tr><td class="l" colspan="9" style="color:var(--ocm-text-faint)">No members match this report or search.</td></tr>'}</tbody></table></div></div>` +
-      `<div class="ocm-war-pager"><button id="ocm-war-prev" style="${_btnStyle}" ${_warUi.page===0?'disabled':''}>Previous</button><span>${rows.length} matches · ${_warUi.page+1} / ${pageCount}</span><button id="ocm-war-next" style="${_btnStyle}" ${_warUi.page>=pageCount-1?'disabled':''}>Next</button></div>` +
-      `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px"><span style="flex:1;min-width:180px;color:var(--ocm-text-dim);font-size:12px">${OCUI.esc(_warSummaryLine())}</span>${fmtSel}<button id="ocm-war-copy" style="${_btnStyle}">Copy table</button></div>`;
-    document.getElementById('ocm-war-lossscope')?.addEventListener('change', e => { _warState.lossScope = e.target.value; warRenderReport(host); });
-    document.getElementById('ocm-war-copy')?.addEventListener('click', _warExport);
-    host.querySelectorAll('button[data-k]').forEach(th => th.addEventListener('click', () => {
-      const k = th.dataset.k;
-      if (_warState.sortKey === k) _warState.sortDir *= -1; else { _warState.sortKey = k; _warState.sortDir = (k === 'name') ? 1 : -1; }
-      warRenderReport(host);
-      host.querySelector(`button[data-k="${k}"]`)?.focus();
-    }));
-    document.getElementById('ocm-war-search')?.addEventListener('input', e => { const pos=e.target.selectionStart; _warUi.query=e.target.value; _warUi.page=0; warRenderReport(host); const input=document.getElementById('ocm-war-search'); input?.focus(); try{input?.setSelectionRange(pos,pos);}catch(_){} });
-    document.getElementById('ocm-war-sort')?.addEventListener('change', e => { _warState.sortKey=e.target.value; _warState.sortDir=e.target.value==='name'?1:-1; _warUi.page=0; warRenderReport(host); document.getElementById('ocm-war-sort')?.focus(); });
-    for(const [id,change] of [['ocm-war-prev',()=>_warUi.page--],['ocm-war-next',()=>_warUi.page++],['ocm-war-direction',()=>{_warState.sortDir*=-1;_warUi.page=0;}]]) document.getElementById(id)?.addEventListener('click',()=>{change();warRenderReport(host);document.getElementById(id)?.focus();});
-  }
-
-  function warRenderGuide(host) {
-    host.innerHTML = OCUI.card({ title: 'ℹ️ Guide', body:
-      '<div style="color:var(--ocm-text-dim);font-size:13px;line-height:1.6">' +
-      '<p style="margin:0 0 10px"><b style="color:var(--ocm-text)">War report</b> — pick a war and <b>Pull report</b> for a per-member breakdown. Click any column header to sort. The loss dropdown switches between all losses and enemy-only. Copy/export the table in aligned, Discord, TSV or CSV.</p>' +
-      '<p style="margin:0 0 10px"><b style="color:var(--ocm-text)">Fresh pull</b> re-fetches live instead of the 30-day cache (💾 marks cached wars). <b>Clear cache</b> wipes all saved reports.</p>' +
-      '<p style="margin:0 0 10px"><b style="color:var(--ocm-text)">Enemy hits</b> come from the ranked-war report when available; live wars show an attack-log estimate until the war ends.</p>' +
-      '<p style="margin:0 0 10px"><b style="color:var(--ocm-text)">Drugs</b> — pulls the faction armoury log for the war window (build-up days before + tail hours after) and ties every Xanax taken to hits landed. Flags members who swallowed stock and landed nothing; <b>Check for ODs</b> reads Torn\'s overdose stat to excuse them. Filter, then Copy/Download as CSV or Discord.</p>' +
-      '<p style="margin:0 0 10px"><b style="color:var(--ocm-text)">Multi-war</b> — sweeps several wars at once using each war\'s official report (cheap: ~1 call + a short armoury walk per war). Finds <b>repeat offenders</b> — members who took Xanax and landed nothing across multiple wars — and measures wasted energy. Pick wars (or Last 3/5/All), optionally auto-check overdoses, then filter and export.</p>' +
-      '<p style="margin:0 0 10px"><b style="color:var(--ocm-text)">Raffle</b> — turns a war\'s per-member numbers into a weighted ticket draw. Weight any mix of losses, hits, respect, defends, assists, enemy hits taken or a flat entry (or use a preset), set winners/cap/min, then Draw. Copy the pool for wheelofnames or download the odds CSV.</p>' +
-      '<p style="margin:0"><b style="color:var(--ocm-text)">Theming & keys</b> — the whole suite (War included) follows the theme in <b>⚙ Config → Colour Theme</b> (presets or full custom), and your Torn API key is read from <b>⚙ Config</b> too.</p>' +
-      '</div>' });
-  }
-
-  // ── Drugs tab ──────────────────────────────────────────────────────────────
-  const _warDayStr = ts => ts ? new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ') : '—';
-  function _drugRows() {
-    if (!_warState.drugs) return [];
-    const mode = _warState.drugFilter;
-    return _warState.drugs.list.filter(r => {
-      if (mode === 'took') return r.drawn > 0;
-      if (mode === 'freeload') return r.freeloader;
-      if (mode === 'nodrug') return r.hits > 0 && r.drawn === 0;
-      return r.drawn > 0 || r.hits > 0 || r.total > 0 || r.xanDeposited > 0;
-    });
-  }
-  function _odText(r) {
-    const od = _warState.od && _warState.od[r.id];
-    if (!od) return '–';
-    if (od.mode === 'delta') return od.ods > 0 ? `💊 OD ×${od.ods}` : 'no OD';
-    if (od.mode === 'baseline') return od.ods > 0 ? `💊 OD ×${od.ods}?` : 'no OD*';
-    if (od.mode === 'lifetime') return `? (${_num(od.lifetime)} ever)`;
-    return 'could not check';
-  }
-  function _odCell(r) {
-    const od = _warState.od && _warState.od[r.id];
-    const label = _odText(r);
-    if (!od) return '<span style="color:var(--ocm-text-faint)">–</span>';
-    let color = 'var(--ocm-text-faint)', title = '';
-    if (od.mode === 'delta') { color = od.ods > 0 ? '#ffb454' : '#7fe3a0'; title = od.ods > 0 ? `Overdose count rose by ${od.ods} across the war (${od.before} → ${od.after}).` : `Overdose count did not move (${od.before} → ${od.after}). No OD.`; }
-    else if (od.mode === 'baseline') { color = od.ods > 0 ? '#ffb454' : '#7fe3a0'; title = od.ods > 0 ? `Overdose count rose by ${od.ods} since last check — wider than the war window.` : 'No overdose since this script last looked.'; }
-    else if (od.mode === 'lifetime') { color = 'var(--ocm-text-dim)'; title = `Only the LIFETIME total was available: ${od.lifetime} ever. Says nothing about this war.`; }
-    else { color = '#ff6b6b'; title = `The lookup failed: ${od.err || 'unknown error'}. NOT a clean result.`; }
-    return `<span style="color:${color}" title="${OCUI.esc(title)}">${label}</span>`;
-  }
-
-  const _DRUG_COLS_FULL = [
-    ['Member', r => r.name], ['ID', r => r.id], ['XanaxPreWar', r => r.xanPre], ['XanaxInWar', r => r.xanWar], ['XanaxAfter', r => r.xanPost],
-    ['XanaxUsed', r => r.xanax], ['XanaxWithdrawn', r => r.xanTaken], ['XanaxDeposited', r => r.xanDeposited], ['XanaxTotalOut', r => r.drawn],
-    ['OtherDrugs', r => r.otherDrugs],
-    ['Overdose', r => { const o = _warState.od && _warState.od[r.id]; if (!o) return ''; if (o.mode === 'delta') return o.ods > 0 ? 'OD x' + o.ods : 'none'; if (o.mode === 'baseline') return o.ods > 0 ? 'OD x' + o.ods + ' (wider)' : 'none (wider)'; if (o.mode === 'lifetime') return 'unknown (' + o.lifetime + ' lifetime)'; return 'check failed'; }],
-    ['TotalItems', r => r.total], ['Hits', r => r.hits], ['HitsPerXanax', r => r.hitsPerXan == null ? '' : r.hitsPerXan.toFixed(2)],
-    ['Respect', r => Number(r.respect || 0).toFixed(2)], ['TookNoHits', r => r.freeloader ? 'YES' : ''],
-  ];
-  const _DASH = '—';
-  const _DRUG_COLS_SHOWN = [
-    ['Member', r => `${r.name} [${r.id || '?'}]`], ['Pre-war', r => r.xanPre || _DASH], ['In war', r => r.xanWar || _DASH],
-    ['Used', r => _num(r.xanax)], ['Withdrew', r => r.xanTaken ? _num(r.xanTaken) : _DASH],
-    ['Total out', r => _num(r.drawn) + (r.xanDeposited ? ` (+${_num(r.xanDeposited)} in)` : '')], ['Other', r => r.otherDrugs ? _num(r.otherDrugs) : _DASH],
-    ['Hits', r => _num(r.hits)], ['Hits/Xan', r => r.hitsPerXan == null ? _DASH : r.hitsPerXan.toFixed(2)],
-    ['Respect', r => _fmt2(r.respect)], ['OD', r => _odText(r)], ['Flag', r => r.freeloader ? '⚠ no hits' : r.stocker ? '📦 stocker' : (r.drawn ? 'ok' : '')],
-  ];
-  const _csvCell = v => { const s = String(v == null ? '' : v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  function _drugBuildCsv() {
-    const shown = _warState.drugFmt !== 'full';
-    const cols = shown ? _DRUG_COLS_SHOWN : _DRUG_COLS_FULL;
-    const rows = _drugRows(); if (!rows.length) return null;
-    const d = _warState.drugs || {}, war = _warState.war || {};
-    const lines = [
-      _csvCell('OC Suite — war drug report'),
-      _csvCell(`War: vs ${war.oppName || 'enemy'} · fighting started ${_warDayStr(d.warStart)} UTC`),
-      _csvCell(`Window: ${_warDayStr(d.pullFrom || d.firstTs)} → ${_warDayStr(d.pullTo || d.lastTs)} UTC (${d.leadDays || 0}d + war + ${d.tailHours || 0}h)`),
-      _csvCell(`Showing ${rows.length} of ${(d.list || []).length}`),
-      _csvCell(_warState.od ? 'Overdose check: run. Blank OD = unchecked, never clean.' : 'Overdose check: NOT run.'),
-      '', cols.map(c => _csvCell(c[0])).join(','),
-    ];
-    for (const r of rows) lines.push(cols.map(c => _csvCell(c[1](r))).join(','));
-    return { text: lines.join('\r\n'), rows: rows.length, shown };
-  }
-  function _drugBuildDiscord() {
-    const rows = _drugRows(); if (!rows.length) return null;
-    const d = _warState.drugs, war = _warState.war || {};
-    const note = r => { const b = []; if (r.freeloader) b.push('NO HITS'); if (r.stocker) b.push('stocker'); const o = _warState.od && _warState.od[r.id]; if (o) { if (o.mode === 'delta') b.push(o.ods > 0 ? `OD x${o.ods}` : 'no OD'); else if (o.mode === 'baseline') b.push(o.ods > 0 ? `OD x${o.ods}?` : 'no OD*'); else if (o.mode === 'lifetime') b.push('OD unknown'); else b.push('OD failed'); } return b.join(' - '); };
-    const headers = ['Player', 'Xan', 'Hits', 'H/X', 'Note'];
-    const bdy = rows.map(r => [r.name, String(r.drawn), String(r.hits), r.hitsPerXan == null ? '-' : r.hitsPerXan.toFixed(2), note(r)]);
-    const all = [headers, ...bdy];
-    const w = headers.map((_, i) => Math.max(...all.map(row => row[i].length)));
-    const line = row => row.map((c, i) => (i === 0 || i === headers.length - 1) ? c.padEnd(w[i]) : c.padStart(w[i])).join('  ').replace(/\s+$/, '');
-    const rule = w.map(x => '-'.repeat(x)).join('  ');
-    const flagged = d.freeloaders ? d.freeloaders.length : 0;
-    const summary = `**Drug report — war vs ${war.oppName || 'enemy'}**\n${_num(d.totalDrawn || d.totalXan)} Xanax out (${_num(d.totalXanPre || 0)} build-up, ${_num(d.totalXanWar || 0)} in war) · ${_num(d.totalHits)} hits · ${d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2)} hits/Xan` + (flagged ? `\n:warning: ${_num(flagged)} took stock and landed nothing.` : '');
-    const LIMIT = 1900; const chunks = []; let cur = [line(headers), rule];
-    const flush = () => { if (cur.length > 2) chunks.push('```\n' + cur.join('\n') + '\n```'); };
-    for (const row of bdy) { const l = line(row); if (cur.join('\n').length + l.length + 12 > LIMIT) { flush(); cur = [line(headers), rule]; } cur.push(l); }
-    flush();
-    const messages = chunks.length ? [summary + '\n' + chunks[0], ...chunks.slice(1)] : [summary];
-    return { text: messages.join('\n\n'), messages: messages.length, rows: rows.length };
-  }
-  function _drugExport(download) {
-    if (!_warState.drugs) { _warStatus('Pull drug data first.', true); return; }
-    const discord = _warState.drugFmt === 'discord';
-    const out = discord ? _drugBuildDiscord() : _drugBuildCsv();
-    if (!out) { _warStatus('Nothing in this filter.', true); return; }
-    if (!download) { _warCopy(out.text, `Copied ${_num(out.rows)} rows${discord && out.messages > 1 ? ' as ' + out.messages + ' messages' : ''}.`); return; }
-    const war = _warState.war || {};
-    const when = war.start ? new Date(war.start * 1000).toISOString().slice(0, 10) : 'war';
-    const name = `drug-report-${when}-vs-${String(war.oppName || 'enemy').replace(/[^\w-]+/g, '_')}` + (discord ? '.txt' : '.csv');
-    try {
-      const blob = new Blob(['﻿' + out.text], { type: discord ? 'text/plain;charset=utf-8' : 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      _warStatus(`Downloaded ${name} (${_num(out.rows)} rows).`);
-    } catch (_) { _warStatus('Download blocked — use Copy instead.', true); }
-  }
-
-  function _drugBuildHtml() {
-    const d = _warState.drugs, war = _warState.war || {};
-    if (!d) return null;
-    const esc = OCUI.esc, rows = _drugRows();
-    const odOf = id => _warState.od && _warState.od[id];
-    const odTag = r => { const o = odOf(r.id); return !o ? '' : (o.mode === 'delta' && o.ods > 0) ? ' — 💊 OVERDOSED ×' + o.ods : (o.mode === 'baseline' && o.ods > 0) ? ' — 💊 OD ×' + o.ods + '?' : (o.mode === 'delta' || o.mode === 'baseline') ? ' — no OD' : ' — OD unknown'; };
-    const odCellH = r => { const o = odOf(r.id); if (!o) return '<span class="dim">–</span>'; if (o.mode === 'delta') return o.ods > 0 ? `<span class="xan">💊 OD ×${o.ods}</span>` : '<span class="win">no OD</span>'; if (o.mode === 'baseline') return o.ods > 0 ? `<span class="xan">💊 OD ×${o.ods}?</span>` : '<span class="win">no OD*</span>'; if (o.mode === 'lifetime') return `<span class="dim">? (${_num(o.lifetime)} ever)</span>`; return '<span class="flag">could not check</span>'; };
-    return `<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Faction Drug Report — vs ${esc(war.oppName || 'enemy')}</title>
-<style>
- body{background:#12151f;color:#c8cde0;font:14px/1.55 system-ui,Segoe UI,Roboto,sans-serif;margin:0;padding:28px;}
- h1{font-size:21px;color:#fff;margin:0 0 4px;} .sub{color:#8b90a6;font-size:12.5px;margin-bottom:20px;}
- .kpis{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:18px;}
- .kpi{flex:1;min-width:130px;background:#1a1f2e;border:1px solid #2a3142;border-radius:9px;padding:11px 14px;}
- .kpi .k{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#8b90a6;}
- .kpi .v{font-size:24px;font-weight:700;color:#fff;line-height:1.2;margin-top:2px;}
- .kpi .s{font-size:11px;color:#8b90a6;}
- .warn{background:rgba(255,154,154,.09);border:1px solid rgba(255,154,154,.3);color:#ffc9c9;border-radius:9px;padding:11px 14px;margin-bottom:18px;font-size:12.5px;line-height:1.6;}
- table{width:100%;border-collapse:collapse;font-size:13px;background:#1a1f2e;border-radius:9px;overflow:hidden;}
- th{background:#232a3c;color:#a8afc6;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;text-align:right;padding:10px 12px;} th:first-child{text-align:left;}
- td{padding:9px 12px;text-align:right;border-top:1px solid #232a3c;} td:first-child{text-align:left;color:#f2f4fb;}
- tr:hover td{background:#1f2637;}
- .win{color:#7fe3a0;} .xan{color:#ffd479;} .flag{color:#ff9a9a;font-weight:600;} .dim{color:#8b90a6;}
- .note{color:#8b90a6;font-size:12px;margin-top:16px;line-height:1.65;}
-</style></head><body>
-<h1>💊 Faction Drug Report</h1>
-<div class="sub">War vs <b>${esc(war.oppName || 'enemy')}</b> · fighting started ${esc(_warDayStr(d.warStart))} UTC · drug window ${esc(_warDayStr(d.pullFrom || d.firstTs))} → ${esc(_warDayStr(d.pullTo || d.lastTs))} (${_num(d.leadDays || 0)}d build-up + war + ${_num(d.tailHours || 0)}h tail) · generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC</div>
-<div class="kpis">
- <div class="kpi"><div class="k">Xanax taken</div><div class="v">${_num(d.totalXan)}</div><div class="s">${_num(d.takers)} members</div></div>
- <div class="kpi"><div class="k">Build-up</div><div class="v" style="color:#9fc7ff">${_num(d.totalXanPre || 0)}</div><div class="s">before fighting</div></div>
- <div class="kpi"><div class="k">During war</div><div class="v" style="color:#ffd479">${_num(d.totalXanWar || 0)}</div><div class="s">${d.totalXanPost ? _num(d.totalXanPost) + ' after' : 'while live'}</div></div>
- <div class="kpi"><div class="k">Withdrawn</div><div class="v" style="color:#ff9a9a">${_num(d.totalXanTaken || 0)}</div><div class="s">to inventory</div></div>
- <div class="kpi"><div class="k">Hits landed</div><div class="v">${_num(d.totalHits)}</div><div class="s">war hits only</div></div>
- <div class="kpi"><div class="k">Hits per Xanax</div><div class="v">${d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2)}</div><div class="s">faction average</div></div>
- <div class="kpi"><div class="k">Took · no hits</div><div class="v" style="color:${d.freeloaders.length ? '#ff9a9a' : '#7fe3a0'}">${_num(d.freeloaders.length)}</div><div class="s">members</div></div>
- <div class="kpi"><div class="k">Other drugs</div><div class="v">${_num(d.totalOtherDrugs)}</div><div class="s">non-Xanax</div></div>
-</div>
-${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b> member(s) drew Xanax and landed zero war hits: ${d.freeloaders.map(r => esc(r.name) + ' (' + _num(r.drawn) + ')' + odTag(r)).join(', ')}. ${_warState.od ? 'Members marked OVERDOSED were hospitalised — that is the explanation, not slacking.' : 'Check for hospital time, travel, or chain use before drawing conclusions.'}</div>` : ''}
-<table><thead><tr><th>Member</th><th>Pre-war</th><th>In war</th><th>Used</th><th>Withdrew</th><th>Total out</th><th>Other drugs</th><th>Hits</th><th>Hits/Xan</th><th>Respect</th><th>OD</th><th>Flag</th></tr></thead>
-<tbody>${rows.map(r => `<tr>
- <td>${esc(r.name)} <span class="dim">[${esc(r.id || '?')}]</span></td>
- <td class="dim">${r.xanPre ? _num(r.xanPre) : '—'}</td>
- <td class="${r.xanWar ? 'xan' : 'dim'}">${r.xanWar ? _num(r.xanWar) : '—'}</td>
- <td class="${r.xanax ? 'xan' : 'dim'}">${_num(r.xanax)}</td>
- <td class="${r.xanTaken ? 'flag' : 'dim'}">${r.xanTaken ? _num(r.xanTaken) : '—'}</td>
- <td><b>${_num(r.drawn)}</b>${r.xanDeposited ? ` <span class="win">+${_num(r.xanDeposited)} in</span>` : ''}</td>
- <td class="dim">${r.otherDrugs ? _num(r.otherDrugs) : '—'}</td>
- <td class="win">${_num(r.hits)}</td>
- <td>${r.hitsPerXan == null ? '<span class="dim">—</span>' : r.hitsPerXan.toFixed(2)}</td>
- <td class="dim">${_fmt2(r.respect)}</td>
- <td>${odCellH(r)}</td>
- <td class="${r.freeloader ? 'flag' : 'dim'}">${r.freeloader ? '⚠ no hits' : r.stocker ? '📦 stocker' : (r.drawn ? 'ok' : '')}</td>
-</tr>`).join('')}</tbody></table>
-<div class="note"><b>Armoury only.</b> These are drugs taken <i>from the faction armoury</i>, parsed from the faction news log — Torn exposes no endpoint for personal drug use, so a member using their own Xanax does not appear here at all. A 0 means "took none of the faction's", not "took none".<br> Scanned ${_num(d.entries)} armoury entries, of which ${_num(d.uses)} were item uses. Generated by OC Suite — War Payout.</div>
-</body></html>`;
-  }
-  function _drugDownloadHtml() {
-    if (!_warState.drugs) { _warStatus('Pull drug data first.', true); return; }
-    const html = _drugBuildHtml(); if (!html) return;
-    const war = _warState.war || {};
-    const when = war.start ? new Date(war.start * 1000).toISOString().slice(0, 10) : 'war';
-    try {
-      const blob = new Blob([html], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url;
-      a.download = `drug-report-${when}-vs-${String(war.oppName || 'enemy').replace(/[^\w-]+/g, '_')}.html`;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      _warStatus('HTML report downloaded.');
-    } catch (_) { _warStatus('Download blocked — use Copy instead.', true); }
-  }
-
-  function _drugResultHtml(d) {
-    const flagged = d.freeloaders.length;
-    const noData = d.uses === 0;
-    const kpis = _warOverview([
-      { v: _num(d.totalXan), l1: 'Xanax swallowed', l2: `${_num(d.takers)} member${d.takers === 1 ? '' : 's'}`, color: '#ffd479' },
-      { v: _num(d.totalXanPre || 0), l1: 'Build-up', l2: 'before fighting', color: '#9fc7ff' },
-      { v: _num(d.totalXanWar || 0), l1: 'During war', l2: d.totalXanPost ? _num(d.totalXanPost) + ' after' : 'while live', color: '#ffd479' },
-      { v: _num(d.totalXanTaken || 0), l1: 'Withdrawn', l2: 'to inventory' + (d.totalXanDeposited ? ' · ' + _num(d.totalXanDeposited) + ' in' : ''), color: '#ff9a9a' },
-      { v: _num(d.totalHits), l1: 'Hits landed', l2: 'war hits only', color: '#7fe3a0' },
-      { v: d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2), l1: 'Hits / Xanax', l2: 'faction avg' },
-      { v: _num(flagged), l1: 'Took · no hits', l2: flagged ? 'burned stock' : 'nobody wasted', color: flagged ? '#ff9a9a' : '#7fe3a0' },
-      { v: _num(d.totalOtherDrugs), l1: 'Other drugs', l2: 'E, LSD, PCP…' },
-    ]);
-    const flagBox = flagged
-      ? `<div class="ocm-card" style="margin-top:10px;border-color:rgba(255,120,120,.35)">
-           <div style="color:#ffb0b0;font-weight:700;font-size:13px;margin-bottom:10px">⚠ ${_num(flagged)} member${flagged === 1 ? '' : 's'} swallowed faction Xanax and landed zero war hits</div>
-           <div style="display:flex;flex-direction:column;gap:6px">
-             ${d.freeloaders.slice(0, 15).map(r => `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:12.5px;padding-bottom:6px;border-bottom:1px solid var(--ocm-border-soft)">${_nameLink(r.name, r.id)}<span style="color:var(--ocm-text-dim);white-space:nowrap"><b style="color:#ff9a9a">${_num(r.xanax)}</b> swallowed&nbsp;·&nbsp;<b style="color:var(--ocm-text)">0</b> hits${r.xanTaken ? `&nbsp;·&nbsp;${_num(r.xanTaken)} withdrawn` : ''}${r.otherDrugs ? `&nbsp;·&nbsp;${_num(r.otherDrugs)} other` : ''}</span></div>`).join('')}
-             ${flagged > 15 ? `<div style="color:var(--ocm-text-faint);font-size:11px">… and ${flagged - 15} more</div>` : ''}
-           </div>
-           <div style="color:var(--ocm-text-faint);font-size:11px;margin-top:10px;line-height:1.5">Worth checking before accusing — a hospital stay, a travel trip, or Xanax taken for a chain outside the war window all land here too.</div>
-         </div>`
-      : '';
-    if (noData) {
-      return kpis + '<div class="ocm-card" style="margin-top:10px"><div style="color:var(--ocm-text-dim);font-size:12.5px">The armoury log returned <b>no drug use</b> for this window — Torn likely pruned news that far back, or the faction runs on personal Xanax. Try the newest war to confirm the pull works.</div></div>';
-    }
-    const rows = _drugRows();
-    const body = rows.map(r => `<tr>
-      <td class="l">${_nameLink(r.name, r.id)}</td>
-      <td class="n">${r.xanPre ? _num(r.xanPre) : '—'}</td>
-      <td class="n">${r.xanWar ? _num(r.xanWar) : '—'}</td>
-      <td class="n">${_num(r.xanax)}</td>
-      <td class="n">${r.xanTaken ? _num(r.xanTaken) : '—'}</td>
-      <td class="n"><b>${_num(r.drawn)}</b>${r.xanDeposited ? ` <span style="color:#7fe3a0" title="Also put ${_num(r.xanDeposited)} in">+${_num(r.xanDeposited)}</span>` : ''}</td>
-      <td class="n">${r.otherDrugs ? _num(r.otherDrugs) : '—'}</td>
-      <td class="n">${_num(r.hits)}</td>
-      <td class="n">${r.hitsPerXan == null ? '—' : r.hitsPerXan.toFixed(2)}</td>
-      <td class="n">${_fmt2(r.respect)}</td>
-      <td class="n">${_odCell(r)}</td>
-      <td class="n">${r.freeloader ? '<span style="color:#ff9a9a">⚠ no hits</span>' : r.stocker ? '📦 stocker' : (r.drawn ? 'ok' : '')}</td>
-    </tr>`).join('');
-    const table = `<div class="ocm-card" style="margin-top:10px"><div class="ocm-card-h">PER-MEMBER DRUGS<span class="ocm-card-r">${rows.length} shown</span></div>
-      <div style="overflow-x:auto"><table class="ocm-members-table"><thead><tr>
-        <th class="l">Member</th><th class="n">Pre-war</th><th class="n">In war</th><th class="n">Used</th><th class="n">Withdrew</th><th class="n">Total out</th><th class="n">Other</th><th class="n">Hits</th><th class="n">Hits/Xan</th><th class="n">Respect</th><th class="n">OD</th><th class="n">Flag</th>
-      </tr></thead><tbody>${body || '<tr><td class="l" colspan="12" style="color:var(--ocm-text-faint)">No rows in this filter.</td></tr>'}</tbody></table></div></div>`;
-    const foot = `<div style="color:var(--ocm-text-faint);font-size:11px;margin-top:8px">${rows.length} row(s) · window ${_warDayStr(d.pullFrom || d.firstTs)} → ${_warDayStr(d.pullTo || d.lastTs)} UTC (${d.leadDays || 0}d + war + ${d.tailHours || 0}h) · fighting started ${_warDayStr(d.warStart)} · ${_num(d.entries)} entries scanned${d.kinds ? ` — ${_num(d.kinds.use || 0)} uses, ${_num(d.kinds.take || 0)} withdrawals, ${_num(d.kinds.deposit || 0)} deposits` : ''}.<br><b>Armoury only</b> — personal Xanax is invisible to the API, so 0 means "took none of yours".</div>`;
-    return kpis + flagBox + table + foot;
-  }
-
-  function warRenderDrugs(host) {
-    const controls =
-      '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">' +
-      `<label style="font-size:11px;color:var(--ocm-text-dim)">Build-up (days)<br><input id="ocm-drug-lead" type="number" min="0" max="14" value="${_warState.drugLead}" style="${_selStyle};width:76px"></label>` +
-      `<label style="font-size:11px;color:var(--ocm-text-dim)">Tail (hours)<br><input id="ocm-drug-tail" type="number" min="0" max="72" value="${_warState.drugTail}" style="${_selStyle};width:76px"></label>` +
-      `<button id="ocm-drug-run" style="${_genBtnStyle}">💊 Pull drug data</button>` +
-      `<label style="font-size:11px;color:var(--ocm-text-dim)">Show<br><select id="ocm-drug-filter" style="${_selStyle}"><option value="all"${_warState.drugFilter === 'all' ? ' selected' : ''}>Everyone</option><option value="took"${_warState.drugFilter === 'took' ? ' selected' : ''}>Took Xanax</option><option value="freeload"${_warState.drugFilter === 'freeload' ? ' selected' : ''}>Took Xanax · zero hits</option><option value="nodrug"${_warState.drugFilter === 'nodrug' ? ' selected' : ''}>Hits · no faction Xanax</option></select></label>` +
-      `<button id="ocm-drug-od" style="${_btnStyle}">🩺 Check for ODs</button>` +
-      `<label style="font-size:11px;color:var(--ocm-text-dim)">Export<br><select id="ocm-drug-fmt" style="${_selStyle}"><option value="shown"${_warState.drugFmt === 'shown' ? ' selected' : ''}>As shown (CSV)</option><option value="full"${_warState.drugFmt === 'full' ? ' selected' : ''}>Full raw data</option><option value="discord"${_warState.drugFmt === 'discord' ? ' selected' : ''}>Discord</option></select></label>` +
-      `<button id="ocm-drug-copy" style="${_btnStyle}">Copy</button>` +
-      `<button id="ocm-drug-dl" style="${_btnStyle}">⬇ Download</button>` +
-      `<button id="ocm-drug-html" style="${_btnStyle}">⬇ HTML report</button>` +
-      '</div>';
-    let bodyHtml;
-    const d = _warState.drugs;
-    if (!_warState.war) bodyHtml = '<div style="color:var(--ocm-text-dim);margin-top:12px">Pull a war report first (⚔️ Report) — the drug report ties Xanax to the hits that war produced.</div>';
-    else if (!d) bodyHtml = '<div style="color:var(--ocm-text-dim);margin-top:12px">Pulls the faction <b>armoury log</b> for this war and ties every Xanax taken to hits landed. Press <b>Pull drug data</b>.</div>';
-    else bodyHtml = _drugResultHtml(d);
-    host.innerHTML = OCUI.card({ title: '💊 Drugs', body: controls }) + '<div style="margin-top:8px">' + bodyHtml + '</div>';
-    const lead = document.getElementById('ocm-drug-lead'); if (lead) lead.addEventListener('change', e => { _warState.drugLead = Math.max(0, Math.min(14, Number(e.target.value) || 0)); });
-    const tail = document.getElementById('ocm-drug-tail'); if (tail) tail.addEventListener('change', e => { _warState.drugTail = Math.max(0, Math.min(72, Number(e.target.value) || 0)); });
-    document.getElementById('ocm-drug-filter')?.addEventListener('change', e => { _warState.drugFilter = e.target.value; warRenderDrugs(host); });
-    document.getElementById('ocm-drug-fmt')?.addEventListener('change', e => { _warState.drugFmt = e.target.value; });
-    document.getElementById('ocm-drug-run')?.addEventListener('click', warPullDrugs);
-    document.getElementById('ocm-drug-od')?.addEventListener('click', warCheckODs);
-    document.getElementById('ocm-drug-copy')?.addEventListener('click', () => _drugExport(false));
-    document.getElementById('ocm-drug-dl')?.addEventListener('click', () => _drugExport(true));
-    document.getElementById('ocm-drug-html')?.addEventListener('click', _drugDownloadHtml);
-  }
-
-  async function warPullDrugs() {
-    const key = GM_getValue(GMK.API_KEY, '');
-    const war = _warState.war;
-    if (!war) { _warStatus('Pull a war report first.', true); return; }
-    const leadDays = _warState.drugLead, tailHours = _warState.drugTail;
-    const warStart = war.start;
-    const warEnd = war.end && war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
-    const from = warStart - Math.round(leadDays * 86400);
-    const to = warEnd + Math.round(tailHours * 3600);
-    const btn = document.getElementById('ocm-drug-run'); if (btn) btn.disabled = true;
-    _warStatus('Pulling the faction armoury log…');
-    try {
-      const pulled = await TWPR.pullArmoryNews(key, from, to, (count, page) => _warStatus(`Pulling armoury log… ${_num(count)} entries (page ${page})`));
-      _warState.drugs = TWPR.buildDrugReport(_warState.ctx, _warState.report, pulled.list, { warStart, warEnd });
-      _warState.drugs.leadDays = leadDays; _warState.drugs.tailHours = tailHours; _warState.drugs.pullFrom = from; _warState.drugs.pullTo = to;
-      warRenderTab();
-      _warStatus(`Drug report from ${_num(pulled.list.length)} entries${pulled.partial ? ' (partial)' : ''}. ${_num(_warState.drugs.totalXan)} Xanax by ${_num(_warState.drugs.takers)} member(s).`, pulled.partial);
-      if (!pulled.partial && _warState.report) { try { await TWPR.cacheSave(war, _warState.report, _warState.report.__scanned || 0, false, _warState.drugs); } catch (_) {} }
-    } catch (e) { _warStatus(e.message || 'Drug pull failed.', true); }
-    finally { const b = document.getElementById('ocm-drug-run'); if (b) b.disabled = false; }
-  }
-
-  async function warCheckODs() {
-    const key = GM_getValue(GMK.API_KEY, '');
-    if (!_warState.drugs) { _warStatus('Pull drug data first.', true); return; }
-    if (!_warState.war) { _warStatus('Pull a war report first.', true); return; }
-    const targets = _warState.drugs.list.filter(r => r.drawn > 0 && r.hits === 0 && r.id);
-    if (!targets.length) { _warStatus('Nobody took drugs without landing a hit — nothing to check.'); return; }
-    const btn = document.getElementById('ocm-drug-od'); if (btn) btn.disabled = true;
-    try {
-      _warState.od = await TWPR.checkOverdoses(key, targets, _warState.war, (i, n, name) => _warStatus(`Checking overdoses… ${i}/${n} (${name})`));
-      warRenderTab();
-      const vals = Object.values(_warState.od);
-      const found = vals.filter(o => (o.mode === 'delta' || o.mode === 'baseline') && o.ods > 0).length;
-      const clear = vals.filter(o => (o.mode === 'delta' || o.mode === 'baseline') && o.ods === 0).length;
-      const unknown = vals.filter(o => o.mode === 'lifetime' || o.mode === 'error').length;
-      let msg = found ? `${found} overdose${found === 1 ? '' : 's'} found — explains the missing hits.` : (clear && !unknown) ? `No overdoses. All ${clear} checked members were clean.` : 'No overdose found.';
-      if (unknown) msg += ` ${unknown} couldn't be determined (lifetime only) — baseline stored; re-run after the next war.`;
-      if (_warState.war) { try { await TWPR.cacheSave(_warState.war, null, null, false, null, null, _warState.od); } catch (_) {} }
-      _warStatus(msg, unknown > 0 && !found);
-    } catch (e) { _warStatus(e.message || 'Overdose check failed.', true); }
-    finally { const b = document.getElementById('ocm-drug-od'); if (b) b.disabled = false; }
-  }
-
-  // ── Multi-war sweep tab ──────────────────────────────────────────────────────
-  function _sweepSelSet() {
-    if (!_warState.sweepSel) _warState.sweepSel = new Set((_warState.wars || []).map((_, i) => i).slice(0, 3));
-    return _warState.sweepSel;
-  }
-  function _sweepPick(n) {
-    const set = new Set(); const wars = _warState.wars || [];
-    const count = n == null ? wars.length : Math.min(n, wars.length);
-    for (let i = 0; i < count; i++) set.add(i);
-    _warState.sweepSel = set;
-  }
-  function _sweepSelectedWars() {
-    const set = _sweepSelSet();
-    let picked = (_warState.wars || []).filter((_, i) => set.has(i));
-    if (_warState.sweepSkipLive) picked = picked.filter(w => w.end && w.end > 0);
-    return picked;
-  }
-  function _sweepVisible(s) {
-    if (!s) return [];
-    const mode = _warState.sweepShow, thresh = Math.max(0, Number(_warState.sweepThresh) || 0), basis = _warState.sweepBasis;
-    const onlyTook = _warState.sweepOnlyTook, hideOd = _warState.sweepHideOd;
-    return s.list.filter(r => {
-      if (!(r.totalDrawn > 0 || r.totalHits > 0)) return false;
-      if (onlyTook && r.totalDrawn <= 0) return false;
-      if (hideOd) { const o = _warState.sweepOd && _warState.sweepOd[r.id]; if (o && o.ods > 0) return false; }
-      if (mode === 'took') return r.totalDrawn > 0;
-      if (mode === 'flagged') return (r.warsFlaggedNet ?? r.warsFlagged) > 0;
-      if (mode === 'repeat') return r.repeat;
-      if (mode === 'zero') return r.hitsKnown && r.totalHits === 0;
-      if (mode === 'under') { if (!r.hitsKnown) return false; const v = basis === 'avg' ? (r.avgHits == null ? 0 : r.avgHits) : r.totalHits; return v < thresh; }
-      if (mode === 'waste') { if (r.wasted == null) return false; const v = basis === 'avg' ? (r.warsKnown ? r.wasted / r.warsKnown : 0) : r.wasted; return v > thresh; }
-      if (mode === 'od') { const o = _warState.sweepOd && _warState.sweepOd[r.id]; return !!(o && o.ods > 0); }
-      return true;
-    });
-  }
-  const _sweepWarCols = s => s.wars.slice().sort((a, b) => (a.start || 0) - (b.start || 0));
-  const _wasteColor = r => r.wasted == null ? 'var(--ocm-text-faint)' : r.wasted < 0.05 ? '#7fe3a0' : r.wasted < 3 ? '#ffd479' : '#ff8080';
-  function _odCellSweep(r) {
-    const o = _warState.sweepOd && _warState.sweepOd[r.id];
-    if (!o) return '<span style="color:var(--ocm-text-faint)" title="Not checked — tick Auto-OD and sweep again">·</span>';
-    if (o.ods > 0) {
-      const where = (r.odWars || []).map(x => OCUI.esc(x.opp) + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '') + (x.ods > 1 ? ' ×' + x.ods : '')).join(', ');
-      return `<span style="color:#ff8080;font-weight:700" title="Overdosed during ${where || o.wars + ' war(s)'} — excused">💊 ${where || o.ods}</span>`;
-    }
-    if (o.unknown) return `<span style="color:#ffd479" title="${o.unknown} of ${o.checked} war(s) unknown (lifetime only)">?</span>`;
-    return '<span style="color:#7fe3a0" title="Checked, no overdose">—</span>';
-  }
-  function _sweepCell(r, w) {
-    const p = r.per[w.warId];
-    if (!p) return '<td class="n" style="color:var(--ocm-text-faint)" title="Not in this war">–</td>';
-    const u = p.used != null ? p.used : p.drawn, tk = p.taken || 0;
-    const plus = tk ? ` <span style="color:#7f8aa3" title="+${_num(tk)} withdrawn, not charged">+${_num(tk)}</span>` : '';
-    if (!p.known) return `<td class="n" title="${OCUI.esc(w.oppName)} still live — no hits published">${_num(u)} <span style="color:var(--ocm-text-faint)">/ ?</span>${plus}</td>`;
-    if (p.od) return `<td class="n" style="background:rgba(159,199,255,.10)" title="Overdosed vs ${OCUI.esc(w.oppName)} — excused">${_num(u)} / ${_num(p.hits)} <span style="color:#9fc7ff;font-size:9px">OD</span>${plus}</td>`;
-    if (p.flagged) return `<td class="n" style="background:rgba(255,120,120,.14);color:#ff9a9a" title="Swallowed ${_num(u)}, landed 0 vs ${OCUI.esc(w.oppName)}">${_num(u)} / 0 ⚠${plus}</td>`;
-    return `<td class="n" title="${_num(u)} swallowed · ${_num(p.hits)} hits vs ${OCUI.esc(w.oppName)}"><span style="color:#ffd479">${_num(u)}</span> / <span style="color:#7fe3a0">${_num(p.hits)}</span>${plus}</td>`;
-  }
-  function _sweepFilterLabel(shown, total) {
-    const mode = _warState.sweepShow, thresh = Number(_warState.sweepThresh) || 0, basis = _warState.sweepBasis;
-    const what = { all: 'everyone with drug or hit activity', took: 'members who took faction Xanax', zero: 'members who landed ZERO hits in every swept war', under: `members under ${_num(thresh)} ${basis === 'avg' ? 'hits/war avg' : 'total hits'}`, waste: `members who wasted more than ${_num(thresh)} Xanax ${basis === 'avg' ? 'per war avg' : 'total'}`, od: 'members with a confirmed overdose', flagged: 'members flagged in at least one war', repeat: 'repeat offenders — flagged in 2+ wars' }[mode];
-    return `Showing ${_num(shown)} of ${_num(total)} — ${what}${_warState.sweepOnlyTook && mode !== 'took' ? ', only those who took Xanax' : ''}${_warState.sweepHideOd ? ', excluding overdoses' : ''}.`;
-  }
-
-  function _sweepResultHtml(s) {
-    const cols = _sweepWarCols(s);
-    const repeats = s.repeats.length;
-    const everyone = s.list.filter(r => r.totalDrawn > 0 || r.totalHits > 0);
-    const rows = _sweepVisible(s);
-    const ovStat = (v, l1, l2, color) => `<div style="display:flex;flex-direction:column;gap:3px;min-width:96px"><span style="font-size:24px;font-weight:800;line-height:1${color ? ';color:' + color : ''}">${v}</span><span style="color:var(--ocm-text);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em">${l1}</span><span style="color:var(--ocm-text-faint);font-size:10.5px">${l2}</span></div>`;
-    const ovDiv = '<div style="width:1px;align-self:stretch;background:var(--ocm-border-soft)"></div>';
-    const ovStats = [
-      ovStat(_num(s.wars.length), 'Wars swept', s.unknownWars.length ? _num(s.unknownWars.length) + ' without hit data' : 'all with hit data'),
-      ovStat(_num(s.totalWasted), 'Xanax wasted', `of ${_num(s.totalUsed)} swallowed`, s.totalWasted ? '#ff8080' : '#7fe3a0'),
-      ovStat(_num(s.totalHits), 'Hits landed', 'official reports', '#7fe3a0'),
-      ovStat(_num(s.flaggedAny.length), 'Wasted a war', 'took Xanax, 0 hits', s.flaggedAny.length ? '#ffd479' : '#7fe3a0'),
-      ovStat(_num(repeats), 'Repeat offenders', 'did it in 2+ wars', repeats ? '#ff9a9a' : '#7fe3a0'),
-    ];
-    const kpis = `<div class="ocm-card" style="padding:14px 18px;margin-bottom:8px"><div style="display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start">${ovStats.join(ovDiv)}</div></div>`;
-    const repeatBox = repeats
-      ? `<div class="ocm-card" style="margin-top:10px;border-color:rgba(255,120,120,.35)">
-           <div style="color:#ffb0b0;font-weight:700;font-size:13px;margin-bottom:10px">⚠ ${_num(repeats)} member${repeats === 1 ? '' : 's'} took Xanax and landed nothing in 2+ wars</div>
-           <div style="display:flex;flex-direction:column;gap:6px">
-             ${s.repeats.slice(0, 12).map(r => `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:12.5px;padding-bottom:6px;border-bottom:1px solid var(--ocm-border-soft)">${_nameLink(r.name, r.id)}<span style="color:var(--ocm-text-dim);white-space:nowrap"><b style="color:#ff9a9a">${(r.wasted || 0).toFixed(1)}</b> Xanax wasted&nbsp;·&nbsp;flagged <b style="color:var(--ocm-text)">${r.warsFlaggedNet ?? r.warsFlagged}</b> of ${r.warsSeen} wars</span></div>`).join('')}
-             ${repeats > 12 ? `<div style="color:var(--ocm-text-faint);font-size:11px">… and ${repeats - 12} more</div>` : ''}
-           </div>
-           <div style="color:var(--ocm-text-faint);font-size:11px;margin-top:10px;line-height:1.5">One bad war is a hospital stay — the same name every war is a pattern. Check travel and hospital time before acting on it.</div>
-         </div>`
-      : (s.flaggedAny.length ? '<div style="color:var(--ocm-text-dim);font-size:12px;margin-top:8px">Nobody was flagged in more than one war — the misses look like one-offs.</div>' : '');
-    const caveats = [];
-    if (s.unknownWars.length) caveats.push(`<b>${_num(s.unknownWars.length)} war(s)</b> had no hit data (${s.unknownWars.map(w => OCUI.esc(w.oppName)).join(', ')}) — Torn publishes the report only once a war ENDS. Their Xanax counts but nobody can be flagged; <b>?</b> means unknown, not idle.`);
-    if (s.emptyWars.length) caveats.push(`<b>${_num(s.emptyWars.length)} war(s)</b> returned no armoury activity (${s.emptyWars.map(w => OCUI.esc(w.oppName)).join(', ')}) — Torn prunes faction news, so older wars come back thin. Missing data, not a clean faction.`);
-    const caveatBox = caveats.length ? `<div class="ocm-card" style="margin-top:10px;border-color:rgba(255,212,121,.3)"><div style="color:var(--ocm-text-dim);font-size:12px">${caveats.join('<br><br>')}</div></div>` : '';
-    const legend = '<div style="color:var(--ocm-text-faint);font-size:11px;margin-top:8px;line-height:1.7">Each war cell reads <b style="color:#ffd479">Xanax swallowed</b> / <b style="color:#7fe3a0">hits landed</b>. <span style="color:#7f8aa3">+N</span> = also withdrew stock (never waste). <span style="color:#ff9a9a">N / 0 ⚠</span> = took Xanax, landed nothing. <span style="color:var(--ocm-text-faint)">–</span> not in that war · <span style="color:var(--ocm-text-faint)">/ ?</span> war still live.</div>';
-    if (!rows.length) {
-      return kpis + repeatBox + caveatBox + `<div class="ocm-card" style="margin-top:10px"><div style="color:var(--ocm-text-dim);font-size:12.5px">No member matches this filter. ${_num(everyone.length)} have activity — set <b>Show</b> back to <b>Everyone</b>.</div></div>`;
-    }
-    const unk = '<span style="color:var(--ocm-text-faint)" title="Every war they appear in is still live — unknown, not zero">?</span>';
-    const warThs = cols.map(w => `<th class="n" title="${OCUI.esc(w.oppName)} — ${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?'}${w.hitsSrc === 'none' ? ' · live' : ''}">${OCUI.esc(String(w.oppName).slice(0, 12))}<br><span style="font-weight:400;color:var(--ocm-text-faint);font-size:9px">${w.start ? new Date(w.start * 1000).toISOString().slice(5, 10).replace('-', '/') : '?'}${w.hitsSrc === 'none' ? ' LIVE' : ''}</span></th>`).join('');
-    const body = rows.map(r => `<tr>
-      <td class="l">${_nameLink(r.name, r.id)}</td>
-      <td class="n" style="color:${(r.warsFlaggedNet ?? r.warsFlagged) ? (r.repeat ? '#ff9a9a' : '#ffd479') : 'var(--ocm-text-faint)'}" title="${r.warsFlagged ? `Flagged in ${r.warsFlagged}/${r.warsSeen} wars${r.warsExcused ? ` — ${r.warsExcused} excused by OD` : ''}` : 'Never took Xanax without landing hits'}">${(r.warsFlaggedNet ?? r.warsFlagged) ? (r.warsFlaggedNet ?? r.warsFlagged) + '/' + r.warsSeen : '—'}${r.warsExcused ? ' <span style="color:#9fc7ff;font-size:10px">+' + r.warsExcused + ' OD</span>' : ''}</td>
-      <td class="n" style="color:${_wasteColor(r)};font-weight:${(r.wasted || 0) >= 1 ? 700 : 400}" title="${r.wasted == null ? 'No hit data yet' : r.wasted < 0.05 ? 'Converted everything drawn into hits' : Math.round(r.wasted * _ENERGY_PER_XANAX).toLocaleString() + ' energy never spent on a hit' + (r.worstWar ? ` — worst vs ${OCUI.esc(r.worstWar.opp)}: ${_num(r.worstWar.drawn)} Xanax for ${_num(r.worstWar.hits)} hits` : '')}">${r.wasted == null ? '?' : r.wasted < 0.05 ? '—' : r.wasted.toFixed(1)}</td>
-      <td class="n" style="color:${(r.excused || 0) >= 0.05 ? '#9fc7ff' : 'var(--ocm-text-faint)'}" title="${(r.excused || 0) >= 0.05 ? r.excused.toFixed(1) + ' Xanax excused by an overdose' : 'Nothing excused'}">${(r.excused || 0) >= 0.05 ? r.excused.toFixed(1) : '—'}</td>
-      <td class="n" style="color:#ffd479;font-weight:700">${_num(r.totalUsed)}</td>
-      <td class="n" style="color:${r.unaccounted ? '#9fc7ff' : 'var(--ocm-text-faint)'}" title="${r.unaccounted ? _num(r.totalTaken) + ' withdrawn' + (r.totalDeposited ? ', ' + _num(r.totalDeposited) + ' back' : '') + ' — not charged' : 'Never moved stock to inventory'}">${r.unaccounted ? _num(r.unaccounted) : '—'}</td>
-      <td class="n" style="color:#7fe3a0">${r.hitsKnown ? _num(r.totalHits) : unk}</td>
-      <td class="n">${r.avgHits == null ? unk : r.avgHits.toFixed(1)}</td>
-      <td class="n">${_odCellSweep(r)}</td>
-      <td class="n" style="color:${r.hitsPerXan == null ? 'var(--ocm-text-faint)' : r.hitsPerXan >= _HITS_PER_XANAX ? '#7fe3a0' : r.hitsPerXan >= _HITS_PER_XANAX / 2 ? '#ffd479' : '#ff8080'};font-weight:600" title="${r.hitsPerXan == null ? '' : (r.hitsPerXan / _HITS_PER_XANAX * 100).toFixed(0) + '% of what their Xanax could buy'}">${r.hitsPerXan == null ? (r.hitsKnown ? '—' : unk) : r.hitsPerXan.toFixed(1)}</td>
-      ${cols.map(w => _sweepCell(r, w)).join('')}
-    </tr>`).join('');
-    const table = `<div class="ocm-card" style="margin-top:10px"><div class="ocm-card-h">MULTI-WAR BREAKDOWN<span class="ocm-card-r">${rows.length} of ${everyone.length} shown</span></div>
-      <div style="overflow-x:auto"><table class="ocm-members-table"><thead><tr>
-        <th class="l">Member</th><th class="n" title="Wars flagged / wars seen. 2+ is a pattern">Flagged</th><th class="n" title="Xanax energy that never became a hit">Wasted</th><th class="n" title="Waste an overdose excuses">Excused</th><th class="n" title="Xanax swallowed">Used</th><th class="n" title="Withdrawn to inventory, net — not charged">Withdrew</th><th class="n">Hits</th><th class="n" title="Avg hits per war appeared in">Avg</th><th class="n" title="Overdoses during swept wars">OD</th><th class="n" title="Hits per Xanax — 10 is break-even">H/Xan</th>${warThs}
-      </tr></thead><tbody>${body}</tbody></table></div></div>`;
-    const foot = `<div style="color:var(--ocm-text-faint);font-size:11px;margin-top:8px">${_sweepFilterLabel(rows.length, everyone.length)} Wars run oldest → newest, left to right. Exports follow this filter.</div>`;
-    return kpis + repeatBox + caveatBox + legend + table + foot;
-  }
-
-  function warRenderSweep(host) {
-    const wars = _warState.wars || [];
-    if (!wars.length) { host.innerHTML = OCUI.card({ title: '📊 Multi-war', body: '<div style="color:var(--ocm-text-dim)">Wars are still loading — give it a moment, or reopen the tab.</div>' }); return; }
-    const set = _sweepSelSet();
-    const chips = wars.map((w, i) => {
-      const on = set.has(i);
-      const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
-      const live = w.end ? '' : ' LIVE';
-      return `<button class="ocm-sweep-chip" data-i="${i}" style="${_pillStyle}${on ? ';color:var(--ocm-fb-br,#7fdfff);border-color:var(--ocm-fb,#3db8f5);background:rgba(61,184,245,.10)' : ''}">${when} vs ${OCUI.esc(String(w.oppName).slice(0, 16))}${live}</button>`;
-    }).join('');
-    const selWars = _sweepSelectedWars();
-    const cost = selWars.length ? `<b>${_num(selWars.length)}</b> war${selWars.length === 1 ? '' : 's'} selected · ~${_num(selWars.length)}–${_num(selWars.length * 4)} API calls (cached wars are free).` : 'Pick at least one war.';
-    const _sub = t => `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--ocm-text-muted);font-weight:700;margin-bottom:8px">${t}</div>`;
-    const _divider = '<div style="border-top:1px solid var(--ocm-border-soft);margin:14px 0 12px"></div>';
-    const controls =
-      _sub('Wars to sweep') +
-      '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">' +
-      `<button id="ocm-sweep-last3" style="${_btnStyle}">Last 3</button><button id="ocm-sweep-last5" style="${_btnStyle}">Last 5</button><button id="ocm-sweep-all" style="${_btnStyle}">All</button>` +
-      '<span style="flex:1"></span>' +
-      `<label style="display:flex;align-items:center;gap:5px;color:var(--ocm-text-dim);font-size:12px"><input type="checkbox" id="ocm-sweep-skiplive"${_warState.sweepSkipLive ? ' checked' : ''}> Skip live wars</label></div>` +
-      `<div style="display:flex;gap:6px;flex-wrap:wrap;max-height:120px;overflow-y:auto;padding:2px">${chips}</div>` +
-      _divider +
-      _sub('Drug window & options') +
-      '<div style="display:flex;gap:18px;align-items:flex-end;flex-wrap:wrap">' +
-      `<label style="font-size:11px;color:var(--ocm-text-dim)">Build-up (days)<br><input id="ocm-sweep-lead" type="number" min="0" max="14" value="${_warState.sweepLead}" style="${_selStyle};width:72px"></label>` +
-      `<label style="font-size:11px;color:var(--ocm-text-dim)">Tail (hours)<br><input id="ocm-sweep-tail" type="number" min="0" max="72" value="${_warState.sweepTail}" style="${_selStyle};width:72px"></label>` +
-      '<div style="display:flex;flex-direction:column;gap:7px">' +
-      `<label style="display:flex;align-items:center;gap:5px;color:var(--ocm-text-dim);font-size:12px"><input type="checkbox" id="ocm-sweep-cache"${_warState.sweepCache ? ' checked' : ''}> Use cached wars</label>` +
-      `<label style="display:flex;align-items:center;gap:5px;color:var(--ocm-text-dim);font-size:12px"><input type="checkbox" id="ocm-sweep-autood"${_warState.sweepAutoOd ? ' checked' : ''}> Check overdoses (spends calls)</label></div>` +
-      '</div>' +
-      '<div style="display:flex;gap:12px;align-items:center;margin-top:14px">' +
-      `<button id="ocm-sweep-run" style="${_genBtnStyle}">📊 Run sweep</button>` +
-      `<span style="color:var(--ocm-text-faint);font-size:11px">${cost}</span></div>`;
-
-    let filters = '', results = '';
-    if (_warState.sweep) {
-      filters = OCUI.card({ title: 'Filter & export', body:
-        _sub('Show') +
-        '<div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">' +
-        `<label style="font-size:11px;color:var(--ocm-text-dim)">View<br><select id="ocm-sweep-show" style="${_selStyle}">${[['all', 'Everyone'], ['took', 'Took Xanax'], ['flagged', 'Flagged (1+ war)'], ['repeat', 'Repeat offenders'], ['zero', 'Zero hits'], ['under', 'Under N hits'], ['waste', 'Wasted > N Xanax'], ['od', 'Overdosed']].map(o => `<option value="${o[0]}"${_warState.sweepShow === o[0] ? ' selected' : ''}>${o[1]}</option>`).join('')}</select></label>` +
-        `<label style="font-size:11px;color:var(--ocm-text-dim)">Threshold<br><input id="ocm-sweep-thresh" type="number" min="0" value="${_warState.sweepThresh}" style="${_selStyle};width:72px"></label>` +
-        `<label style="font-size:11px;color:var(--ocm-text-dim)">Basis<br><select id="ocm-sweep-basis" style="${_selStyle}"><option value="total"${_warState.sweepBasis === 'total' ? ' selected' : ''}>Total</option><option value="avg"${_warState.sweepBasis === 'avg' ? ' selected' : ''}>Per war avg</option></select></label>` +
-        '<div style="display:flex;flex-direction:column;gap:7px">' +
-        `<label style="display:flex;align-items:center;gap:5px;color:var(--ocm-text-dim);font-size:12px"><input type="checkbox" id="ocm-sweep-onlytook"${_warState.sweepOnlyTook ? ' checked' : ''}> Only took Xanax</label>` +
-        `<label style="display:flex;align-items:center;gap:5px;color:var(--ocm-text-dim);font-size:12px"><input type="checkbox" id="ocm-sweep-hideod"${_warState.sweepHideOd ? ' checked' : ''}> Hide overdoses</label></div>` +
-        '</div>' +
-        _divider +
-        _sub('Export') +
-        '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">' +
-        `<label style="font-size:11px;color:var(--ocm-text-dim)">Format<br><select id="ocm-sweep-fmt" style="${_selStyle}"><option value="xlsx"${_warState.sweepFmt === 'xlsx' ? ' selected' : ''}>Excel workbook — colour coded (recommended)</option><option value="discord"${_warState.sweepFmt === 'discord' ? ' selected' : ''}>Discord</option></select></label>` +
-        `<button id="ocm-sweep-copy" style="${_btnStyle}">Copy</button><button id="ocm-sweep-dl" style="${_btnStyle}">⬇ Download</button>` +
-        '</div>' });
-      results = '<div style="margin-top:8px">' + _sweepResultHtml(_warState.sweep) + '</div>';
-    }
-    host.innerHTML = OCUI.card({ title: '📊 Multi-war sweep', body: controls }) + (filters ? '<div style="margin-top:8px">' + filters + '</div>' : '') + results;
-
-    // wire
-    host.querySelectorAll('.ocm-sweep-chip').forEach(b => b.addEventListener('click', () => { const i = Number(b.dataset.i); const st = _sweepSelSet(); if (st.has(i)) st.delete(i); else st.add(i); warRenderSweep(host); }));
-    document.getElementById('ocm-sweep-last3')?.addEventListener('click', () => { _sweepPick(3); warRenderSweep(host); });
-    document.getElementById('ocm-sweep-last5')?.addEventListener('click', () => { _sweepPick(5); warRenderSweep(host); });
-    document.getElementById('ocm-sweep-all')?.addEventListener('click', () => { _sweepPick(null); warRenderSweep(host); });
-    document.getElementById('ocm-sweep-skiplive')?.addEventListener('change', e => { _warState.sweepSkipLive = e.target.checked; warRenderSweep(host); });
-    document.getElementById('ocm-sweep-lead')?.addEventListener('change', e => { _warState.sweepLead = Math.max(0, Math.min(14, Number(e.target.value) || 0)); });
-    document.getElementById('ocm-sweep-tail')?.addEventListener('change', e => { _warState.sweepTail = Math.max(0, Math.min(72, Number(e.target.value) || 0)); });
-    document.getElementById('ocm-sweep-cache')?.addEventListener('change', e => { _warState.sweepCache = e.target.checked; });
-    document.getElementById('ocm-sweep-autood')?.addEventListener('change', e => { _warState.sweepAutoOd = e.target.checked; });
-    document.getElementById('ocm-sweep-run')?.addEventListener('click', warRunSweep);
-    const reRender = () => warRenderSweep(host);
-    document.getElementById('ocm-sweep-show')?.addEventListener('change', e => { _warState.sweepShow = e.target.value; reRender(); });
-    document.getElementById('ocm-sweep-thresh')?.addEventListener('change', e => { _warState.sweepThresh = Number(e.target.value) || 0; reRender(); });
-    document.getElementById('ocm-sweep-basis')?.addEventListener('change', e => { _warState.sweepBasis = e.target.value; reRender(); });
-    document.getElementById('ocm-sweep-onlytook')?.addEventListener('change', e => { _warState.sweepOnlyTook = e.target.checked; reRender(); });
-    document.getElementById('ocm-sweep-hideod')?.addEventListener('change', e => { _warState.sweepHideOd = e.target.checked; reRender(); });
-    document.getElementById('ocm-sweep-fmt')?.addEventListener('change', e => { _warState.sweepFmt = e.target.value; });
-    document.getElementById('ocm-sweep-copy')?.addEventListener('click', () => _sweepExport(false));
-    document.getElementById('ocm-sweep-dl')?.addEventListener('click', () => _sweepExport(true));
-  }
-
-  /**
-   * How much of the sweep the overdose check actually covers.
-   *
-   * Partial coverage must not read as a clean bill of health: an export that
-   * says "check run" when three wars were never looked at is the kind of claim
-   * that gets someone accused of wasting Xanax they never wasted.
-   */
-  let _odCov = { eligible: 0, checked: 0, fromCache: 0 };
-  function _sweepOdCoverage(perWar) {
-    _odCov = {
-      eligible: perWar.filter(p => p.odEligible).length,
-      checked: perWar.filter(p => p.odChecked).length,
-      fromCache: perWar.filter(p => p.odFromCache).length,
-    };
-    return _odCov;
-  }
-  /** True only when EVERY war that could have overdoses has actually been checked. */
-  function _sweepOdFullyRun() { return _odCov.eligible > 0 && _odCov.checked >= _odCov.eligible; }
-
-  async function warRunSweep() {
-    const key = GM_getValue(GMK.API_KEY, '');
-    if (!_warState.ctx || !_warState.wars || !_warState.wars.length) { _warStatus('Load wars first.', true); return; }
-    const wars = _sweepSelectedWars();
-    if (!wars.length) { _warStatus('Pick at least one war to sweep.', true); return; }
-    const opts = { leadDays: _warState.sweepLead, tailHours: _warState.sweepTail, useCache: _warState.sweepCache };
-    const btn = document.getElementById('ocm-sweep-run'); if (btn) btn.disabled = true;
-    try {
-      const perWar = await TWPR.sweepWars(key, _warState.ctx, wars, opts, (i, n, war, msg) => _warStatus(`Sweeping ${i}/${n} — vs ${war.oppName}: ${msg}`));
-      _warState.sweep = TWPR.buildSweep(perWar);
-      _warState.sweep.meta = { leadDays: opts.leadDays, tailHours: opts.tailHours, useCache: opts.useCache, at: Date.now() };
-      // Overdose checks already on disk come back for FREE — no API calls — so
-      // there is no reason to make the user tick a box to see what is already
-      // known. This runs on every sweep; the checkbox now only decides whether
-      // to spend calls filling in the wars that have never been checked.
-      _warState.sweepOd = null;
-      try {
-        const cachedOd = await TWPR.sweepOverdoses(key, perWar, null, { cacheOnly: true });
-        if (Object.keys(cachedOd).length) {
-          _warState.sweepOd = cachedOd;
-          TWPR.applyOdExcuses(_warState.sweep, cachedOd);
-        }
-      } catch (_) { _warState.sweepOd = null; }
-      _sweepOdCoverage(perWar);
-      warRenderTab();
-      if (_warState.sweepAutoOd) {
-        _warState.sweepOd = await TWPR.sweepOverdoses(key, perWar, (war, i, n, name) => _warStatus(`Checking overdoses — vs ${war.oppName}: ${i}/${n} (${name})`));
-        TWPR.applyOdExcuses(_warState.sweep, _warState.sweepOd);
-        _sweepOdCoverage(perWar);
-        warRenderTab();
-      }
-      const reused = perWar.filter(p => p.fromCache).length, saved = perWar.filter(p => p.cachedNow).length;
-      const odFound = _warState.sweepOd ? Object.values(_warState.sweepOd).filter(o => o.ods > 0).length : 0;
-      const partials = perWar.filter(p => p.partial).length;
-      _warStatus(`Swept ${_num(wars.length)} war(s)${reused ? ` — ${reused} from cache` : ''}${saved ? `, ${saved} newly cached` : ''}. ${_num(_warState.sweep.repeats.length)} repeat offender(s), ${_num(_warState.sweep.flaggedAny.length)} flagged.${_warState.sweepOd ? ` ${odFound} overdosed${_odCov.fromCache ? ` (${_odCov.fromCache} war${_odCov.fromCache === 1 ? '' : 's'} from cache)` : ''}.` : ''}${_odCov.eligible && _odCov.checked < _odCov.eligible ? ` Overdoses unchecked in ${_odCov.eligible - _odCov.checked} war(s) — tick Check overdoses to fill them in.` : ''}${partials ? ` ${partials} partial (not cached) — re-run to fill in.` : ''}`, partials > 0);
-    } catch (e) { _warStatus(e.message || 'Sweep failed.', true); }
-    finally { const b = document.getElementById('ocm-sweep-run'); if (b) b.disabled = false; }
-  }
-
-  /**
-   * Short, unique code per war (W1, W2 …) in chronological order, plus the legend
-   * text. A full label like "2026-05-02 Unicorn Apocalypse XanaxSwallowed" is a
-   * ~45-character column header; with 8 wars that is 16 of them and the sheet is
-   * unreadable before you reach the data. The codes go in the header, the legend
-   * goes at the bottom of the file where it cannot push the table off row 1.
-   */
-  // ─── MINIMAL XLSX WRITER ──────────────────────────────────────────────────────
-  //
-  // A .xlsx is a ZIP of XML parts. Everything here is hand-rolled because a CDN
-  // dependency is one more thing that can be blocked or vanish (see the same
-  // reasoning that kept jsPDF out of the PDF export).
-  //
-  // Two deliberate simplifications keep this small enough to trust:
-  //   · STORE (no compression). A ZIP entry may be stored verbatim, so no deflate
-  //     implementation is needed. The file is bigger; nobody cares about a few
-  //     hundred KB, and a corrupt archive would be far more expensive than the bytes.
-  //   · Inline strings (t="inlineStr") instead of a shared-strings table, which
-  //     removes a whole part and its index bookkeeping.
-  //
-  // Failure mode is honest: if this emitted malformed XML the file would refuse to
-  // open, loudly, rather than opening with quietly wrong numbers.
-
-  const _xEsc = s => String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
-    // Excel rejects most control characters outright.
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
-
-  /** CRC-32, needed for every ZIP entry header. */
-  const _crcTable = (() => {
-    const t = new Int32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
-      t[n] = c;
-    }
-    return t;
-  })();
-  function _crc32(bytes) {
-    let c = 0 ^ (-1);
-    for (let i = 0; i < bytes.length; i++) c = (c >>> 8) ^ _crcTable[(c ^ bytes[i]) & 0xFF];
-    return (c ^ (-1)) >>> 0;
-  }
-
-  /** Build a ZIP (all entries STOREd) and return a Uint8Array. */
-  function _zip(files) {
-    const enc = new TextEncoder();
-    const parts = [], central = [];
-    let offset = 0;
-
-    const u16 = n => [n & 0xFF, (n >>> 8) & 0xFF];
-    const u32 = n => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
-
-    for (const f of files) {
-      const nameBytes = enc.encode(f.name);
-      const data = typeof f.data === 'string' ? enc.encode(f.data) : f.data;
-      const crc = _crc32(data);
-      const local = [].concat(
-        u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
-        u32(crc), u32(data.length), u32(data.length),
-        u16(nameBytes.length), u16(0));
-      parts.push(new Uint8Array(local), nameBytes, data);
-      central.push({ name: nameBytes, crc, size: data.length, offset });
-      offset += local.length + nameBytes.length + data.length;
-    }
-
-    const dir = [];
-    for (const c of central) {
-      dir.push(new Uint8Array([].concat(
-        u32(0x02014b50), u16(20), u16(20), u16(0), u16(0), u16(0), u16(0),
-        u32(c.crc), u32(c.size), u32(c.size),
-        u16(c.name.length), u16(0), u16(0), u16(0), u16(0), u32(0), u32(c.offset))));
-      dir.push(c.name);
-    }
-    const dirBytes = dir.reduce((n, a) => n + a.length, 0);
-    const end = new Uint8Array([].concat(
-      u32(0x06054b50), u16(0), u16(0), u16(central.length), u16(central.length),
-      u32(dirBytes), u32(offset), u16(0)));
-
-    const all = [...parts, ...dir, end];
-    const total = all.reduce((n, a) => n + a.length, 0);
-    const out = new Uint8Array(total);
-    let p = 0;
-    for (const a of all) { out.set(a, p); p += a.length; }
-    return out;
-  }
-
-  /** A1-style reference from zero-based row/col. */
-  function _a1(row, col) {
-    let s = '';
-    for (let c = col + 1; c > 0; c = Math.floor((c - 1) / 26)) {
-      s = String.fromCharCode(65 + ((c - 1) % 26)) + s;
-    }
-    return s + (row + 1);
-  }
-
-  /**
-   * Build the workbook.
-   * sheets: [{ name, rows:[[cell,…]], cols:[{w}], freeze:{row,col}, merges:[], heights:{rowIdx:px} }]
-   * cell:   { v, s } — value and style index, or a bare value.
-   * styles: { fonts, fills, borders, numFmts, xfs } already assembled by _xlsxStyles.
-   */
-  function _xlsxBuild(sheets, styles) {
-    const sheetXml = sh => {
-      const rows = sh.rows.map((cells, r) => {
-        const cs = cells.map((cell, c) => {
-          if (cell == null || cell === '') return '';
-          const o = (typeof cell === 'object' && cell !== null) ? cell : { v: cell };
-          const ref = _a1(r, c);
-          const sAttr = o.s != null ? ` s="${o.s}"` : '';
-          const isNum = typeof o.v === 'number' && isFinite(o.v);
-          if (o.f) return `<c r="${ref}"${sAttr}><f>${_xEsc(o.f)}</f></c>`;
-          if (isNum) return `<c r="${ref}"${sAttr}><v>${o.v}</v></c>`;
-          return `<c r="${ref}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${_xEsc(o.v)}</t></is></c>`;
-        }).join('');
-        // Explicit heights matter for MERGED wrapped cells: Excel auto-fits a
-        // normal wrapped cell but never a merged one, so prose in a merged band
-        // silently clips without this.
-        const ht = sh.heights && sh.heights[r];
-        const rAttr = ht ? ` ht="${ht}" customHeight="1"` : '';
-        return cs ? `<row r="${r + 1}"${rAttr}>${cs}</row>` : '';
-      }).join('');
-
-      const colXml = (sh.cols || []).length
-        ? `<cols>${sh.cols.map((c, i) => `<col min="${i + 1}" max="${i + 1}" width="${c.w}" customWidth="1"/>`).join('')}</cols>`
-        : '';
-      const pane = sh.freeze
-        ? `<sheetView workbookViewId="0"><pane xSplit="${sh.freeze.col || 0}" ySplit="${sh.freeze.row || 0}" `
-          + `topLeftCell="${_a1(sh.freeze.row || 0, sh.freeze.col || 0)}" activePane="bottomRight" state="frozen"/></sheetView>`
-        : '<sheetView workbookViewId="0"/>';
-      const merges = (sh.merges || []).length
-        ? `<mergeCells count="${sh.merges.length}">${sh.merges.map(m => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>`
-        : '';
-      const filter = sh.autoFilter ? `<autoFilter ref="${sh.autoFilter}"/>` : '';
-      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
-        + `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
-        + `<sheetViews>${pane}</sheetViews>${colXml}<sheetData>${rows}</sheetData>${filter}${merges}</worksheet>`;
-    };
-
-    const files = [
-      { name: '[Content_Types].xml', data:
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
-        + `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">`
-        + `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>`
-        + `<Default Extension="xml" ContentType="application/xml"/>`
-        + `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>`
-        + sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')
-        + `<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>`
-        + `</Types>` },
-      { name: '_rels/.rels', data:
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
-        + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
-        + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>`
-        + `</Relationships>` },
-      { name: 'xl/workbook.xml', data:
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
-        + `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" `
-        + `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>`
-        + sheets.map((s, i) => `<sheet name="${_xEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')
-        + `</sheets></workbook>` },
-      { name: 'xl/_rels/workbook.xml.rels', data:
-        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
-        + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
-        + sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
-        + `<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`
-        + `</Relationships>` },
-      { name: 'xl/styles.xml', data: styles.xml },
-    ];
-    sheets.forEach((s, i) => files.push({ name: `xl/worksheets/sheet${i + 1}.xml`, data: sheetXml(s) }));
-    return _zip(files);
-  }
-
-  /**
-   * Assemble a style table. Returns { xml, id(spec) } where spec is
-   * { bold, size, colour, fill, wrap, align, fmt, border } and id() memoises.
-   */
-  function _xlsxStyles() {
-    const fonts = ['<font><sz val="11"/><name val="Arial"/></font>'];
-    const fills = ['<fill><patternFill patternType="none"/></fill>',
-                   '<fill><patternFill patternType="gray125"/></fill>'];
-    const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
-    const numFmts = [];
-    const xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
-    const cache = new Map();
-
-    const fontId = spec => {
-      const key = `f|${spec.bold ? 1 : 0}|${spec.size || 11}|${spec.colour || ''}|${spec.italic ? 1 : 0}`;
-      if (cache.has(key)) return cache.get(key);
-      const xml = '<font>' + (spec.bold ? '<b/>' : '') + (spec.italic ? '<i/>' : '')
-        + `<sz val="${spec.size || 11}"/>`
-        + (spec.colour ? `<color rgb="FF${spec.colour}"/>` : '')
-        + '<name val="Arial"/></font>';
-      fonts.push(xml);
-      cache.set(key, fonts.length - 1);
-      return fonts.length - 1;
-    };
-    const fillId = hex => {
-      if (!hex) return 0;
-      const key = 'l|' + hex;
-      if (cache.has(key)) return cache.get(key);
-      fills.push(`<fill><patternFill patternType="solid"><fgColor rgb="FF${hex}"/><bgColor indexed="64"/></patternFill></fill>`);
-      cache.set(key, fills.length - 1);
-      return fills.length - 1;
-    };
-    const borderId = spec => {
-      if (!spec) return 0;
-      const key = 'b|' + spec;
-      if (cache.has(key)) return cache.get(key);
-      const thin = c => `<${c} style="thin"><color rgb="FFBFBFBF"/></${c}>`;
-      const xml = '<border>'
-        + (spec.includes('l') ? thin('left') : '<left/>')
-        + (spec.includes('r') ? thin('right') : '<right/>')
-        + (spec.includes('t') ? thin('top') : '<top/>')
-        + (spec.includes('b') ? thin('bottom') : '<bottom/>')
-        + '<diagonal/></border>';
-      borders.push(xml);
-      cache.set(key, borders.length - 1);
-      return borders.length - 1;
-    };
-    const fmtId = code => {
-      if (!code) return 0;
-      const key = 'n|' + code;
-      if (cache.has(key)) return cache.get(key);
-      const id = 164 + numFmts.length;
-      numFmts.push(`<numFmt numFmtId="${id}" formatCode="${_xEsc(code)}"/>`);
-      cache.set(key, id);
-      return id;
-    };
-
-    function id(spec) {
-      spec = spec || {};
-      const key = 'x|' + JSON.stringify(spec);
-      if (cache.has(key)) return cache.get(key);
-      const f = fontId(spec), l = fillId(spec.fill), b = borderId(spec.border), n = fmtId(spec.fmt);
-      const alignAttrs = [];
-      if (spec.align) alignAttrs.push(`horizontal="${spec.align}"`);
-      if (spec.wrap) alignAttrs.push('wrapText="1"');
-      if (spec.vcenter) alignAttrs.push('vertical="center"');
-      // Wrapped prose beside a short label reads wrong bottom-aligned, which is
-      // Excel's default.
-      if (spec.vtop) alignAttrs.push('vertical="top"');
-      const alignment = alignAttrs.length ? `<alignment ${alignAttrs.join(' ')}/>` : '';
-      xfs.push(`<xf numFmtId="${n}" fontId="${f}" fillId="${l}" borderId="${b}" xfId="0"`
-        + ` applyFont="1" applyFill="1" applyBorder="1"${n ? ' applyNumberFormat="1"' : ''}`
-        + `${alignment ? ' applyAlignment="1"' : ''}>${alignment}</xf>`);
-      cache.set(key, xfs.length - 1);
-      return xfs.length - 1;
-    }
-
-    return {
-      id,
-      get xml() {
-        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
-          + `<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
-          + (numFmts.length ? `<numFmts count="${numFmts.length}">${numFmts.join('')}</numFmts>` : '')
-          + `<fonts count="${fonts.length}">${fonts.join('')}</fonts>`
-          + `<fills count="${fills.length}">${fills.join('')}</fills>`
-          + `<borders count="${borders.length}">${borders.join('')}</borders>`
-          + `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`
-          + `<cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs>`
-          + `<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>`
-          + `</styleSheet>`;
-      },
-    };
-  }
-
-
-  // ─── SWEEP → XLSX WORKBOOK ────────────────────────────────────────────────────
-  //
-  // Four tabs: Overview (the headline numbers), Members (one row each, war columns
-  // washed by war), By war (tidy/long, pivot-ready), and Legend.
-  //
-  // COLOUR RULE, and it is not decoration. Column identity is a BACKGROUND wash;
-  // meaning lives in the TEXT colour. That split exists because the two collided
-  // once before: per-war columns were tinted for tracking and a "3 / 0" sitting in
-  // the green column read as a pass when it was the worst possible result. So a war
-  // tint says only "this column is war W3", and red text + a glyph says "this is bad".
-  // Every colour also carries a symbol, because roughly one man in twelve cannot
-  // separate the red from the grey.
-
-  const WAR_TINTS = ['FFF2CC', 'DDEBF7', 'E2EFDA', 'FCE4D6', 'EDEDED',
-                     'E4DFEC', 'DAEEF3', 'FDE9EC', 'FFF9DA', 'E8F0E0'];
-  const C = { crit: 'C00000', warn: 'BF8F00', good: '217346', od: '2E75B6', mute: '7F7F7F', head: '1F3B57' };
-
-  /**
-   * Readable per-war labels for spreadsheet headers.
-   *
-   * The Discord exporter squeezes wars into 4 characters ("Unic", "Requ") because
-   * a monospace code block has no column widths to play with. A spreadsheet does,
-   * so it gets the real faction name — reading "Fallout Shelter" beats reading
-   * "W8" and then hunting for a key.
-   *
-   * Names are trimmed at a WORD boundary rather than mid-syllable, and if two
-   * swept wars share an opponent the date is appended to whichever collide, so a
-   * label always identifies exactly one war.
-   */
-  function warShortNames(cols, max) {
-    max = max || 16;
-    const FILLER = /\s+(of|the|and|a|an|for|to|in)$/i;
-    const shorten = (raw) => {
-      const n = String(raw == null || raw === '' ? 'Unknown' : raw).trim();
-      if (n.length <= max) return n;
-      // Budget one character for the ellipsis, or the label overruns the width
-      // it was trimmed to fit ("Unicorn Apocalyp…" came out 17 of an allowed 16).
-      const cut = n.slice(0, max - 1);
-      const sp = cut.lastIndexOf(' ');
-      // Honour the word boundary only if it keeps most of the budget, else a long
-      // first word ("Disciples") would collapse to almost nothing.
-      let base = (sp > max * 0.55 ? cut.slice(0, sp) : cut).replace(/[\s\-,.]+$/, '');
-      // Never end on a dangling preposition — "Disciples of…" reads worse than
-      // "Disciples…" and is no more informative.
-      while (FILLER.test(base)) base = base.replace(FILLER, '');
-      return base + '…';
-    };
-    const bases = cols.map(w => shorten(w.oppName));
-    const count = {};
-    for (const b of bases) count[b] = (count[b] || 0) + 1;
-    return bases.map((b, i) => {
-      if (count[b] < 2) return b;
-      const w = cols[i];
-      const d = w.start ? new Date(w.start * 1000).toISOString().slice(5, 10) : String(i + 1);
-      return b + ' ' + d;               // same opponent twice — the date separates them
-    });
-  }
-
-
-  function buildSweepWorkbook(s, opts) {
-    const {
-      warCols, visible, filterLabel, odRun,
-      energyPerXanax, hitsPerXanax, fmtDate,
-    } = opts;
-
-    const st = _xlsxStyles();
-    const S = {
-      title:   st.id({ bold: true, size: 16, colour: C.head }),
-      sub:     st.id({ colour: C.mute, size: 10 }),
-      hdr:     st.id({ bold: true, colour: 'FFFFFF', fill: C.head, border: 'tblr', align: 'center', wrap: true, vcenter: true }),
-      sect:    st.id({ bold: true, size: 12, colour: 'FFFFFF', fill: '2E5D85', border: 'tblr' }),
-      label:   st.id({ bold: true, border: 'tblr' }),
-      num:     st.id({ fmt: '#,##0', border: 'tblr', align: 'right' }),
-      num1:    st.id({ fmt: '#,##0.0', border: 'tblr', align: 'right' }),
-      num2:    st.id({ fmt: '#,##0.00', border: 'tblr', align: 'right' }),
-      pct:     st.id({ fmt: '0"%"', border: 'tblr', align: 'right' }),
-      text:    st.id({ border: 'tblr' }),
-      mute:    st.id({ colour: C.mute, border: 'tblr' }),
-      good:    st.id({ colour: C.good, bold: true, fmt: '#,##0', border: 'tblr', align: 'right' }),
-      warn:    st.id({ colour: C.warn, bold: true, fmt: '#,##0', border: 'tblr', align: 'right' }),
-      crit:    st.id({ colour: C.crit, bold: true, fmt: '#,##0', border: 'tblr', align: 'right' }),
-      critTxt: st.id({ colour: C.crit, bold: true, border: 'tblr' }),
-      odTxt:   st.id({ colour: C.od, bold: true, border: 'tblr' }),
-      note:    st.id({ colour: C.mute, size: 10, wrap: true }),
-      // Summary-sheet styles. Same palette as the rest of the workbook — this sheet
-      // is a calmer view of the same data, not a different design.
-      bigTitle: st.id({ bold: true, size: 18, colour: C.head }),
-      kpi:     st.id({ bold: true, size: 20, colour: C.head, align: 'center', fmt: '#,##0' }),
-      kpiDec:  st.id({ bold: true, size: 20, colour: C.head, align: 'center', fmt: '#,##0.0' }),
-      kpiL:    st.id({ colour: C.mute, size: 10, align: 'center', wrap: true }),
-      muteC:   st.id({ colour: C.mute, border: 'tblr', align: 'center' }),
-      goodDec: st.id({ colour: C.good, bold: true, fmt: '#,##0.0', border: 'tblr', align: 'right' }),
-      badDec:  st.id({ colour: C.crit, bold: true, fmt: '#,##0.0', border: 'tblr', align: 'right' }),
-      crit1:   st.id({ colour: C.crit, fmt: '#,##0.0', border: 'tblr', align: 'right' }),
-      numB:    st.id({ bold: true, fmt: '#,##0', border: 'tblr', align: 'right', fill: 'EDEDED' }),
-      numB1:   st.id({ bold: true, fmt: '#,##0.0', border: 'tblr', align: 'right', fill: 'EDEDED' }),
-      // Legend styles. C holds prose, so it wraps and sits at the TOP of its row —
-      // bottom-aligned text beside a one-line label looks broken.
-      body:    st.id({ wrap: true, vtop: true, border: 'tblr' }),
-      lgVal:   st.id({ bold: true, wrap: true, vtop: true, align: 'center', border: 'tblr' }),
-      lgWhere: st.id({ colour: C.mute, size: 10, wrap: true, vtop: true, border: 'tblr' }),
-      goodTxt: st.id({ colour: C.good, bold: true, border: 'tblr' }),
-      warnTxt: st.id({ colour: C.warn, bold: true, border: 'tblr' }),
-    };
-    // Per-war styles: the wash identifies the column, nothing more.
-    const warFill = i => WAR_TINTS[i % WAR_TINTS.length];
-    const warNum  = warCols.map((_, i) => st.id({ fill: warFill(i), fmt: '#,##0', border: 'tblr', align: 'right' }));
-    const warHdr  = warCols.map((_, i) => st.id({ bold: true, fill: warFill(i), border: 'tblr', align: 'center', wrap: true }));
-    const warCrit = warCols.map((_, i) => st.id({ fill: warFill(i), colour: C.crit, bold: true, border: 'tblr', align: 'right' }));
-    const warOd   = warCols.map((_, i) => st.id({ fill: warFill(i), colour: C.od, bold: true, border: 'tblr', align: 'right' }));
-    const warSwatch = warCols.map((_, i) => st.id({ fill: warFill(i), border: 'tblr' }));
-
-    const warNames = warShortNames(warCols);
-    const code = i => warNames[i];
-    const idxOf = new Map(warCols.map((w, i) => [w.warId, i]));
-
-    // ── totals
-    const flagged = visible.filter(r => (r.warsFlaggedNet ?? r.warsFlagged) > 0).length;
-    const repeats = visible.filter(r => (r.warsFlaggedNet ?? r.warsFlagged) >= 2).length;
-    const odCount = visible.filter(r => (r.odWars || []).length > 0).length;
-    const tHits = visible.reduce((n, r) => n + (r.totalHits || 0), 0);
-    const tDrawn = visible.reduce((n, r) => n + (r.totalDrawn || 0), 0);
-    const tUsed = visible.reduce((n, r) => n + (r.totalUsed || 0), 0);
-    const tWasted = visible.reduce((n, r) => n + (r.wasted || 0), 0);
-    const zeroHit = visible.filter(r => r.hitsKnown && r.totalHits === 0 && r.totalUsed > 0).length;
-
-    // ═══ SHEET 0 — Summary
-    //
-    // The front door. Everything after this is depth; this is the one sheet that
-    // can be read in ten seconds. Deliberately NARROW — seven columns, no per-war
-    // grid — because the complaint about the old export was that it was overloaded,
-    // not that it was missing anything.
-    //
-    // The aggregates are FORMULAS, not numbers computed in JS and pasted in: a
-    // reader can click any total and see which cells it came from, and it follows
-    // the data if they delete a row. Only SUM / AVERAGE / COUNT / IFERROR are used,
-    // all Excel-2007-era, so nothing here depends on a newer function existing.
-    const simple = visible.slice().sort((a, b) => (b.totalHits || 0) - (a.totalHits || 0));
-    const HDR = 8;                                   // 1-based row holding the table header
-    const rFirst = HDR + 1, rLast = HDR + simple.length;
-    const rng = L => `${L}${rFirst}:${L}${rLast}`;
-    // Colour is judged on AVERAGE hits per war, never the raw total — a raw count
-    // punishes anyone who only fought two of the swept wars.
-    const avgSorted = simple.map(r => r.avgHits || 0).sort((a, b) => b - a);
-    const goodMark = avgSorted.length ? avgSorted[Math.floor(avgSorted.length / 3)] : 0;
-    const poorMark = avgSorted.length ? avgSorted[Math.floor(avgSorted.length * 2 / 3)] : 0;
-
-    const sm = [];
-    sm.push([{ v: 'Multi-war drug sweep', s: S.bigTitle }]);
-    sm.push([{ v: `${warCols.length} wars · ${visible.length} members · generated ${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC`, s: S.sub }]);
-    sm.push([{ v: filterLabel, s: S.sub }]);
-    sm.push([]);
-    sm.push([
-      { f: `SUM(${rng('D')})`, s: S.kpi },
-      { f: `SUM(${rng('C')})`, s: S.kpi },
-      { f: `SUM(${rng('G')})`, s: S.kpi },
-      { f: `IFERROR(AVERAGE(${rng('E')}),0)`, s: S.kpiDec },
-      { f: `COUNT(${rng('B')})`, s: S.kpi },
-      { v: warCols.length, s: S.kpi },
-    ]);
-    sm.push([
-      { v: 'hits landed', s: S.kpiL }, { v: 'Xanax swallowed', s: S.kpiL },
-      { v: 'Xanax wasted', s: S.kpiL }, { v: 'avg hits per member, per war', s: S.kpiL },
-      { v: 'members', s: S.kpiL }, { v: 'wars', s: S.kpiL },
-    ]);
-    sm.push([]);
-    // Per-war hits sit to the right of the member totals: the totals answer "how
-    // did they do overall", these answer "which wars did that come from". Tinted by
-    // war exactly as on Members — the wash is column IDENTITY and nothing more,
-    // while red/blue text carries the meaning.
-    const smHdr = ['Member', 'Wars in', 'Xanax swallowed', 'Hits', 'Avg hits / war',
-                   'Hits per Xanax', 'Wasted Xanax'].map(h => ({ v: h, s: S.hdr }));
-    warCols.forEach((w, i) => smHdr.push({ v: warNames[i], s: warHdr[i] }));
-    sm.push(smHdr);
-    for (const r of simple) {
-      const a = r.avgHits || 0;
-      const flag = (r.warsFlaggedNet ?? r.warsFlagged) > 0;
-      const smRow = [
-        // A flagged name stays red here exactly as on Members, so the two sheets
-        // can never tell the reader different things about the same person.
-        { v: r.name, s: flag ? S.critTxt : S.label },
-        { v: r.warsSeen || 0, s: S.muteC },
-        { v: r.totalUsed || 0, s: S.num },
-        { v: r.totalHits || 0, s: S.num },
-        { v: +a.toFixed(1), s: a >= goodMark ? S.goodDec : a <= poorMark ? S.badDec : S.num1 },
-        { v: r.hitsPerXan == null ? '' : +r.hitsPerXan.toFixed(2), s: S.num2 },
-        { v: r.wasted == null ? '' : +r.wasted.toFixed(1), s: (r.wasted || 0) > 0 ? S.crit1 : S.num1 },
-      ];
-      warCols.forEach((w, i) => {
-        const p = r.per[w.warId];
-        // Blank for a war they sat out AND for one Torn has not published hits for
-        // yet. A 0 would be an assertion; an empty cell is an honest absence, and
-        // the Legend says which is which.
-        if (!p || !p.known) { smRow.push({ v: '', s: warNum[i] }); return; }
-        smRow.push({ v: p.hits || 0, s: p.od ? warOd[i] : p.flagged ? warCrit[i] : warNum[i] });
-      });
-      sm.push(smRow);
-    }
-    sm.push([
-      { v: 'TOTAL', s: S.label }, { f: `SUM(${rng('B')})`, s: S.numB },
-      { f: `SUM(${rng('C')})`, s: S.numB }, { f: `SUM(${rng('D')})`, s: S.numB },
-      { f: `IFERROR(AVERAGE(${rng('E')}),0)`, s: S.numB1 }, { v: '', s: S.numB },
-      { f: `SUM(${rng('G')})`, s: S.numB1 },
-      // Hits landed in each war, across everyone shown.
-      ...warCols.map((w, i) => ({ f: `SUM(${_a1(rFirst - 1, 7 + i)}:${_a1(rLast - 1, 7 + i)})`, s: S.numB })),
-    ]);
-    sm.push([]);
-    sm.push([{ v: `Colour marks the top and bottom third by average hits per war. Waste is charged on Xanax SWALLOWED only — 1 Xanax = ${energyPerXanax} energy = ${hitsPerXanax} hits to break even. An empty war cell means they sat that one out, or Torn has not published its hits yet. Full method on the Legend tab.`, s: S.note }]);
-
-    // ═══ SHEET 1 — Overview
-    const ov = [];
-    ov.push([{ v: 'Multi-war drug sweep', s: S.title }]);
-    ov.push([{ v: `${warCols.length} wars · ${visible.length} members · generated ${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC`, s: S.sub }]);
-    ov.push([{ v: filterLabel, s: S.sub }]);
-    ov.push([]);
-    ov.push([{ v: 'THE HEADLINE', s: S.sect }, { v: '', s: S.sect }, { v: '', s: S.sect }]);
-    const line = (label, val, style, note) => ov.push([
-      { v: label, s: S.label }, { v: val, s: style || S.num }, { v: note || '', s: S.mute }]);
-    line('Hits landed', tHits, S.good, 'across every swept war');
-    line('Xanax out of the armoury', tDrawn, S.num, 'swallowed + withdrawn');
-    line('Xanax swallowed', tUsed, S.num, 'the only figure waste is charged on');
-    line('Xanax wasted', Number(tWasted.toFixed(1)), tWasted > 0 ? S.crit : S.good,
-         `1 Xanax = ${energyPerXanax} energy = ${hitsPerXanax} hits to break even`);
-    line('Energy wasted', Math.round(tWasted * energyPerXanax), tWasted > 0 ? S.crit : S.good, 'the same waste, in energy');
-    line('Members flagged', flagged, flagged ? S.crit : S.good, 'took Xanax and landed nothing in at least one war');
-    line('Repeat offenders', repeats, repeats ? S.crit : S.good, 'flagged in 2 or more wars');
-    line('Landed zero hits overall', zeroHit, zeroHit ? S.crit : S.good, 'swallowed Xanax, no hits in any war');
-    line('Overdosed', odRun ? odCount : 'not checked', odRun ? (odCount ? S.warn : S.good) : S.mute,
-         odRun ? 'an overdose excuses that war' : 'run the OD check to fill this in');
-    ov.push([]);
-    ov.push([{ v: 'PER WAR', s: S.sect }, { v: '', s: S.sect }, { v: '', s: S.sect },
-             { v: '', s: S.sect }, { v: '', s: S.sect }, { v: '', s: S.sect }]);
-    ov.push([{ v: 'War', s: S.hdr }, { v: 'Colour', s: S.hdr }, { v: 'Date', s: S.hdr },
-             { v: 'Opponent', s: S.hdr }, { v: 'Xanax swallowed', s: S.hdr }, { v: 'Hits', s: S.hdr },
-             { v: 'Flagged', s: S.hdr }]);
-    warCols.forEach((w, i) => {
-      let xan = 0, hits = 0, flg = 0;
-      for (const r of visible) {
-        const p = r.per[w.warId]; if (!p) continue;
-        xan += (p.used != null ? p.used : p.drawn) || 0;
-        if (p.known) hits += p.hits || 0;
-        if (p.flagged) flg++;
-      }
-      ov.push([
-        { v: code(i), s: S.label }, { v: '', s: warSwatch[i] },
-        { v: w.start ? fmtDate(w.start) : '?', s: S.text },
-        { v: w.oppName || '?', s: S.text },
-        { v: xan, s: S.num }, { v: hits, s: S.num },
-        { v: flg, s: flg ? S.crit : S.num },
-      ]);
-    });
-    ov.push([]);
-    ov.push([{ v: 'A drug sweep measures Xanax against hits. It does not carry losses, respect or defends — those come from a single war\'s Report tab, which pulls a different endpoint.', s: S.note }]);
-
-    // ═══ SHEET 2 — Members (wide)
-    const mHdr = ['Member', 'ID', 'Flagged wars', 'Wars seen', 'Xanax out', 'Hits',
-                  'Avg hits/war', 'Hits per Xanax', 'Swallowed', 'Withdrawn net',
-                  'Wasted Xanax', 'Wasted energy', 'Efficiency', 'Excused', 'OD wars']
-      .map(h => ({ v: h, s: S.hdr }));
-    warCols.forEach((w, i) => {
-      mHdr.push({ v: `${code(i)} Xanax`, s: warHdr[i] });
-      mHdr.push({ v: `${code(i)} Hits`, s: warHdr[i] });
-    });
-    const mRows = [mHdr];
-    for (const r of visible) {
-      const fw = r.warsFlaggedNet ?? r.warsFlagged;
-      const row = [
-        { v: r.name, s: fw ? S.critTxt : S.text },
-        { v: r.id ? Number(r.id) : '', s: S.mute },
-        { v: fw || 0, s: fw ? S.crit : S.num },
-        { v: r.warsSeen || 0, s: S.num },
-        { v: r.totalDrawn || 0, s: S.num },
-        { v: r.hitsKnown ? (r.totalHits || 0) : '', s: S.good },
-        { v: r.avgHits == null ? '' : Number(r.avgHits.toFixed(1)), s: S.num1 },
-        { v: r.hitsPerXan == null ? '' : Number(r.hitsPerXan.toFixed(2)), s: S.num2 },
-        { v: r.totalUsed || 0, s: S.num },
-        { v: r.unaccounted || 0, s: S.num },
-        { v: r.wasted == null ? '' : Number(r.wasted.toFixed(2)), s: (r.wasted || 0) > 0 ? S.crit : S.num2 },
-        { v: r.wasted == null ? '' : Math.round(r.wasted * energyPerXanax), s: (r.wasted || 0) > 0 ? S.crit : S.num },
-        { v: r.efficiency == null ? '' : Math.round(r.efficiency * 100), s: S.pct },
-        { v: (r.excused || 0) >= 0.05 ? Number(r.excused.toFixed(2)) : '', s: S.num2 },
-        { v: (r.odWars || []).length || '', s: S.odTxt },
-      ];
-      warCols.forEach((w, i) => {
-        const p = r.per[w.warId];
-        if (!p) { row.push({ v: '', s: warNum[i] }, { v: '', s: warNum[i] }); return; }
-        const used = p.used != null ? p.used : p.drawn;
-        const style = p.od ? warOd[i] : p.flagged ? warCrit[i] : warNum[i];
-        row.push({ v: used == null ? '' : used, s: style });
-        row.push({ v: p.known ? (p.hits || 0) : '', s: style });
-      });
-      mRows.push(row);
-    }
-
-    // ═══ SHEET 3 — By war (tidy / pivot-ready)
-    const tRows = [['Member', 'ID', 'War', 'Date', 'Opponent', 'Xanax swallowed',
-                    'Xanax withdrawn', 'Hits', 'Hits known', 'Flagged', 'Overdose']
-      .map(h => ({ v: h, s: S.hdr }))];
-    for (const r of visible) {
-      for (const w of warCols) {
-        const p = r.per[w.warId]; if (!p) continue;   // no row for a war they missed
-        const i = idxOf.get(w.warId);
-        const used = p.used != null ? p.used : p.drawn;
-        tRows.push([
-          { v: r.name, s: p.flagged ? S.critTxt : S.text },
-          { v: r.id ? Number(r.id) : '', s: S.mute },
-          { v: code(i), s: warSwatch[i] },
-          { v: w.start ? fmtDate(w.start) : '', s: S.text },
-          { v: w.oppName || '', s: S.text },
-          { v: used == null ? '' : used, s: S.num },
-          { v: p.taken || 0, s: S.num },
-          { v: p.known ? (p.hits || 0) : '', s: S.num },
-          { v: p.known ? 'yes' : 'no', s: p.known ? S.text : S.mute },
-          { v: p.flagged ? 'FLAGGED' : '', s: S.critTxt },
-          { v: p.od ? 'OD' : '', s: S.odTxt },
-        ]);
-      }
-    }
-
-    // Pick a real member to walk through, preferring one who actually wasted
-    // something — that is the case the sheet exists to surface. Anyone with an
-    // overdose excuse is skipped, because their waste has had the excused amount
-    // taken off it and the plain arithmetic in the example would not add up.
-    const eg = simple.find(r => (r.wasted || 0) > 0.05 && (r.totalHits || 0) > 0 && (r.excused || 0) < 0.05)
-            || simple[0] || null;
-    const egWaste = !eg ? ''
-      : eg.wasted == null ? 'Not measured for this member.'
-      : `${eg.totalUsed || 0} Xanax buys enough energy for ${(eg.totalUsed || 0) * hitsPerXanax} hits at break-even (${hitsPerXanax} hits each). They landed ${eg.totalHits || 0}, so about ${+eg.wasted.toFixed(1)} Xanax worth of energy never became a hit.`;
-
-    // ═══ SHEET 4 — Legend
-    //
-    // One grid for the whole sheet, and the widths match what each column holds:
-    // A the subject, B a swatch or value, C the explanation, D where to look. The
-    // old version put prose in column B at width 12 while "Members, By war" got
-    // column C at width 62, which is why it was unreadable.
-    //
-    // Prose cells are NOT merged. Excel auto-fits the height of a wrapped cell but
-    // never a merged one, so merging the explanations would clip them. Only the
-    // single-line section bands are merged.
-    const lg = [];
-    const lgMerges = [];
-    const band = t => {
-      lgMerges.push(`A${lg.length + 1}:D${lg.length + 1}`);
-      lg.push([{ v: t, s: S.sect }, { v: '', s: S.sect }, { v: '', s: S.sect }, { v: '', s: S.sect }]);
-    };
-    const say = (a, b, c, d) => lg.push([
-      { v: a, s: S.label }, { v: b == null ? '' : b, s: S.lgVal },
-      { v: c, s: S.body }, { v: d || '', s: S.lgWhere }]);
-
-    lg.push([{ v: 'How to read this workbook', s: S.bigTitle }]);
-    lg.push([{ v: 'Each section answers one question. If you only read one, read the example.', s: S.sub }]);
-    lg.push([]);
-
-    band('START HERE');
-    say('1', '', 'Open the Summary tab. One row per member: their totals on the left, then one column per war showing the hits they landed in it.', 'Summary');
-    say('2', '', 'Read the "Avg hits / war" column, not "Hits". Green is the top third, red the bottom third — and it is judged on the AVERAGE, so somebody who only fought two of these wars is not marked down for missing the rest.', 'Summary');
-    say('3', '', 'Red in "Wasted Xanax" means energy was bought from the armoury and never turned into a hit. The war columns on the same row show which war it came from.', 'Summary');
-    say('4', '', 'An empty war cell is not a zero. It means they sat that war out, or Torn has not published its hits yet.', 'Summary');
-    say('5', '', 'For the full picture use Members (every measure, per war) or By war (one tidy row per member per war — this is the one to build a pivot table from).', 'Members, By war');
-    lg.push([]);
-
-    // A worked example built from a REAL row of this very export rather than
-    // invented numbers, so it can never describe something the sheet does not do.
-    if (eg) {
-      band('AN EXAMPLE — READING ' + String(eg.name).toUpperCase() + ' ROW BY ROW');
-      say('Member', eg.name, 'Their row on the Summary tab, read left to right. Every number below is really in this export.', 'Summary');
-      say('Wars in', eg.warsSeen || 0, `They appear in ${eg.warsSeen || 0} of the ${warCols.length} swept wars. The war columns they sat out are left blank.`, '');
-      say('Xanax swallowed', eg.totalUsed || 0, `${eg.totalUsed || 0} Xanax left the faction armoury and were actually taken. Stock they withdrew but never swallowed is not counted here.`, '');
-      say('Hits', eg.totalHits || 0, `${eg.totalHits || 0} hits landed. This is exactly the sum of their war columns to the right — the two are worked out separately, so if they ever disagree something is wrong.`, '');
-      say('Avg hits / war', eg.avgHits == null ? '' : +eg.avgHits.toFixed(1), `${eg.totalHits || 0} hits divided by ${eg.warsSeen || 0} wars. This is the number the green/red colouring looks at, never the raw total.`, '');
-      say('Wasted Xanax', eg.wasted == null ? '' : +eg.wasted.toFixed(1), egWaste, '');
-      lg.push([]);
-    }
-
-    band('COLOUR');
-    lg.push([{ v: 'Swatch', s: S.hdr }, { v: '', s: S.hdr }, { v: 'What it means', s: S.hdr }, { v: 'Where', s: S.hdr }]);
-    lg.push([{ v: 'Red text', s: S.critTxt }, { v: '', s: S.lgVal }, { v: 'A problem: Xanax was swallowed and nothing landed, or energy was wasted. The cell always carries a word or a number saying so too — the colour is never the only signal.', s: S.body }, { v: 'Summary, Members, By war', s: S.lgWhere }]);
-    lg.push([{ v: 'Blue text + "OD"', s: S.odTxt }, { v: '', s: S.lgVal }, { v: 'They overdosed in that war. An overdose hospitalises you for hours and ends your war, so the Xanax was not squandered — that waste moves to "Excused" and is never silently forgiven.', s: S.body }, { v: 'Members, By war', s: S.lgWhere }]);
-    lg.push([{ v: 'Green text', s: S.goodTxt }, { v: '', s: S.lgVal }, { v: 'Hits landed, or a genuinely clean zero.', s: S.body }, { v: 'Summary, Overview, Members', s: S.lgWhere }]);
-    lg.push([{ v: 'Amber text', s: S.warnTxt }, { v: '', s: S.lgVal }, { v: 'Worth a look, not yet a verdict.', s: S.body }, { v: 'Overview', s: S.lgWhere }]);
-    lg.push([{ v: 'Pale background', s: S.label }, { v: '', s: warSwatch[0] }, { v: 'A WAR TAG and nothing else — it says which war a column belongs to. It never means the number in it is good or bad; that is always the text colour. (This split exists because a bad "3 / 0" once sat in a green column and read as a pass.)', s: S.body }, { v: 'Summary, Members', s: S.lgWhere }]);
-    lg.push([]);
-
-    band('WAR KEY — the short names used as column headers');
-    lg.push([{ v: 'Column header', s: S.hdr }, { v: 'Colour', s: S.hdr }, { v: 'Faction, in full', s: S.hdr }, { v: 'War date', s: S.hdr }]);
-    warCols.forEach((w, i) => lg.push([
-      { v: code(i), s: S.label }, { v: '', s: warSwatch[i] },
-      { v: w.oppName || '?', s: S.body }, { v: w.start ? fmtDate(w.start) : '?', s: S.lgWhere }]));
-    lg.push([]);
-
-    band('COLUMNS');
-    [['Wars in / Wars seen', 'How many of the swept wars this member actually took part in.'],
-     ['Hits', 'Attacks they landed, added up across the wars they were in.'],
-     ['Avg hits / war', 'Hits divided by wars they were in — the fair way to compare two people who fought a different number of wars.'],
-     ['Xanax out', 'Everything that left the armoury for them: swallowed plus withdrawn.'],
-     ['Swallowed', 'Actually taken. Waste is charged on this alone — withdrawing stock is supply, not consumption, and charging it made the faction supplier look like its worst offender.'],
-     ['Withdrawn net', 'Taken from the armoury and not swallowed. Shown, never charged.'],
-     ['Wasted Xanax', `Energy bought that never became a hit. One Xanax is ${energyPerXanax} energy, which is ${hitsPerXanax} hits — so a Xanax pays for itself at ${hitsPerXanax} hits. Clamped at zero: nobody can have negative waste.`],
-     ['Hits per Xanax', `Hits landed per Xanax swallowed. ${hitsPerXanax} is break-even; above that they got more out of it than it cost.`],
-     ['Efficiency', 'Hits landed against the hits their swallowed Xanax could have paid for. Above 100% is normal and not a bug — natural energy regen is free.'],
-     ['Flagged wars', 'Wars where they swallowed Xanax and landed zero hits. Two or more is a pattern rather than a bad day.'],
-     ['Excused', 'Waste in a war where an overdose was confirmed. Kept separate, so "wasted 17" and "wasted 2, excused 15 to an overdose" stay different conversations.'],
-     ['Hits known', 'A war still running publishes no hit data. "no" means unmeasured — it is not a zero.'],
-    ].forEach(([k, v]) => say(k, '', v, ''));
-    lg.push([]);
-
-    band('THE TABS');
-    [['Summary', 'The front door. Member totals, then hits per war. Start here.'],
-     ['Overview', 'Faction-wide headline numbers and a per-war summary.'],
-     ['Members', 'One row per member with every measure, and two columns per war. Fastest for digging into one person.'],
-     ['By war', 'One row per member PER WAR, and only wars they were actually in — no empty cells. Build pivot tables from this one.'],
-     ['Legend', 'This sheet.'],
-    ].forEach(([k, v]) => say(k, '', v, ''));
-    lg.push([]);
-
-    band('METHOD, AND WHAT THIS DOES NOT COVER');
-    say('Waste model', `1 Xanax = ${energyPerXanax} energy = ${hitsPerXanax} hits`, 'The one assumption everything about waste rests on. Charged on Xanax SWALLOWED only, never on stock withdrawn.', '');
-    say('Overdoses', odRun ? 'checked' : 'NOT fully checked', odRun
-      ? 'Every war that could have overdoses was checked, so a blank OD cell really does mean clean.'
-      : 'Some or all of these wars were not checked for overdoses. A blank OD cell here means UNCHECKED, not clean — waste an overdose would have excused may still be counted against somebody. Re-run the sweep with "Check overdoses" ticked.', '');
-    say('Empty cells', '(blank)', 'Always an honest absence, never a zero. A zero would assert that they landed nothing; a blank says the data is not there.', '');
-    say('Not in here', 'losses, respect, defends', 'A drug sweep measures Xanax against hits. Losses, respect and defends come from a single war Report tab, which reads a different endpoint entirely.', '');
-    say('Generated', new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC', filterLabel, '');
-
-    // 13 not 11: war headers carry a real faction name now, not "W3", and at 11
-    // the wrapped text ran to three lines.
-    const warW = warCols.map(() => ({ w: 13 }));
-    const sheets = [
-      { name: 'Summary', freeze: { row: HDR, col: 1 },
-        autoFilter: 'A' + HDR + ':' + _a1(rLast - 1, 6 + warCols.length),
-        cols: [{ w: 24 }, { w: 9 }, { w: 17 }, { w: 10 }, { w: 15 }, { w: 15 }, { w: 14 },
-               ...warCols.map(() => ({ w: 13 }))], rows: sm },
-      { name: 'Overview', freeze: { row: 5, col: 0 },
-        cols: [{ w: 30 }, { w: 15 }, { w: 46 }, { w: 26 }, { w: 17 }, { w: 12 }, { w: 11 }], rows: ov },
-      { name: 'Members', freeze: { row: 1, col: 1 },
-        // Filter must span the DATA, not just the header, or Excel filters nothing.
-        autoFilter: 'A1:' + _a1(mRows.length - 1, mHdr.length - 1),
-        cols: [{ w: 22 }, { w: 11 }, { w: 12 }, { w: 10 }, { w: 11 }, { w: 9 }, { w: 12 },
-               { w: 13 }, { w: 11 }, { w: 13 }, { w: 13 }, { w: 13 }, { w: 11 }, { w: 10 }, { w: 9 },
-               ...warW.flatMap(x => [x, x])],
-        rows: mRows },
-      { name: 'By war', freeze: { row: 1, col: 1 },
-        autoFilter: 'A1:' + _a1(tRows.length - 1, 10),
-        cols: [{ w: 22 }, { w: 11 }, { w: 7 }, { w: 12 }, { w: 26 }, { w: 16 }, { w: 15 },
-               { w: 9 }, { w: 11 }, { w: 11 }, { w: 10 }],
-        rows: tRows },
-      { name: 'Legend', merges: lgMerges,
-        cols: [{ w: 22 }, { w: 20 }, { w: 88 }, { w: 22 }], rows: lg },
-    ];
-    return { bytes: _xlsxBuild(sheets, st), members: visible.length, wars: warCols.length,
-             tidyRows: tRows.length - 1 };
-  }
-
-
-
-  /** Build the colour-coded workbook from the current sweep. */
-  function _sweepBuildXlsx() {
-    const s = _warState.sweep; if (!s) return null;
-    const visible = _sweepVisible(s); if (!visible.length) return null;
-    const warCols = _sweepWarCols(s);
-    const out = buildSweepWorkbook(s, {
-      warCols, visible,
-      filterLabel: _sweepFilterLabel(visible.length, s.list.length),
-      odRun: _sweepOdFullyRun(),
-      energyPerXanax: _ENERGY_PER_XANAX,
-      hitsPerXanax: _HITS_PER_XANAX,
-      fmtDate: ts => new Date(ts * 1000).toISOString().slice(0, 10),
-    });
-    return { xlsx: true, bytes: out.bytes, rows: out.members };
-  }
-
-  function _sweepWarCodes(cols) {
-    const map = new Map();
-    const names = warShortNames(cols);
-    cols.forEach((w, i) => {
-      map.set(w.warId, {
-        code: names[i],
-        label: `${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?'} ${w.oppName}`,
-      });
-    });
-    return map;
-  }
-
-  /** The provenance block. Kept — a file in a downloads folder has nothing else to
-   *  say what it is — but written AFTER the data so the header stays on row 1. */
-  function _sweepMetaLines(s, visible, codes) {
-    const out = [
-      '',
-      _csvCell('# OC Suite — multi-war drug sweep'),
-      _csvCell(`# Generated ${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC · ${s.wars.length} wars`),
-      _csvCell(`# Waste model: 1 Xanax = ${_ENERGY_PER_XANAX} energy = ${_HITS_PER_XANAX} hits break-even. Charged on swallowed only.`),
-      _csvCell('# ' + _sweepFilterLabel(visible.length, s.list.length)),
-      _csvCell(_sweepOdFullyRun()
-        ? `# Overdose check: run on all ${_odCov.eligible} war(s)${_odCov.fromCache ? ` (${_odCov.fromCache} reused from cache)` : ''}.`
-        : _odCov.checked
-          ? `# Overdose check: PARTIAL — ${_odCov.checked} of ${_odCov.eligible} war(s) checked. An empty OD cell may mean unchecked rather than clean.`
-          : '# Overdose check: NOT run — an empty OD cell means unchecked rather than clean.'),
-    ];
-    if (codes && codes.size) {
-      out.push('', _csvCell('# War key'));
-      for (const [, v] of codes) out.push([_csvCell('# ' + v.code), _csvCell(v.label)].join(','));
-    }
-    return out;
-  }
-
-  /**
-   * WIDE export — one row per member, two columns per war.
-   *
-   * Header is row 1 so Google Sheets can freeze/filter/sort it without the user
-   * deleting anything first; the metadata that used to sit above it (5 lines plus a
-   * blank, pushing the header to row 7) now trails the data as # comments.
-   */
-  function _sweepBuildCsv() {
-    const s = _warState.sweep; if (!s) return null;
-    const cols = _sweepWarCols(s);
-    const visible = _sweepVisible(s); if (!visible.length) return null;
-    const codes = _sweepWarCodes(cols);
-
-    const head = ['Member', 'ID', 'FlaggedWars', 'WarsSeen', 'TotalXanaxOut', 'TotalHits',
-      'AvgHitsPerWar', 'HitsPerXanax', 'XanaxUsed', 'XanaxWithdrawnNet', 'WastedXanax',
-      'WastedEnergy', 'EfficiencyPct', 'ExcusedXanax', 'OverdoseWars'];
-    for (const w of cols) {
-      const c = codes.get(w.warId).code;
-      head.push(c + ' Xan', c + ' Hits');
-    }
-
-    const lines = [head.map(_csvCell).join(',')];
-    for (const r of visible) {
-      const row = [r.name, r.id || '', (r.warsFlaggedNet ?? r.warsFlagged), r.warsSeen, r.totalDrawn,
-        r.hitsKnown ? r.totalHits : '', r.avgHits == null ? '' : r.avgHits.toFixed(1),
-        r.hitsPerXan == null ? '' : r.hitsPerXan.toFixed(2), r.totalUsed, r.unaccounted,
-        r.wasted == null ? '' : r.wasted.toFixed(2),
-        r.wasted == null ? '' : Math.round(r.wasted * _ENERGY_PER_XANAX),
-        r.efficiency == null ? '' : (r.efficiency * 100).toFixed(0),
-        (r.excused || 0) >= 0.05 ? r.excused.toFixed(2) : '', r.odWars ? r.odWars.length : ''];
-      for (const w of cols) {
-        const p = r.per[w.warId];
-        row.push(p ? (p.used != null ? p.used : p.drawn) : '');
-        row.push(p ? (p.known ? p.hits : '') : '');
-      }
-      lines.push(row.map(_csvCell).join(','));
-    }
-    lines.push(..._sweepMetaLines(s, visible, codes));
-    return { text: lines.join('\r\n'), rows: visible.length };
-  }
-
-
-  function _sweepBuildDiscord() {
-    const s = _warState.sweep; if (!s) return null;
-    const rows = _sweepVisible(s); if (!rows.length) return null;
-    const headers = ['Player', 'Flag', 'Wasted', 'Used', 'Hits', 'H/X'];
-    const bdy = rows.map(r => [r.name, (r.warsFlaggedNet ?? r.warsFlagged) ? (r.warsFlaggedNet ?? r.warsFlagged) + '/' + r.warsSeen : '-', r.wasted == null ? '?' : r.wasted.toFixed(1), String(r.totalUsed), r.hitsKnown ? String(r.totalHits) : '?', r.hitsPerXan == null ? '-' : r.hitsPerXan.toFixed(1)]);
-    const all = [headers, ...bdy];
-    const w = headers.map((_, i) => Math.max(...all.map(row => row[i].length)));
-    const line = row => row.map((c, i) => i === 0 ? c.padEnd(w[i]) : c.padStart(w[i])).join('  ').replace(/\s+$/, '');
-    const rule = w.map(x => '-'.repeat(x)).join('  ');
-    const summary = `**Multi-war drug sweep — ${s.wars.length} wars**\n${_num(s.totalWasted)} Xanax wasted of ${_num(s.totalUsed)} swallowed · ${_num(s.totalHits)} hits · ${_num(s.repeats.length)} repeat offender(s)`;
-    const LIMIT = 1900; const chunks = []; let cur = [line(headers), rule];
-    const flush = () => { if (cur.length > 2) chunks.push('```\n' + cur.join('\n') + '\n```'); };
-    for (const row of bdy) { const l = line(row); if (cur.join('\n').length + l.length + 12 > LIMIT) { flush(); cur = [line(headers), rule]; } cur.push(l); }
-    flush();
-    const messages = chunks.length ? [summary + '\n' + chunks[0], ...chunks.slice(1)] : [summary];
-    return { text: messages.join('\n\n'), messages: messages.length, rows: rows.length };
-  }
-  function _sweepExport(download) {
-    if (!_warState.sweep) { _warStatus('Run a sweep first.', true); return; }
-    // CSV was retired once the workbook covered the same ground in colour. A saved
-    // preference from an older version can still say 'csv'/'tidy', so anything that
-    // is not Discord resolves to the workbook rather than falling through.
-    const fmt = _warState.sweepFmt === 'discord' ? 'discord' : 'xlsx';
-    const discord = fmt === 'discord';
-    const xlsx = !discord;
-    // The workbook is a binary file — there is nothing sensible to put on a
-    // clipboard, so Copy falls back to the wide CSV and says so.
-    if (xlsx && !download) {
-      _warStatus('A workbook can only be downloaded, not copied — copying it as CSV text instead.', true);
-    }
-    const out = discord ? _sweepBuildDiscord()
-              : download ? _sweepBuildXlsx()
-              : _sweepBuildCsv();          // clipboard fallback — see above
-    if (!out) { _warStatus('Nothing in this filter.', true); return; }
-    if (!download) { _warCopy(out.text, `Copied ${_num(out.rows)} rows${discord && out.messages > 1 ? ' as ' + out.messages + ' messages' : ''}.`); return; }
-    const name = `war-sweep-${new Date().toISOString().slice(0, 10)}`
-      + (out.xlsx ? '.xlsx' : discord ? '.txt' : '.csv');
-    try {
-      const blob = out.xlsx
-        ? new Blob([out.bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-        : new Blob(['﻿' + out.text], { type: discord ? 'text/plain;charset=utf-8' : 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      _warStatus(`Downloaded ${name} (${_num(out.rows)} rows).`);
-    } catch (_) { _warStatus('Download blocked — use Copy instead.', true); }
-  }
-
-  // ── Raffle tab ───────────────────────────────────────────────────────────────
-  const _RAFFLE_SRC = [
-    { key: 'loss',    label: 'Losses',            hint: 'per loss (uses the loss setting on the Report tab)', get: r => _scopedLoss(r) },
-    { key: 'wins',    label: 'War hits',          hint: 'per successful hit on the enemy',                    get: r => r.wins },
-    { key: 'respect', label: 'Respect',           hint: 'per respect point — use a fraction like 0.1',        get: r => r.respect },
-    { key: 'defHeld', label: 'Defends',           hint: 'per incoming attack they survived',                  get: r => r.defHeld },
-    { key: 'assists', label: 'Assists',           hint: 'per assist',                                         get: r => r.assists },
-    { key: 'enemyOn', label: 'Enemy hits taken',  hint: 'per time the enemy attacked them',                   get: r => r.enemyOn + r.stealthOn },
-    { key: 'flat',    label: 'Just for taking part', hint: 'tickets everyone gets, win or lose',              get: () => 1 },
-  ];
-  const _RAFFLE_PRESETS = { loss: { loss: 1 }, hits: { wins: 1 }, bal: { wins: 1, loss: 1, defHeld: 1, assists: 1 }, part: { flat: 1 } };
-  function _cryptoFloat() {
-    const c = (typeof crypto !== 'undefined' && crypto) || null;
-    if (c && c.getRandomValues) { const b = new Uint32Array(1); c.getRandomValues(b); return b[0] / 4294967296; }
-    return Math.random();
-  }
-  function _raffleEntrants() {
-    if (!_warState.report) return [];
-    const w = _warState.raffleW;
-    const cap = Math.max(0, Number(_warState.raffleCap) || 0), min = Math.max(0, Number(_warState.raffleMin) || 0);
-    const active = _RAFFLE_SRC.filter(sc => w[sc.key] > 0);
-    return _warState.report.list.map(row => {
-      const parts = []; let raw = 0;
-      for (const sc of active) {
-        const n = Number(sc.get(row)) || 0; if (n <= 0) continue;
-        const t = n * w[sc.key]; raw += t;
-        parts.push(`${_num(n)} ${sc.label.toLowerCase()} ×${w[sc.key]} = ${Math.round(t * 10) / 10}`);
-      }
-      let tickets = Math.floor(raw); const capped = cap > 0 && tickets > cap; if (capped) tickets = cap;
-      return { name: row.name, id: row.id, tickets, raw, capped, parts };
-    }).filter(e => e.tickets >= Math.max(1, min)).sort((a, b) => b.tickets - a.tickets);
-  }
-  function _pickWeighted(pool) {
-    const total = pool.reduce((s, e) => s + e.tickets, 0);
-    if (total <= 0) return null;
-    let r = _cryptoFloat() * total;
-    for (const e of pool) { r -= e.tickets; if (r < 0) return e; }
-    return pool[pool.length - 1];
-  }
-  function _rafflePreset(p) {
-    const preset = _RAFFLE_PRESETS[p] || {};
-    for (const sc of _RAFFLE_SRC) _warState.raffleW[sc.key] = preset[sc.key] != null ? preset[sc.key] : 0;
-    document.querySelectorAll('#ocm-pane-war .ocm-rw').forEach(inp => { inp.value = _warState.raffleW[inp.dataset.k]; });
-    _warState.raffleWinners = null;
-    _raffleRefresh();
-  }
-  function _raffleRefresh() {
-    const sumEl = document.getElementById('ocm-rf-sum'), winEl = document.getElementById('ocm-rf-winner'), outEl = document.getElementById('ocm-rf-out');
-    if (!sumEl || !outEl) return;
-    const w = _warState.raffleW;
-    const entrants = _raffleEntrants();
-    const total = entrants.reduce((s, e) => s + e.tickets, 0);
-    const active = _RAFFLE_SRC.filter(sc => w[sc.key] > 0);
-    sumEl.innerHTML = active.length ? `<b>${_num(entrants.length)}</b> members · <b>${_num(total)}</b> tickets` : '<span style="color:#ff9a9a">every source is 0 — nobody has a ticket</span>';
-    if (winEl) winEl.innerHTML = (_warState.raffleWinners && _warState.raffleWinners.length)
-      ? '<div class="ocm-card" style="text-align:center;padding:14px;border-color:rgba(61,184,245,.35)">' + _warState.raffleWinners.map((wn, i) => `<div style="font-size:15px;margin:5px 0">🏆 ${_warState.raffleWinners.length > 1 ? '#' + (i + 1) + ' ' : ''}${_nameLink(wn.name, wn.id)} <span style="color:var(--ocm-text-dim);font-size:12px">${_num(wn.tickets)} tickets · ${total ? ((wn.tickets / total) * 100).toFixed(1) : '0'}% odds</span></div>`).join('') + '</div>'
-      : '';
-    if (!total) { outEl.innerHTML = `<div style="color:var(--ocm-text-dim);padding:8px 2px">${active.length ? 'Nobody clears the minimum ticket count.' : 'Give at least one source a weight above zero.'}</div>`; return; }
-    const top = entrants[0].tickets;
-    outEl.innerHTML = `<div class="ocm-card" style="margin-top:8px"><div class="ocm-card-h">ODDS — TICKETS PER MEMBER<span class="ocm-card-r">${entrants.length} in the draw</span></div><div style="overflow-x:auto"><table class="ocm-members-table"><thead><tr><th class="l">Member</th><th class="l" style="width:32%">Share</th><th class="n">Tickets</th><th class="n">Odds</th></tr></thead><tbody>${entrants.map(e => `<tr><td class="l">${_nameLink(e.name, e.id)}${e.capped ? ' <span style="color:#ffd479;font-size:10px" title="Capped — raw total ' + Math.floor(e.raw) + '">capped</span>' : ''}</td><td class="l"><span style="display:inline-block;height:8px;border-radius:4px;background:var(--ocm-fb,#3db8f5);width:${(e.tickets / top) * 100}%;min-width:2px"></span></td><td class="n" title="${OCUI.esc(e.parts.join('  +  ') || 'no qualifying activity')}"><b>${_num(e.tickets)}</b></td><td class="n" style="color:var(--ocm-text-dim)">${((e.tickets / total) * 100).toFixed(1)}%</td></tr>`).join('')}</tbody></table></div></div>`;
-  }
-  function _raffleDraw() {
-    const entrants = _raffleEntrants();
-    if (!entrants.length) { _warStatus('Nobody holds a ticket under these weights.', true); return; }
-    const n = Math.max(1, Math.min(_warState.raffleN, entrants.length));
-    const pool = entrants.slice(); const winners = [];
-    for (let i = 0; i < n; i++) { const wn = _pickWeighted(pool); if (!wn) break; winners.push(wn); pool.splice(pool.indexOf(wn), 1); }
-    const btn = document.getElementById('ocm-rf-draw'); if (btn) btn.disabled = true;
-    const winEl = document.getElementById('ocm-rf-winner');
-    const start = Date.now();
-    (function step() {
-      const rnd = entrants[Math.floor(_cryptoFloat() * entrants.length)];
-      if (winEl) winEl.innerHTML = `<div class="ocm-card" style="text-align:center;padding:14px"><div style="font-size:18px;color:var(--ocm-fb-br,#7fdfff);opacity:.75">${OCUI.esc(rnd.name)}</div></div>`;
-      const el = Date.now() - start;
-      if (el < 1800) setTimeout(step, 45 + el / 22);
-      else { _warState.raffleWinners = winners; if (btn) btn.disabled = false; _raffleRefresh(); }
-    })();
-  }
-  // wheelofnames chokes on huge lists, so cap the export. If the raw ticket
-  // total exceeds WHEEL_MAX, scale every member's slice down proportionally
-  // (odds preserved) and guarantee anyone with ≥1 ticket keeps at least one line.
-  const _WHEEL_MAX = 1000;
-  function _raffleWheel() {
-    const entrants = _raffleEntrants();
-    if (!entrants.length) { _warStatus('No tickets to export.', true); return; }
-    const total = entrants.reduce((s, e) => s + e.tickets, 0);
-    const scale = total > _WHEEL_MAX ? _WHEEL_MAX / total : 1;
-    const lines = [];
-    for (const e of entrants) {
-      const n = scale < 1 ? Math.max(1, Math.round(e.tickets * scale)) : e.tickets;
-      for (let i = 0; i < n; i++) lines.push(e.name);
-    }
-    const note = scale < 1
-      ? `Copied ${_num(lines.length)} entries (scaled from ${_num(total)} tickets to fit the wheel — odds preserved).`
-      : `Copied ${_num(lines.length)} entries — paste into wheelofnames.com.`;
-    _warCopy(lines.join('\n'), note);
-  }
-  function _raffleCsv() {
-    const entrants = _raffleEntrants();
-    if (!entrants.length) { _warStatus('No tickets to export.', true); return; }
-    const total = entrants.reduce((s, e) => s + e.tickets, 0);
-    const w = _warState.raffleW;
-    const used = _RAFFLE_SRC.filter(sc => w[sc.key] > 0).map(sc => `${sc.label} ×${w[sc.key]}`).join(' + ');
-    const lines = [_csvCell(`Tickets from: ${used}`), 'Member,ID,Tickets,Odds%'];
-    for (const e of entrants) lines.push([_csvCell(e.name), e.id, e.tickets, ((e.tickets / total) * 100).toFixed(2)].join(','));
-    const text = lines.join('\r\n');
-    try {
-      const blob = new Blob(['﻿' + text], { type: 'text/csv;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `raffle-odds-${new Date().toISOString().slice(0, 10)}.csv`;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-      _warStatus(`Downloaded odds CSV (${_num(entrants.length)} members).`);
-    } catch (_) { _warCopy(text, 'Odds CSV copied.'); }
-  }
-  function warRenderRaffle(host) {
-    if (!_warState.report) {
-      host.innerHTML = OCUI.card({ title: '🎟️ Raffle', body: '<div style="color:var(--ocm-text-dim)">The raffle draws from a war\'s per-member numbers — pull a report first (⚔️ Report).</div>' });
-      return;
-    }
-    const _sub = t => `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--ocm-text-muted);font-weight:700;margin-bottom:8px">${t}</div>`;
-    const w = _warState.raffleW;
-    const weightInputs = _RAFFLE_SRC.map(sc => `<label style="font-size:11px;color:var(--ocm-text-dim);min-width:120px" title="${OCUI.esc(sc.hint)}">${OCUI.esc(sc.label)}<br><input class="ocm-rw" data-k="${sc.key}" type="number" min="0" step="0.1" value="${w[sc.key]}" style="${_selStyle};width:86px"></label>`).join('');
-    const presets = ['loss', 'hits', 'bal', 'part'].map((p, i) => `<button class="ocm-rf-preset" data-p="${p}" style="${_btnStyle}">${['Consolation', 'Reward fighters', 'Balanced', 'Everyone who showed up'][i]}</button>`).join('');
-    host.innerHTML =
-      OCUI.card({ title: '🎟️ Raffle', body:
-        _sub('1 · Ticket weights') +
-        `<div style="display:flex;gap:14px;flex-wrap:wrap">${weightInputs}</div>` +
-        `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:12px"><span style="color:var(--ocm-text-faint);font-size:11px">Presets:</span>${presets}</div>` +
-        '<div style="border-top:1px solid var(--ocm-border-soft);margin:14px 0 12px"></div>' +
-        _sub('2 · Draw') +
-        '<div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">' +
-        `<label style="font-size:11px;color:var(--ocm-text-dim)">Winners<br><input id="ocm-rf-n" type="number" min="1" value="${_warState.raffleN}" style="${_selStyle};width:78px"></label>` +
-        `<label style="font-size:11px;color:var(--ocm-text-dim)" title="Max tickets any one member can hold (0 = no cap)">Cap<br><input id="ocm-rf-cap" type="number" min="0" value="${_warState.raffleCap}" style="${_selStyle};width:78px"></label>` +
-        `<label style="font-size:11px;color:var(--ocm-text-dim)" title="Minimum tickets to be entered">Min<br><input id="ocm-rf-min" type="number" min="0" value="${_warState.raffleMin}" style="${_selStyle};width:78px"></label>` +
-        `<button id="ocm-rf-draw" style="${_genBtnStyle}">🎲 Draw</button>` +
-        `<button id="ocm-rf-wheel" style="${_btnStyle}">Copy for wheelofnames</button>` +
-        `<button id="ocm-rf-csv" style="${_btnStyle}">⬇ Odds CSV</button>` +
-        `<span style="flex:1"></span><span id="ocm-rf-sum" style="color:var(--ocm-text-dim);font-size:12px"></span>` +
-        '</div>' }) +
-      '<div id="ocm-rf-winner" style="margin-top:8px"></div><div id="ocm-rf-out"></div>';
-    _raffleRefresh();
-    host.querySelectorAll('.ocm-rw').forEach(inp => inp.addEventListener('input', e => { _warState.raffleW[e.target.dataset.k] = Math.max(0, Number(e.target.value) || 0); _warState.raffleWinners = null; _raffleRefresh(); }));
-    host.querySelectorAll('.ocm-rf-preset').forEach(b => b.addEventListener('click', () => _rafflePreset(b.dataset.p)));
-    document.getElementById('ocm-rf-n')?.addEventListener('change', e => { _warState.raffleN = Math.max(1, Number(e.target.value) || 1); });
-    document.getElementById('ocm-rf-cap')?.addEventListener('input', e => { _warState.raffleCap = Math.max(0, Number(e.target.value) || 0); _warState.raffleWinners = null; _raffleRefresh(); });
-    document.getElementById('ocm-rf-min')?.addEventListener('input', e => { _warState.raffleMin = Math.max(0, Number(e.target.value) || 0); _warState.raffleWinners = null; _raffleRefresh(); });
-    document.getElementById('ocm-rf-draw')?.addEventListener('click', _raffleDraw);
-    document.getElementById('ocm-rf-wheel')?.addEventListener('click', _raffleWheel);
-    document.getElementById('ocm-rf-csv')?.addEventListener('click', _raffleCsv);
-  }
-
-  // Selecting a war loads whatever is already cached for it — report, drugs, overdoses —
-  // so data pulled by the Multi-war sweep (or a previous single-war pull) shows up across
-  // the Report / Drugs / Raffle tabs without re-fetching. The cache is the shared store.
-  async function warSelectWar(idx) {
-    if (_warUi.pulling) return;
-    const war = (_warState.wars || [])[idx];
-    if (!war) return;
-    // Same war already in memory — don't clobber a fresh pull; just show it.
-    if (_warState.war && _warState.war.warId === war.warId && (_warState.report || _warState.drugs)) { warRenderTab(); return; }
-    _warState.war = war;
-    Object.assign(_warState.contracts, { ours: [], enemies: [], pairs: [], estimates: {} });
-    _warState.raffleWinners = null;
-    const request = ++_warUi.request;
-    _warUi.query = ''; _warUi.page = 0;
-    _warState.report = null; _warState.drugs = null; _warState.od = null;
-    warRenderTab();
-    const loaded = [];
-    try {
-      const cached = await TWPR.cacheLoad(war.warId);
-      if (request !== _warUi.request) return;
-      if (cached) {
-        if (cached.report) { _warState.report = cached.report; _warState.report.__scanned = cached.attacksScanned || 0; loaded.push('report'); }
-        if (cached.od) _warState.od = cached.od;
-        if (cached.drugs) { _warState.drugs = TWPR.refreshDrugReport(cached.drugs); loaded.push('drug data'); }
-      }
-    } catch (_) {}
-    warRenderTab();
-    if (request !== _warUi.request) return;
-    if (loaded.length) _warStatus(`Loaded cached ${loaded.join(' + ')} for ${war.oppName}${loaded.includes('report') ? '' : ' (from a sweep — pull report for the full payout table)'}. Tick Fresh pull to refresh.`);
-    else _warStatus(`${war.oppName} selected — nothing cached yet. Pull report to fetch.`);
-  }
-
-  async function warPullReport() {
-    if (_warUi.pulling) return;
-    const key = GM_getValue(GMK.API_KEY, '');
-    const idx = Number(document.getElementById('ocm-war-select')?.value);
-    const war = (_warState.wars || [])[idx];
-    if (!war) { _warStatus('Select a war.', true); return; }
-    _warState.war = war; _warState.drugs = null; _warState.od = null;
-    const from = war.start;
-    const to = war.end && war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
-    if (!from) { _warStatus('That war has no start timestamp.', true); return; }
-    ++_warUi.request; // Invalidate an outstanding selection-cache read.
-    _warUi.pulling = true;
-    const select = document.getElementById('ocm-war-select');
-    const btn = document.getElementById('ocm-war-run');
-    if (select) select.disabled = true;
-    if (btn) btn.disabled = true;
-    try {
-    const fresh = !!document.getElementById('ocm-war-fresh')?.checked;
-    if (!fresh) {
-      try {
-        const cached = await TWPR.cacheLoad(war.warId);
-        if (cached && cached.report) {
-          _warState.report = cached.report;
-          if (cached.od) _warState.od = cached.od;
-          if (cached.drugs) _warState.drugs = TWPR.refreshDrugReport(cached.drugs);
-          _warState.tab = 'report'; warRenderTab();
-          _warStatus(`Loaded from cache (saved ${TWPR.humanAge(Date.now() - cached.savedAt)} ago, ${_num(cached.attacksScanned || 0)} attacks). Tick Fresh pull for live data.`);
-          return;
-        }
-        if (cached && !cached.report && cached.drugs) { if (cached.od) _warState.od = cached.od; _warState.drugs = TWPR.refreshDrugReport(cached.drugs); }
-      } catch (_) {}
-    }
-    _warStatus('Pulling attacks… (this can take a moment for big wars)');
-    try {
-      const pulled = await TWPR.pullAttacks(key, from, to, (count, page) => _warStatus(`Pulling attacks… ${_num(count)} loaded (page ${page})`));
-      const attacks = pulled.list;
-      _warState.report = TWPR.buildReport(_warState.ctx, war, attacks);
-      _warState.report.__scanned = attacks.length;
-      _warState.tab = 'report'; warRenderTab();
-      _warStatus(`Scanned ${_num(attacks.length)} attacks${pulled.partial ? ' (partial)' : ''}. Checking the war report for the enemy hit total…`);
-      _warState.report.enemyReportHits = await TWPR.fetchEnemyHits(key, war.warId, war.oppId);
-      warRenderTab();
-      if (!pulled.partial) { try { await TWPR.cacheSave(war, _warState.report, attacks.length, pulled.partial); } catch (_) {} }
-      const source = _warState.report.enemyReportHits != null
-        ? 'Enemy hit total taken from the war report.'
-        : 'War report not available yet (live war) — enemy count is the attack-log estimate.';
-      _warStatus(`Done. ${source}${pulled.partial ? ' Partial pull — re-pull to fill in.' : ' Cached for 30 days.'}`, pulled.partial);
-    } catch (e) { _warStatus(e.message || 'Pull failed.', true); }
-    } finally { _warUi.pulling = false; if (btn) btn.disabled = false; if (select) select.disabled = false; }
-  }
-
-  async function mountWarInline() {
-    if (_warMounted) return;
-    const pane = document.getElementById('ocm-pane-war');
-    if (!pane) return;
-    _warMounted = true;
-    const key = GM_getValue(GMK.API_KEY, '');
-    if (!key) { pane.innerHTML = OCUI.card({ title: '⚔️ War Payout', body: '<div style="color:var(--ocm-text-dim)">Set your Torn API key in <b>⚙ Config</b> to load war data.</div>' }); _warMounted = false; return; }
-    pane.innerHTML = _warWorkspaceStyle() +
-      OCUI.card({ title: '⚔️ War workspace',
-        body: '<p class="ocm-war-intro">Plan the battle, review participation, and prepare payouts. Select a war to load saved reports without a fresh API pull.</p><div class="ocm-war-toolbar">' +
-          `<select id="ocm-war-select" disabled aria-label="Select ranked war" style="${_selStyle};flex:1;min-width:190px"><option>Loading wars…</option></select>` +
-          `<button id="ocm-war-run" disabled style="${_genBtnStyle};white-space:nowrap">Pull report</button>` +
-          `<button id="ocm-war-more" aria-expanded="false" aria-controls="ocm-war-moremenu" style="${_btnStyle}">Options</button>` +
-        '</div>' +
-        `<div id="ocm-war-moremenu" style="display:none;align-items:center;gap:9px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid var(--ocm-border-soft)"><label style="display:flex;align-items:center;gap:5px;color:var(--ocm-text-dim);font-size:12px;white-space:nowrap"><input type="checkbox" id="ocm-war-fresh"> Fresh pull (ignore cache)</label><button id="ocm-war-clearcache" style="${_btnStyle}">Clear war cache</button></div>` +
-        '<div id="ocm-war-context" role="status"></div><div id="ocm-war-status" role="status" style="display:none;color:var(--ocm-text-faint);font-size:11px;margin-top:7px"></div>' }) +
-      _warTabBar() +
-      '<div id="ocm-war-tabcontent" style="margin-top:8px"></div>';
-    pane.querySelectorAll('.ocm-war-grpbtn').forEach(b => b.addEventListener('click', () => {
-      const g = b.dataset.group;
-      _warState.group = g;
-      _warState.tab = _warLastTab[g] || (_warTabs.find(t => t.group === g) || {}).key;
-      warRenderTab();
-    }));
-    warRenderTab();
-    try {
-      if (!_warState.ctx) { _warState.ctx = await TWPR.getFactionContext(key); _warState.wars = TWPR.listWars(_warState.ctx); }
-      let cachedIds = new Set();
-      try { cachedIds = new Set((await TWPR.cacheIndexGet()).map(x => x.warId)); } catch (_) {}
-      const sel = document.getElementById('ocm-war-select');
-      if (sel) sel.innerHTML = (_warState.wars || []).map((w, i) => {
-        const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
-        return `<option value="${i}">${when} vs ${OCUI.esc(w.oppName)} (${w.myScore}–${w.oppScore})${w.end ? '' : ' [LIVE]'}${cachedIds.has(w.warId) ? ' 💾' : ''}</option>`;
-      }).join('');
-      _warStatus(`${(_warState.wars || []).length} war(s) · 💾 = cached`);
-    } catch (e) {
-      _warStatus('Unable to load wars. Check your API key and connection.', true);
-      const retry = document.getElementById('ocm-war-run');
-      if (retry) { retry.disabled = false; retry.textContent = 'Retry loading'; retry.addEventListener('click', () => { _warMounted = false; mountWarInline(); }); }
-      return;
-    }
-    // Selecting a war loads its cached data (shared with the Multi-war sweep) across the tabs.
-    const _selEl = document.getElementById('ocm-war-select');
-    const hasWars = !!_warState.wars?.length;
-    if (_selEl) { _selEl.disabled = !hasWars; if (!hasWars) _selEl.innerHTML = '<option>No ranked wars available</option>'; }
-    const run = document.getElementById('ocm-war-run');
-    if (run) run.disabled = !hasWars;
-    if (_selEl) {
-      let _idx = 0;
-      if (_warState.war) { const j = (_warState.wars || []).findIndex(w => w.warId === _warState.war.warId); if (j >= 0) _idx = j; }
-      _selEl.value = String(_idx);
-      _selEl.addEventListener('change', () => warSelectWar(Number(_selEl.value)));
-      await warSelectWar(_idx);
-    }
-    document.getElementById('ocm-war-run')?.addEventListener('click', warPullReport);
-    document.getElementById('ocm-war-more')?.addEventListener('click', () => {
-      const menu = document.getElementById('ocm-war-moremenu');
-      if (menu) { menu.style.display = menu.style.display === 'none' ? 'flex' : 'none'; document.getElementById('ocm-war-more')?.setAttribute('aria-expanded', String(menu.style.display !== 'none')); }
-    });
-    pane.addEventListener('keydown', e => {
-      if (e.key !== 'Escape') return;
-      const menu = document.getElementById('ocm-war-moremenu');
-      if (menu?.style.display === 'flex') { menu.style.display = 'none'; const toggle = document.getElementById('ocm-war-more'); toggle?.setAttribute('aria-expanded', 'false'); toggle?.focus(); }
-    });
-    document.getElementById('ocm-war-clearcache')?.addEventListener('click', async () => {
-      try { await TWPR.cacheClearAll(); _warStatus('Cache cleared.'); }
-      catch (_) { _warStatus('Cache clear failed.', true); }
-    });
-  }
-
-  // Consumables tab — NATIVE render (premium look) driven by the embedded FBUSAGE engine.
-  let _consMounted = false;
-  const _pillStyle = 'background:var(--ocm-bg);border:1px solid var(--ocm-border-soft);color:var(--ocm-text-dim);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer';
-  const _btnStyle  = 'background:var(--ocm-bg-card);border:1px solid var(--ocm-border-soft);color:var(--ocm-text-dim);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer';
-  const _consUi = { query: '', sortKey: 'total', sortDir: -1, activity: 'all', page: 0, refreshing: false, error: '' };
-  // Read/write the Frostbite Usage Command settings straight from localStorage so the
-  // suite Config panel never has to boot the whole module (and its floating GUI) on load.
-  const _FU_KEY = 'frostbiteUsage.settings.v1';
-  function _fuLoadSettings() { try { return JSON.parse(localStorage.getItem(_FU_KEY) || '{}') || {}; } catch (_) { return {}; } }
-  function _fuSaveSettings(patch) {
-    const next = Object.assign(_fuLoadSettings(), patch);
-    try { localStorage.setItem(_FU_KEY, JSON.stringify(next)); } catch (_) {}
-    // If the Consumables module is already running this session, sync its in-memory copy too.
-    if (document.getElementById('frostbite-usage-command')) { try { FBUSAGE.applySettings(patch); } catch (_) {} }
-    return next;
-  }
-  // Open the suite Config panel and jump to the Consumables (Usage Command) section.
-  function openSuiteConfig() {
-    const panel = document.getElementById('ocm-config-panel');
-    if (panel) panel.style.display = 'block';
-    const el = document.getElementById('ocm-fu-sheet');
-    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.focus(); }
-  }
-
-  function renderConsumablesLegacy() {
-    const pane = document.getElementById('ocm-pane-consumables');
-    if (!pane) return;
-    if (!FBUSAGE.hasConfig()) {
-      pane.innerHTML = OCUI.card({ title: '🧪 Consumables — Usage Command', body:
-        '<div style="color:var(--ocm-text-dim);margin-bottom:12px">Not configured yet — add your Google Sheet URL, read secret and Torn API key.</div>' +
-        '<button id="ocm-cons-settings" style="' + _btnStyle + '">⚙ Open Settings ▸</button>' });
-      document.getElementById('ocm-cons-settings')?.addEventListener('click', openSuiteConfig);
-      return;
-    }
-    const st = FBUSAGE.getState();
-    const fields = FBUSAGE.STAT_FIELDS.filter(f => f.type === 'counter');
-    const members = (st.rows || []).map(r => {
-      const vals = {}; let total = 0;
-      for (const f of fields) { const pv = FBUSAGE.periodValue(r, f); const v = pv ? Number(pv.value) || 0 : 0; vals[f.key] = v; total += v; }
-      return { name: r.name, vals, total };
-    }).filter(m => m.total > 0).sort((a, b) => b.total - a.total);
-    const fieldTotals = {}; for (const f of fields) fieldTotals[f.key] = members.reduce((s, m) => s + m.vals[f.key], 0);
-    const cards = OCUI.grid(fields.map(f => OCUI.statTile({ value: _num(fieldTotals[f.key]), label: f.icon + ' ' + f.label, tone: f.key === 'xantaken' ? 'info' : 'neutral' })).join(''), fields.length);
-    const pills = FBUSAGE.PERIODS.map(p => `<button class="ocm-cons-period" data-p="${p.key}" style="${_pillStyle}${st.period === p.key ? ';color:var(--ocm-fb-br);border-color:var(--ocm-fb)' : ''}">${p.label}</button>`).join('');
-    const ths = fields.map(f => `<th class="n">${f.label}</th>`).join('');
-    const rowsHtml = members.map(m => `<tr><td class="l">${OCUI.esc(m.name)}</td>${fields.map(f => `<td class="n">${_num(m.vals[f.key])}</td>`).join('')}<td class="n" style="font-weight:700">${_num(m.total)}</td></tr>`).join('');
-    const table = `<div class="ocm-card" style="margin-top:12px"><div class="ocm-card-h">PER-MEMBER USAGE<span class="ocm-card-r">${members.length} members</span></div>` +
-      `<div style="overflow-x:auto"><table class="ocm-members-table"><thead><tr><th class="l">Member</th>${ths}<th class="n">Total</th></tr></thead><tbody>${rowsHtml || `<tr><td class="l" colspan="${fields.length + 2}" style="color:var(--ocm-text-faint)">No usage in this period — hit Refresh.</td></tr>`}</tbody></table></div></div>`;
-    pane.innerHTML = OCUI.card({
-      title: '🧪 Consumables', right: `<span style="color:var(--ocm-text-faint);font-weight:500">${st.meta && st.meta.lastSync ? 'last sync ' + st.meta.lastSync : ''}</span>`,
-      body: `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">${pills}<span style="flex:1"></span><button id="ocm-cons-refresh" style="${_btnStyle}">↻ Refresh</button><button id="ocm-cons-settings" style="${_btnStyle}">⚙</button></div>`
-    }) + '<div style="margin-top:12px">' + cards + '</div>' + table;
-    pane.querySelectorAll('.ocm-cons-period').forEach(b => b.addEventListener('click', () => { FBUSAGE.setPeriod(b.dataset.p); renderConsumables(); }));
-    document.getElementById('ocm-cons-settings')?.addEventListener('click', openSuiteConfig);
-    document.getElementById('ocm-cons-refresh')?.addEventListener('click', async () => {
-      const btn = document.getElementById('ocm-cons-refresh'); if (btn) btn.textContent = '…';
-      try { await FBUSAGE.refresh(); } catch (e) { console.error('[OC Suite] Usage refresh', e); }
-      renderConsumables();
-    });
-  }
-  function _consMembers(st, fields) {
-    return (st.rows || []).map(r => {
-      const vals = {}; let total = 0, known = 0, partial = false;
-      fields.forEach(f => {
-        const pv = FBUSAGE.periodValue(r, f);
-        const value = pv && pv.value != null && Number.isFinite(Number(pv.value)) ? Number(pv.value) : null;
-        vals[f.key] = value;
-        if (value !== null) { total += value; known++; }
-        if (pv?.partial) partial = true;
-      });
-      return { id: String(r.id || ''), name: r.name || ('#' + String(r.id || '')), vals, total, known, partial };
-    });
-  }
-
-  function _consField(fields, key) {
-    return fields.find(f => f.key === key) || fields[0];
-  }
-
-  function _consBreakdown(member, fields) {
-    const parts = fields.filter(f => member.vals[f.key] > 0)
-      .map(f => f.icon + ' ' + f.label + ' ' + _num(member.vals[f.key]));
-    return (parts.length ? parts.join(' · ') : member.known ? 'No recorded usage' : 'No data for this period') +
-      (member.partial ? ' · Partial period' : '') + (member.known && member.known < fields.length ? ' · Some counters unavailable' : '');
-  }
-
-  function renderConsumablesHeader(st) {
-    const periods = FBUSAGE.PERIODS.map(p => {
-      const active = st.period === p.key;
-      return '<button type="button" class="ocm-cons-period' + (active ? ' active' : '') + '" data-p="' + p.key + '" aria-pressed="' + active + '">' + p.label + '</button>';
-    }).join('');
-    const syncValue = st.meta && st.meta.lastSync;
-    const syncDate = syncValue ? new Date(syncValue) : null;
-    const syncLabel = syncDate && !Number.isNaN(syncDate.getTime()) ? syncDate.toLocaleString() : 'Not synced yet';
-    const last = 'Last sync ' + syncLabel;
-    return '<div class="ocm-cons-head">' +
-      '<div><h3>🧪 Consumables</h3><small>Member usage · ' + _num((st.rows || []).length) + ' members tracked</small></div>' +
-      '<div class="ocm-cons-actions"><button type="button" id="ocm-cons-refresh" class="ocm-cons-action" aria-label="Refresh consumables data"' + ((_consUi.refreshing || st.busy) ? ' disabled' : '') + '>' + ((_consUi.refreshing || st.busy) ? 'Updating…' : '↻ Refresh') + '</button>' +
-      '<button type="button" id="ocm-cons-settings" class="ocm-cons-action" aria-label="Open consumables settings">⚙</button></div>' +
-      '</div><div class="ocm-cons-periods" aria-label="Usage period">' + periods + '</div>' +
-      '<div id="ocm-cons-status" class="ocm-cons-status" role="status" aria-live="polite">' + OCUI.esc(_consUi.error || ((_consUi.refreshing || st.busy) ? 'Updating usage…' : syncValue ? last : 'Not synced yet')) + '</div>';
-  }
-
-  function renderConsumablesPulse(st, fields, members) {
-    const totals = {}; fields.forEach(f => { totals[f.key] = members.reduce((sum, m) => sum + (m.vals[f.key] || 0), 0); });
-    const totalActivity = fields.reduce((sum, f) => sum + (totals[f.key] || 0), 0);
-    const xanax = totals.xantaken || 0;
-    const available = key => members.some(m => m.vals[key] != null);
-    const covered = members.filter(m => m.known === fields.length && !m.partial).length;
-    const max = Math.max(1, ...fields.map(f => totals[f.key] || 0));
-    const tiles = [
-      '<div><div class="ocm-cons-pulse-value accent">' + (available('xantaken') ? _num(xanax) : '—') + '</div><div class="ocm-cons-pulse-label">Xanax recorded</div></div>',
-      '<div><div class="ocm-cons-pulse-value">' + (members.some(m => m.known) ? _num(totalActivity) : '—') + '</div><div class="ocm-cons-pulse-label">Combined counters</div></div>',
-      '<div><div class="ocm-cons-pulse-value">' + _num(members.filter(m => m.total > 0).length) + '</div><div class="ocm-cons-pulse-label">With recorded usage</div></div>',
-      '<div><div class="ocm-cons-pulse-value">' + _num(covered) + '/' + _num(members.length) + '</div><div class="ocm-cons-pulse-label">Complete coverage</div></div>'
-    ].join('');
-    const mix = fields.map(f => {
-      const value = totals[f.key] || 0;
-      const pct = Math.min(100, Math.round((value / max) * 100));
-      return '<div class="ocm-cons-mix-row"><span>' + f.icon + ' ' + f.label + '</span><span class="ocm-cons-mix-track"><i style="width:' + pct + '%"></i></span><strong>' + (available(f.key) ? _num(value) : '—') + '</strong></div>';
-    }).join('');
-    const period = (FBUSAGE.PERIODS.find(p => p.key === st.period) || {}).label || 'Selected period';
-    return '<section id="ocm-cons-pulse" class="ocm-cons-pulse" aria-labelledby="ocm-cons-pulse-title">' +
-      '<div class="ocm-cons-section-head"><h4 id="ocm-cons-pulse-title">Usage pulse</h4><small>' + OCUI.esc(period) + '</small></div>' +
-      '<div class="ocm-cons-pulse-top">' + tiles + '</div><div class="ocm-cons-mix" aria-label="Usage mix">' + mix + '</div><p class="ocm-cons-coverage">Known counters for all tracked members. Search and filters below apply to the member list only.</p></section>';
-  }
-
-  function renderConsumablesAttention(members, fields) {
-    const top = members.filter(m => m.total > 0).sort((a, b) => b.total - a.total).slice(0, 3);
-    if (!top.length) {
-      return '<section id="ocm-cons-attention" class="ocm-cons-section"><div class="ocm-cons-section-head"><h4>Most recorded activity</h4></div><div class="ocm-cons-empty"><strong>No recorded activity</strong>Check data coverage or choose a wider period. Missing data does not mean zero use.</div></section>';
-    }
-    const rows = top.map(m => {
-      const lead = [...fields].sort((a, b) => (m.vals[b.key] || 0) - (m.vals[a.key] || 0))[0];
-      const value = lead ? m.vals[lead.key] || 0 : m.total;
-      return '<div class="ocm-cons-attention-row"><span class="ocm-cons-attention-name">' + OCUI.esc(m.name) + '</span><span class="ocm-cons-attention-note">Largest counter: ' + OCUI.esc(lead ? lead.label : 'activity') + ' · ' + _num(value) + '</span><strong class="ocm-cons-attention-total">' + _num(m.total) + ' combined</strong></div>';
-    }).join('');
-    return '<section id="ocm-cons-attention" class="ocm-cons-section"><div class="ocm-cons-section-head"><h4>Most recorded activity</h4><small>Combined counters</small></div><div class="ocm-cons-attention-list">' + rows + '</div></section>';
-  }
-
-  function renderConsumablesLedger(members, fields) {
-    const needle = _consUi.query.trim().toLowerCase();
-    let list = members.filter(m => (!needle || m.name.toLowerCase().includes(needle) || m.id.includes(needle)) &&
-      (_consUi.activity === 'all' || (_consUi.activity === 'active' ? m.total > 0 : _consUi.activity === 'missing' ? m.known < fields.length : m.known === fields.length && m.total === 0)));
-    const sortField = _consField(fields, _consUi.sortKey);
-    list = [...list].sort((a, b) => {
-      if (_consUi.sortKey === 'name') return _consUi.sortDir * a.name.localeCompare(b.name);
-      const av = _consUi.sortKey === 'total' ? (a.known ? a.total : null) : a.vals[sortField.key];
-      const bv = _consUi.sortKey === 'total' ? (b.known ? b.total : null) : b.vals[sortField.key];
-      if (av == null || bv == null) return av == null && bv == null ? a.name.localeCompare(b.name) : av == null ? 1 : -1;
-      return _consUi.sortDir * (av - bv) || a.name.localeCompare(b.name);
-    });
-    const count = list.length, pages = Math.max(1, Math.ceil(count / 25));
-    _consUi.page = Math.max(0, Math.min(_consUi.page, pages - 1));
-    list = list.slice(_consUi.page * 25, (_consUi.page + 1) * 25);
-    const options = [['total', 'Combined counters'], ...fields.map(f => [f.key, f.label]), ['name', 'Member name']]
-      .map(pair => '<option value="' + pair[0] + '"' + (_consUi.sortKey === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>').join('');
-    const head = fields.map(f => '<th class="n" scope="col">' + f.label + '</th>').join('');
-    const desktopRows = list.map(m => '<tr><td class="l">' + OCUI.esc(m.name) + (m.partial ? ' <small>Partial period</small>' : '') + '</td>' + fields.map(f => '<td class="n">' + (m.vals[f.key] == null ? '<span title="Data unavailable">—</span>' : _num(m.vals[f.key])) + '</td>').join('') + '<td class="n"><b>' + (m.known ? _num(m.total) : '—') + '</b></td></tr>').join('');
-    const mobileRows = list.map(m => '<div class="ocm-cons-mobile-row"><div class="ocm-cons-mobile-top"><span>' + OCUI.esc(m.name) + '</span><span class="ocm-cons-mobile-total">' + (m.known ? _num(m.total) + ' combined' : 'No data') + '</span></div><div class="ocm-cons-mobile-breakdown">' + OCUI.esc(_consBreakdown(m, fields)) + '</div></div>').join('');
-    const empty = '<div class="ocm-cons-empty"><strong>No members match</strong>Try a different name or clear the search.</div>';
-    return '<section id="ocm-cons-ledger" class="ocm-cons-section"><div class="ocm-cons-section-head"><h4>Member usage</h4><small>' + _num(list.length) + ' shown</small></div>' +
-      '<div class="ocm-cons-toolbar"><label class="ocm-cons-sr-only" for="ocm-cons-search">Search members</label><input id="ocm-cons-search" class="ocm-cons-search" type="search" value="' + OCUI.esc(_consUi.query) + '" placeholder="Search members…" autocomplete="off"><label class="ocm-cons-sr-only" for="ocm-cons-sort">Sort members</label><select id="ocm-cons-sort" class="ocm-cons-sort" aria-label="Sort members">' + options + '</select></div>' +
-      '<div class="ocm-cons-toolbar"><label for="ocm-cons-activity">Show</label><select id="ocm-cons-activity" class="ocm-cons-sort">' + [['all','All members'],['active','Recorded usage'],['zero','Confirmed zero'],['missing','Missing counters']].map(([value,label]) => '<option value="'+value+'"'+(_consUi.activity===value?' selected':'')+'>'+label+'</option>').join('') + '</select><button id="ocm-cons-direction" type="button" class="ocm-cons-action">' + (_consUi.sortDir === 1 ? 'Ascending ↑' : 'Descending ↓') + '</button></div>' +
-      (list.length ? '<div class="ocm-cons-table-wrap"><table class="ocm-members-table"><thead><tr><th class="l" scope="col">Member</th>' + head + '<th class="n" scope="col">Total</th></tr></thead><tbody>' + desktopRows + '</tbody></table></div><div class="ocm-cons-mobile-list">' + mobileRows + '</div>' : empty) +
-      '<div class="ocm-cons-pager"><button id="ocm-cons-prev" type="button" class="ocm-cons-action"'+(_consUi.page===0?' disabled':'')+'>Previous</button><span>'+count+' matches · Page '+(_consUi.page+1)+' of '+pages+'</span><button id="ocm-cons-next" type="button" class="ocm-cons-action"'+(_consUi.page>=pages-1?' disabled':'')+'>Next</button></div>' +
-      '<p class="ocm-cons-coverage">— means unavailable, not zero. Combined counters may overlap; they are not unique items consumed. Partial periods have shorter history.</p></section>';
-  }
-
-  function renderConsumablesTrends(members, fields, st) {
-    const totals = fields.map(f => ({ field: f, value: members.reduce((sum, m) => sum + (m.vals[f.key] || 0), 0), known: members.some(m => m.vals[f.key] != null) })).sort((a, b) => b.value - a.value);
-    const max = Math.max(1, ...totals.map(x => x.value));
-    const rows = totals.map(x => '<div class="ocm-cons-trend-row"><span>' + x.field.icon + ' ' + x.field.label + '</span><span class="ocm-cons-trend-bar"><i style="width:' + Math.min(100, Math.round((x.value / max) * 100)) + '%"></i></span><strong>' + (x.known ? _num(x.value) : '—') + '</strong></div>').join('');
-    const period = (FBUSAGE.PERIODS.find(p => p.key === st.period) || {}).label || 'Selected period';
-    return '<details id="ocm-cons-trends" class="ocm-cons-section"><summary>Category totals · ' + OCUI.esc(period) + '</summary><div class="ocm-cons-trend-list">' + rows + '</div></details>';
-  }
-
-  function renderConsumables() {
-    const pane = document.getElementById('ocm-pane-consumables');
-    if (!pane) return;
-    if (!FBUSAGE.hasConfig()) {
-      pane.innerHTML = '<div class="ocm-cons-shell"><section class="ocm-cons-section" aria-labelledby="ocm-cons-setup-title"><div class="ocm-cons-section-head"><h4 id="ocm-cons-setup-title">Consumables setup</h4></div><div class="ocm-cons-empty"><strong>Connect your usage data</strong>Add your Google Sheet URL and read secret in Settings. A Torn API key enables optional API updates. Compare member counters across recorded periods, with missing data and partial history clearly marked.</div><div style="margin-top:10px"><button type="button" id="ocm-cons-settings" class="ocm-cons-action">⚙ Open Settings</button></div></section><div id="ocm-cons-status" class="ocm-cons-status" aria-live="polite">Not configured</div></div>';
-      document.getElementById('ocm-cons-settings')?.addEventListener('click', openSuiteConfig);
-      return;
-    }
-    const st = FBUSAGE.getState();
-    const fields = FBUSAGE.STAT_FIELDS.filter(f => f.type === 'counter');
-    const members = _consMembers(st, fields);
-    pane.innerHTML = '<div class="ocm-cons-shell">' + renderConsumablesHeader(st) + renderConsumablesPulse(st, fields, members) + renderConsumablesAttention(members, fields) + renderConsumablesLedger(members, fields) + renderConsumablesTrends(members, fields, st) + '</div>';
-    pane.querySelectorAll('.ocm-cons-period').forEach(b => b.addEventListener('click', () => { FBUSAGE.setPeriod(b.dataset.p); _consUi.page = 0; renderConsumables(); pane.querySelector('.ocm-cons-period.active')?.focus(); }));
-    document.getElementById('ocm-cons-settings')?.addEventListener('click', openSuiteConfig);
-    document.getElementById('ocm-cons-refresh')?.addEventListener('click', async () => {
-      if (_consUi.refreshing || FBUSAGE.getState().busy) return;
-      _consUi.refreshing = true;
-      _consUi.error = '';
-      const btn = document.getElementById('ocm-cons-refresh');
-      const status = document.getElementById('ocm-cons-status');
-      if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
-      if (status) status.textContent = 'Updating usage…';
-      try { const result = await FBUSAGE.refresh(); if (result === false) _consUi.error = 'Usage update failed. Check Settings and try again; previously loaded data is still shown.'; }
-      catch (_) { _consUi.error = 'Usage update failed — try again. Previously loaded data is still shown.'; }
-      finally { _consUi.refreshing = false; renderConsumables(); }
-    });
-    document.getElementById('ocm-cons-search')?.addEventListener('input', e => {
-      const pos = e.target.selectionStart;
-      _consUi.query = e.target.value;
-      _consUi.page = 0;
-      renderConsumables();
-      const next = document.getElementById('ocm-cons-search');
-      if (next) { next.focus(); try { next.setSelectionRange(pos, pos); } catch (_) {} }
-    });
-    document.getElementById('ocm-cons-sort')?.addEventListener('change', e => {
-      _consUi.sortKey = e.target.value;
-      _consUi.sortDir = e.target.value === 'name' ? 1 : -1;
-      _consUi.page = 0;
-      renderConsumables();
-      document.getElementById('ocm-cons-sort')?.focus();
-    });
-    for (const [id, change] of [['ocm-cons-prev', () => _consUi.page--], ['ocm-cons-next', () => _consUi.page++], ['ocm-cons-direction', () => { _consUi.sortDir *= -1; _consUi.page = 0; }]]) {
-      document.getElementById(id)?.addEventListener('click', () => { change(); renderConsumables(); document.getElementById(id)?.focus(); });
-    }
-    document.getElementById('ocm-cons-activity')?.addEventListener('change', e => { _consUi.activity = e.target.value; _consUi.page = 0; renderConsumables(); document.getElementById('ocm-cons-activity')?.focus(); });
-  }
-
-  function mountConsumablesInline() {
-    const pane = document.getElementById('ocm-pane-consumables');
-    if (!pane) return;
-    try { if (!document.getElementById('frostbite-usage-command')) FBUSAGE.init(); }
-    catch (e) { console.error('[OC Suite] Usage Command init failed', e); return; }
-    if (!_consMounted) { _consMounted = true; renderConsumables(); }
-  }
-
   // ── Armoury tab ──────────────────────────────────────────────────────────
   // A running ledger of faction-armoury activity, built from /v2/faction/news
   // (cat=armoryAction). Torn only serves recent entries per call, so we page
   // back on first load and merge new entries on refresh (dedup by news id),
   // persisting to GM storage. Aggregated per member into used / withdrew /
   // deposited / returned / filled totals, with profile pictures.
-  let _armMounted = false;
+  const _num  = n => Math.round(Number(n) || 0).toLocaleString('en-US');
+  const _nameLink = (name, id) => id
+    ? `<a href="/profiles.php?XID=${id}" target="_blank" style="color:var(--ocm-link);font-weight:600;text-decoration:none">${OCUI.esc(name)}</a>`
+    : `<span style="font-weight:600">${OCUI.esc(name)}</span>`;
+  // One grouped stat strip — big number + label + sub-label, divider between each. items: [{v,l1,l2,color}]
+  function _armOverview(items) {
+    const stat = it => `<div style="display:flex;flex-direction:column;gap:3px;min-width:92px"><span style="font-size:22px;font-weight:800;line-height:1${it.color ? ';color:' + it.color : ''}">${it.v}</span><span style="color:var(--ocm-text);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em">${it.l1}</span><span style="color:var(--ocm-text-faint);font-size:10.5px">${it.l2 || ''}</span></div>`;
+    const div = '<div style="width:1px;align-self:stretch;background:var(--ocm-border-soft)"></div>';
+    return `<div class="ocm-card" style="padding:14px 18px;margin-bottom:8px"><div style="display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start">${items.map(stat).join(div)}</div></div>`;
+  }
+  const _selStyle   = 'background:var(--ocm-bg);border:1px solid var(--ocm-border-soft);border-radius:8px;color:var(--ocm-text);padding:7px 10px;font-size:12px';
+  const _genBtnStyle = 'background:linear-gradient(180deg,#2ea0e6,#1c7fd0);border:none;color:#04121f;font-weight:800;border-radius:8px;padding:8px 16px;font-size:12.5px;cursor:pointer';
+  const _pillStyle = 'background:var(--ocm-bg);border:1px solid var(--ocm-border-soft);color:var(--ocm-text-dim);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer';
+  const _btnStyle  = 'background:var(--ocm-bg-card);border:1px solid var(--ocm-border-soft);color:var(--ocm-text-dim);border-radius:7px;padding:6px 11px;font-size:12px;cursor:pointer';
+  const _armMounted = new WeakSet();
   const ARM = (() => {
     const K_LEDGER = 'ocs_armory_ledger';   // { newsId: {ts, mid, name, cat, item, qty, toId, toName} }
     const K_PFP    = 'ocs_pfp_cache';        // { mid: {url, ts} }
@@ -14809,7 +12380,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       { key: 'filled',    label: 'Filled',    color: '#c7a3ff', sign:  0 },
       { key: 'other',     label: 'Other',     color: 'var(--ocm-text-dim)', sign: 0 },
     ];
-    const state = { view: 'log', member: null, fAction: 'all', fMember: 'all', q: '', page: 0, days: 'all', loading: false, note: '' };
+    const state = { view: 'log', member: null, fAction: 'all', fMember: 'all', q: '', page: 0, days: 'all', loading: false, loadState: 'idle', lastSync: 0, note: '' };
 
     const jget = (k) => { try { return JSON.parse(GM_getValue(k, '{}')) || {}; } catch { return {}; } };
     const jset = (k, v) => GM_setValue(k, JSON.stringify(v));
@@ -14848,7 +12419,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       return o;
     }
     async function sync(full) {
-      const key = GM_getValue(GMK.API_KEY, '');
+      const key = hubEffectiveTornKey();
       if (!key) throw new Error('Set your Torn API key in ⚙ Config first.');
       const ledger = loadLedger();
       // Refresh pages from newest until it meets known entries. Backfill RESUMES
@@ -14861,9 +12432,12 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       while (pages < maxPages) {
         const path = `/faction/news?cat=armoryAction&limit=100&sort=DESC${to ? '&to=' + to : ''}`;
         const j = await apiFetch(path, key);
-        const arr = Array.isArray(j?.news) ? j.news : [];
+        if (!Array.isArray(j?.news)) throw new Error('Invalid armory activity response.');
+        const arr = j.news;
         if (!arr.length) break;
         for (const e of arr) {
+          if (!e || !((typeof e.id === 'string' && e.id.trim()) || Number.isSafeInteger(e.id)) ||
+              !Number.isFinite(e.timestamp) || e.timestamp <= 0 || typeof e.text !== 'string') throw new Error('Invalid armory activity entry.');
           if (ledger[e.id]) { sawKnown = true; continue; }
           ledger[e.id] = { ts: e.timestamp, ...parse(e.text) };
           added++;
@@ -14905,7 +12479,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       const cache = jget(K_PFP);
       if (cache[mid] && cache[mid].url) return cache[mid].url;
       if (cachedOnly) return null;
-      const key = GM_getValue(GMK.API_KEY, '');
+      const key = hubEffectiveTornKey();
       if (!key) return null;
       try {
         const j = await apiFetch(`/user/${mid}?selections=profile`, key);
@@ -14968,10 +12542,12 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
   }
 
   function renderArmoury() {
+    const _ocViewState = captureOcViewState(document.getElementById('ocm-root'));
+    try {
     const pane = document.getElementById('ocm-pane-armoury');
     if (!pane) return;
     const st = ARM.state;
-    const key = GM_getValue(GMK.API_KEY, '');
+    const key = hubEffectiveTornKey();
     const head = OCUI.card({
       title: 'Armory',
       right: `<span id="ocm-arm-status" style="color:var(--ocm-text-faint);font-weight:500;font-size:12px">${OCUI.esc(st.note || '')}</span>`,
@@ -15032,12 +12608,21 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
     const status = pane.querySelector('#ocm-arm-status');
     if (status) { status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); }
     _armWire();
+    } finally { restoreOcViewState(_ocViewState); }
   }
 
   function _armLog() {
     const rows = ARM.entries().map(([id, e]) => ({ id, ...e })).filter(e => e.ts).sort((a, b) => b.ts - a.ts);
-    if (!rows.length) return OCUI.card({ title: '📜 Activity log', body: '<div style="color:var(--ocm-text-dim)">Nothing logged yet — hit <b>↻ Refresh</b> to pull recent armoury activity.</div>' });
     const st = ARM.state;
+    const failed = !st.loading && st.loadState === 'failed';
+    const unavailable = 'Armory activity unavailable. Use Refresh to try again.';
+    if (!rows.length) {
+      const status = st.loading ? 'Loading armory activity.' : failed ? unavailable : st.loadState === 'loaded'
+        ? 'No armory activity in the loaded history.'
+        : 'Armory activity has not been loaded. Use Refresh to load recent activity.';
+      return OCUI.card({ title: '📜 Activity log', body: `<p role="status">${status}</p>` });
+    }
+    const stale = failed ? `<p role="status"><span>${unavailable}</span> <span>Showing previously loaded activity.</span></p>` : '';
     const members = [...new Map(rows.filter(r => r.mid).map(r => [r.mid, r.name])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
     const q = st.q.trim().toLowerCase();
     const matched = rows.filter(r =>
@@ -15066,8 +12651,8 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       <td class="n"><b>${_num(r.qty || 1)}</b></td>
     </tr>`).join('');
     return OCUI.card({ title: '📜 Activity log', right: `${_num(shown.length)} shown`, body:
-      filters +
-      (shown.length ? `<div style="overflow-x:auto"><table class="ocm-members-table ocm-arm-log-table"><thead><tr><th class="n">When</th><th class="l">Member</th><th class="l">Action</th><th class="l">Item</th><th class="n">Qty</th></tr></thead><tbody>${body}</tbody></table></div>` : '<p role="status">No activity matches your filters. Try another period or clear your search.</p>') +
+      stale + filters +
+      (shown.length ? `<div style="overflow-x:auto"><table class="ocm-members-table ocm-arm-log-table"><thead><tr><th class="n">When</th><th class="l">Member</th><th class="l">Action</th><th class="l">Item</th><th class="n">Qty</th></tr></thead><tbody>${body}</tbody></table></div>` : '<p role="status">No activity matches your filters.</p><button id="ocm-arm-clear-filters" type="button">Clear filters</button>') +
       `<div class="ocm-arm-pager"><button id="ocm-arm-prev" type="button" ${st.page === 0 ? 'disabled' : ''}>Previous</button><span>${_num(matched.length)} matches · ${st.page + 1} / ${pages}</span><button id="ocm-arm-next" type="button" ${st.page >= pages - 1 ? 'disabled' : ''}>Next</button></div><p class="ocm-arm-intro">Counts cover loaded faction history only. Backfill loads older activity and uses additional API calls.</p>` });
   }
 
@@ -15148,7 +12733,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
     const { items, summary } = analyseOcItems(d.crimes, d.armory, d.itemNames, d.itemValues, d.memberNames);
     const active = items.filter(it => it.needed > 0);
     if (!active.length) return OCUI.card({ title: '🎯 OC item stock', body: '<div style="color:var(--ocm-text-dim)">No active OCs need items right now.</div>' });
-    const tiles = _warOverview([
+    const tiles = _armOverview([
       { v: _num(summary.totalHeld), l1: 'In stock', l2: 'items in armoury' },
       { v: _num(summary.armoryGaps), l1: 'Items short', l2: _num(summary.totalShortfall) + ' to buy', color: summary.armoryGaps ? 'var(--ocm-cpr-crit)' : 'var(--ocm-cpr-good)' },
       { v: '$' + _num(summary.coverCost), l1: 'Cost to cover', l2: 'at market value' },
@@ -15214,7 +12799,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
 
     const urgent = loans.filter(l => l.readyAt && (l.readyAt - now) < 6 * 3600);
     const later = loans.filter(l => !(l.readyAt && (l.readyAt - now) < 6 * 3600));
-    const tiles = _warOverview([
+    const tiles = _armOverview([
       { v: _num(loans.length), l1: 'To hand out', l2: loans.filter(l => l.inArmory).length + ' ready in armory', color: loans.length ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-good)' },
       { v: _num(urgent.length), l1: 'Urgent', l2: 'OC ready within 6h', color: urgent.length ? 'var(--ocm-cpr-crit)' : 'var(--ocm-text-dim)' },
       { v: _num(returnable.length), l1: 'Retrievable', l2: '$' + _num(returnable.reduce((s, r) => s + (r.value || 0), 0)) + ' idle', color: returnable.length ? 'var(--ocm-cpr-warn)' : 'var(--ocm-text-dim)' },
@@ -15259,6 +12844,11 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
 
   function _armWire() {
     document.getElementById('ocm-arm-config')?.addEventListener('click', () => document.getElementById('ocm-config-toggle')?.click());
+    document.getElementById('ocm-arm-clear-filters')?.addEventListener('click', () => {
+      Object.assign(ARM.state, { fAction: 'all', fMember: 'all', days: 'all', q: '', page: 0 });
+      renderArmoury();
+      document.getElementById('ocm-arm-q')?.focus({ preventScroll: true });
+    });
     document.getElementById('ocm-arm-days')?.addEventListener('change', event => { ARM.state.days = event.target.value; ARM.state.page = 0; renderArmoury(); });
     document.getElementById('ocm-arm-prev')?.addEventListener('click', () => { ARM.state.page--; renderArmoury(); });
     document.getElementById('ocm-arm-next')?.addEventListener('click', () => { ARM.state.page++; renderArmoury(); });
@@ -15272,7 +12862,9 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
     document.getElementById('ocm-arm-backfill')?.addEventListener('click', () => _armLoad(true));
     // Loan/retrieve buttons: record the intent + navigate to the item's row in place.
     wireLoanGoButtons(document.getElementById('ocm-pane-armoury'));
-    document.getElementById('ocm-arm-loan-copy')?.addEventListener('click', () => {
+    document.getElementById('ocm-arm-loan-copy')?.addEventListener('click', async () => {
+      const pane = document.getElementById('ocm-pane-armoury');
+      if (!pane?.isConnected) return;
       const now = Date.now() / 1000;
       const lines = (_armDataCache?.loans || []).map(l => {
         const h = l.readyAt ? (l.readyAt - now) / 3600 : null;
@@ -15280,7 +12872,26 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         return `• ${l.name} needs ${l.itemName} for ${l.ocName}${eta}${l.inArmory ? '' : ' — NOT in armory'}`;
       });
       if (!lines.length) { _armSetStatus('No pending loans to copy.'); return; }
-      _warCopy('Loans to hand out:\n' + lines.join('\n'), `Copied ${lines.length} loan${lines.length === 1 ? '' : 's'} for chat.`);
+      const text = 'Loans to hand out:\n' + lines.join('\n');
+      let copied = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        }
+      } catch (_) { /* Clipboard access varies by WebView and browser permissions. */ }
+      // Do not start a fallback copy or write status for a pane that was replaced.
+      if (!pane.isConnected || document.getElementById('ocm-pane-armoury') !== pane) return;
+      if (!copied) {
+        const field = document.createElement('textarea');
+        field.value = text;
+        field.style.cssText = 'position:fixed;left:-9999px';
+        document.body.appendChild(field);
+        field.select();
+        try { copied = document.execCommand('copy'); } catch (_) {}
+        finally { field.remove(); }
+      }
+      _armSetStatus(copied ? `Copied ${lines.length} loan${lines.length === 1 ? '' : 's'} for chat.` : 'Copy failed. The browser did not allow clipboard access.');
     });
   }
 
@@ -15291,10 +12902,13 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
     _armSetStatus(full ? 'backfilling…' : 'refreshing…');
     try {
       const { added, total, oldest } = await ARM.sync(full);
+      ARM.state.loadState = 'loaded';
+      if (!full) ARM.state.lastSync = Date.now();
       const back = oldest ? ' · back to ' + new Date(oldest * 1000).toLocaleDateString() : '';
       _armSetStatus(`${added ? '+' + _num(added) + ' new · ' : ''}${_num(total)} logged${back}`);
-    } catch (e) {
-      _armSetStatus(e.message || 'load failed');
+    } catch {
+      ARM.state.loadState = 'failed';
+      _armSetStatus(full ? 'Activity backfill failed.' : 'Activity refresh failed.');
     } finally {
       ARM.state.loading = false;
       renderArmoury();
@@ -15302,13 +12916,13 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
   }
 
   function mountArmouryInline() {
-    if (_armMounted) return;
     const pane = document.getElementById('ocm-pane-armoury');
-    if (!pane) return;
-    _armMounted = true;
+    if (!pane || _armMounted.has(pane)) return;
+    _armMounted.add(pane);
     renderArmoury();
-    // Auto-pull on first open if the ledger is empty.
-    if (!ARM.entries().length && GM_getValue(GMK.API_KEY, '')) _armLoad(false);
+    // An existing ledger may be weeks old. Refresh once per session on open,
+    // then at most once per five minutes when Torn replaces the suite pane.
+    if (hubEffectiveTornKey() && Date.now() - (ARM.state.lastSync || 0) > 300000) _armLoad(false);
   }
 
   function _ocmDiagBytes(bytes) {
@@ -15356,17 +12970,12 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       ${recent}`;
   }
 
-  function initDiagnosticsPanel() {
+  function initDiagnosticsPanel(setStatus) {
     const refresh = document.getElementById('ocm-diagnostics-refresh');
     const copy = document.getElementById('ocm-diagnostics-copy');
-    const setStatus = msg => {
-      const status = document.getElementById('ocm-cfg-status');
-      if (!status) return;
-      status.textContent = msg;
-      setTimeout(() => { if (status.textContent === msg) status.textContent = ''; }, 3000);
-    };
     refresh?.addEventListener('click', async () => {
       await OCBulkStore.usage();
+      if (!refresh.isConnected) return;
       renderDiagnosticsPanel();
       setStatus('Diagnostics refreshed ✓');
     });
@@ -15392,7 +13001,8 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
     // Match the normal crimes tab, OR the faction profile/your page when the
     // player is travelling/abroad (Torn strips the crimes tab in that state).
     function isOcTab() {
-      const isTraveling = document.body.dataset.traveling === 'true' || document.body.dataset.abroad === 'true';
+      const { traveling, abroad } = document.body?.dataset || {};
+      const isTraveling = traveling === 'true' || abroad === 'true';
       return location.href.includes('factions.php') && (
         location.hash.includes('tab=crimes') ||
         (isTraveling && (location.href.includes('step=profile') || location.href.includes('step=your')))
@@ -15402,26 +13012,25 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
     if (!_ocmInjectRouteHandler) {
       _ocmInjectRouteHandler = () => {
         if (!isOcTab()) {
-          clearInjectTimer();
+          clearInjectWait();
           return;
         }
         if (!document.getElementById('ocm-root')) inject();
       };
       window.addEventListener('hashchange', _ocmInjectRouteHandler);
     }
-    if (!isOcTab()) {
-      clearInjectTimer();
-      return;
-    }
-    clearInjectTimer();
-
-    const isTraveling = document.body.dataset.traveling === 'true' || document.body.dataset.abroad === 'true';
-
-    _ocmInjectTimer = setInterval(() => {
+    clearInjectWait();
+    const mount = () => {
       if (!isOcTab()) {
-        clearInjectTimer();
-        return;
+        clearInjectWait();
+        return true;
       }
+      if (document.getElementById('ocm-root')) {
+        clearInjectWait();
+        return true;
+      }
+      const { traveling, abroad } = document.body?.dataset || {};
+      const isTraveling = traveling === 'true' || abroad === 'true';
       const anchor = isTraveling
         ? (document.querySelector('#react-root') ||
            document.querySelector('.content-wrapper'))
@@ -15430,26 +13039,39 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
            document.querySelector('.content-wrapper')      ||
            document.querySelector('#mainContainer'));
 
-      if (!anchor) return;
-      clearInjectTimer();
+      if (!anchor?.parentNode) return false;
+      clearInjectWait();
 
       const root = buildRoot();
       anchor.parentNode.insertBefore(root, anchor);
+      const configStatus = root.querySelector('#ocm-cfg-status');
+      let configStatusTimer;
+      const setConfigStatus = (message, duration = 3000) => {
+        if (!configStatus?.isConnected) return;
+        clearTimeout(configStatusTimer);
+        configStatus.textContent = message;
+        configStatusTimer = setTimeout(() => { configStatus.textContent = ''; }, duration);
+      };
+      // Torn can replace the mounted pane without changing its URL. Watch only
+      // the root's ancestor child lists, not the busy dashboard subtree.
+      const detachObserver = new MutationObserver(() => {
+        if (root.isConnected) return;
+        detachObserver.disconnect();
+        clearTimeout(configStatusTimer);
+        inject();
+      });
+      for (let parent = root.parentNode; parent; parent = parent.parentNode) {
+        detachObserver.observe(parent, { childList: true });
+      }
       initCollapse();
       initTabs();
-      // War & Consumables tabs → mount their embedded modules INLINE in the pane (idempotent)
-      document.querySelector('#ocm-tabs .ocm-nav[data-tab="war"]')?.addEventListener('click', mountWarInline);
-      document.querySelector('#ocm-tabs .ocm-nav[data-tab="consumables"]')?.addEventListener('click', mountConsumablesInline);
+      initOcMobileUi(root);
       document.querySelector('#ocm-tabs .ocm-nav[data-tab="armoury"]')?.addEventListener('click', mountArmouryInline);
-      // initTabs may restore War/Consumables/Armoury as the active tab WITHOUT a click — mount it now so it isn't stuck on the stub.
-      const _activeTab = document.querySelector('#ocm-tabs .ocm-nav.active')?.dataset.tab;
-      if (_activeTab === 'war') mountWarInline();
-      else if (_activeTab === 'consumables') mountConsumablesInline();
-      else if (_activeTab === 'armoury') mountArmouryInline();
+      if (document.querySelector('#ocm-tabs .ocm-nav.active')?.dataset.tab === 'armoury') mountArmouryInline();
       initLegend();
       initShareConfig();
       initDynamicCollapse();
-      initDiagnosticsPanel();
+      initDiagnosticsPanel(setConfigStatus);
 
       // Apply saved theme immediately, then wire the selector
       const savedTheme = GM_getValue(GMK.THEME, 'default');
@@ -15539,11 +13161,12 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       // If launching already on custom, show editor open
       if (savedTheme === 'custom' && themeEditor) { themeEditor.style.display = 'block'; renderThemeEditor(); }
 
-      const savedKey = GM_getValue(GMK.API_KEY, '');
+      const savedKey = hubEffectiveTornKey();
       if (savedKey) {
         document.getElementById('ocm-api-input').value = '••••••••••••••••';
         document.getElementById('ocm-key-status').textContent = `Key saved ✓ · CPR ${CPR_WARN}%/${CPR_CRIT}% · W ${WEIGHT_HIGH}%/${WEIGHT_MID}% · ↻${REFRESH_S}s`;
-        loadData(savedKey);
+        if (hubBindingAwake() && !_ocmLoadInFlight) loadData(savedKey);
+        else hubBindingQueueRefresh();
         scheduleRefresh(savedKey);
       } else {
         // No key saved — open config panel automatically
@@ -15565,7 +13188,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         forceMemberEl.checked = GM_getValue(GMK.FORCE_MEMBER, false);
         forceMemberEl.addEventListener('change', () => {
           GM_setValue(GMK.FORCE_MEMBER, forceMemberEl.checked);
-          const k = GM_getValue(GMK.API_KEY, '');
+          const k = hubEffectiveTornKey();
           if (k) loadData(k);
         });
       }
@@ -15577,7 +13200,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         moneyEstEl.addEventListener('change', () => {
           GM_setValue(GMK.SHOW_MONEY_EST, moneyEstEl.checked);
           annotateNativeOcCards();   // Torn's own cards aren't part of the suite re-render
-          const k = GM_getValue(GMK.API_KEY, '');
+          const k = hubEffectiveTornKey();
           if (k) loadData(k);
         });
       }
@@ -15586,7 +13209,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       document.getElementById('ocm-save-key-btn').addEventListener('click', () => {
         const key = document.getElementById('ocm-api-input').value.trim();
         if (!key || key.startsWith('•')) {
-          const k = GM_getValue(GMK.API_KEY, '');
+          const k = hubEffectiveTornKey();
           if (k) { loadData(k); scheduleRefresh(k); }
           return;
         }
@@ -15607,9 +13230,8 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         const minPerDiff = Number(document.getElementById('ocm-cfg-min-per-diff').value)  ?? 2;
         saveConfig(warn, crit, wHigh, wMid, refresh, minPerDiff);
         document.getElementById('ocm-key-status').textContent = `Key saved ✓ · CPR ${CPR_WARN}%/${CPR_CRIT}% · W ${WEIGHT_HIGH}%/${WEIGHT_MID}% · ↻${REFRESH_S}s`;
-        document.getElementById('ocm-cfg-status').textContent = 'Saved ✓';
-        setTimeout(() => { document.getElementById('ocm-cfg-status').textContent = ''; }, 2000);
-        const key = GM_getValue(GMK.API_KEY, '');
+        setConfigStatus('Saved ✓', 2000);
+        const key = hubEffectiveTornKey();
         if (key) { scheduleRefresh(key); loadData(key); }
       });
 
@@ -15623,15 +13245,14 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         document.getElementById('ocm-cfg-refresh').value     = 60;
         document.getElementById('ocm-cfg-min-per-diff').value = 2;
         document.getElementById('ocm-key-status').textContent = `Key saved ✓ · CPR 70%/60% · W 25%/15% · ↻60s`;
-        document.getElementById('ocm-cfg-status').textContent = 'Reset to defaults ✓';
-        setTimeout(() => { document.getElementById('ocm-cfg-status').textContent = ''; }, 2000);
-        const key = GM_getValue(GMK.API_KEY, '');
+        setConfigStatus('Reset to defaults ✓', 2000);
+        const key = hubEffectiveTornKey();
         if (key) { scheduleRefresh(key); loadData(key); }
       });
 
       // Manual refresh button
       document.getElementById('ocm-refresh-btn').addEventListener('click', () => {
-        const key = GM_getValue(GMK.API_KEY, '');
+        const key = hubEffectiveTornKey();
         if (key) loadData(key);
       });
 
@@ -15783,16 +13404,12 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
-        document.getElementById('ocm-cfg-status').textContent = '✓ Debug snapshot downloaded';
-        setTimeout(() => { document.getElementById('ocm-cfg-status').textContent = ''; }, 3000);
+        setConfigStatus('✓ Debug snapshot downloaded');
       });
 
       document.getElementById('ocm-debug-copy-btn').addEventListener('click', () => {
         const json = JSON.stringify(buildDebugSnapshot(), null, 2);
-        const setStatus = (msg) => {
-          document.getElementById('ocm-cfg-status').textContent = msg;
-          setTimeout(() => { document.getElementById('ocm-cfg-status').textContent = ''; }, 3000);
-        };
+        const setStatus = setConfigStatus;
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(json).then(
             () => setStatus(`✓ Debug snapshot copied (${(json.length/1024).toFixed(1)} KB)`),
@@ -15821,15 +13438,6 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         document.getElementById('ocm-ts-key-input').value = '•'.repeat(16);
         const s = document.getElementById('ocm-ts-status'); s.textContent = 'Key saved ✓'; s.style.color = 'var(--ocm-cpr-good)';
       });
-      const _ffk = GM_getValue(GMK.FF_KEY, '');
-      if (_ffk) { document.getElementById('ocm-ff-key-input').value = '•'.repeat(16); document.getElementById('ocm-ff-status').textContent = 'Key saved ✓'; }
-      document.getElementById('ocm-ff-save-btn').addEventListener('click', () => {
-        const v = document.getElementById('ocm-ff-key-input').value.trim();
-        if (!v || v.charCodeAt(0) === 0x2022) return;
-        GM_setValue(GMK.FF_KEY, v);
-        document.getElementById('ocm-ff-key-input').value = '•'.repeat(16);
-        const out = document.getElementById('ocm-ff-status'); out.textContent = 'Key saved ✓'; out.style.color = 'var(--ocm-cpr-good)';
-      });
       document.getElementById('ocm-ts-fetch-btn').addEventListener('click', async () => {
         const k = GM_getValue(GMK.TS_KEY, ''), s = document.getElementById('ocm-ts-status');
         if (!k) { s.textContent = '⚠ Save key first'; s.style.color = 'var(--ocm-cpr-warn)'; return; }
@@ -15841,7 +13449,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
           s.textContent = '✓ ' + Object.keys(tsCprData).length + ' members loaded';
           s.style.color = 'var(--ocm-cpr-good)';
           // Re-render dashboard so OC cards pick up TS badges
-          const apiKey = GM_getValue(GMK.API_KEY, '');
+          const apiKey = hubEffectiveTornKey();
           if (apiKey) loadData(apiKey);
         } catch (e) {
           _tsLastFailAt = Date.now();  // Manual failure also triggers cooldown
@@ -15857,7 +13465,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
       document.getElementById('ocm-cpr-recache-btn')?.addEventListener('click', async () => {
         const btn = document.getElementById('ocm-cpr-recache-btn');
         const out = document.getElementById('ocm-cpr-recache-status');
-        const apiKey = GM_getValue(GMK.API_KEY, '');
+        const apiKey = hubEffectiveTornKey();
         const tsKey  = GM_getValue(GMK.TS_KEY, '');
         const orig = btn.textContent;
         btn.disabled = true; btn.textContent = '⏳ Rebuilding…';
@@ -15906,34 +13514,15 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         }
       });
 
-      // Consumables — Usage Command settings, read/written straight from localStorage
-      // (no FBUSAGE.init() on load, so the floating GUI never gets built here).
-      (function () {
-        const $save = document.getElementById('ocm-fu-save');
-        if (!$save) return;
-        const $sheet = document.getElementById('ocm-fu-sheet');
-        const $secret = document.getElementById('ocm-fu-secret');
-        const $key = document.getElementById('ocm-fu-key');
-        const $status = document.getElementById('ocm-fu-status');
-        const MASK = v => v && v.charCodeAt(0) === 0x2022;
-        const fs = _fuLoadSettings();
-        if ($sheet) $sheet.value = fs.sheetUrl || '';
-        if ($secret && fs.readSecret) $secret.value = '•'.repeat(16);
-        if ($key && fs.tornApiKey) $key.value = '•'.repeat(16);
-        $save.addEventListener('click', () => {
-          const patch = {};
-          if ($sheet) patch.sheetUrl = $sheet.value.trim();
-          if ($secret && !MASK($secret.value)) patch.readSecret = $secret.value.trim();
-          if ($key && !MASK($key.value)) patch.tornApiKey = $key.value.trim() || GM_getValue(GMK.API_KEY, '');
-          const next = _fuSaveSettings(patch);
-          if ($secret) $secret.value = next.readSecret ? '•'.repeat(16) : '';
-          if ($key) $key.value = next.tornApiKey ? '•'.repeat(16) : '';
-          if ($status) { $status.textContent = 'Saved ✓'; $status.style.color = 'var(--ocm-cpr-good)'; }
-          try { if (_consMounted) renderConsumables(); } catch (_) {}
-        });
-      })();
-
-    }, 500);
+      return true;
+    };
+    if (mount()) return;
+    _ocmInjectObserver = new MutationObserver(mount);
+    _ocmInjectObserver.observe(document.documentElement, {
+      childList: true, subtree: true, attributes: true,
+      attributeFilter: ['id', 'class', 'data-traveling', 'data-abroad'],
+    });
+    _ocmInjectTimer = setTimeout(clearInjectWait, 30_000);
   }
 
   // ─── SIDEBAR WIDGET ──────────────────────────────────────────────────────────
@@ -16026,7 +13615,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
         renderSidebarWidget();
       }, 1000);
 
-      const apiKey   = GM_getValue(GMK.API_KEY, '');
+      const apiKey   = hubEffectiveTornKey();
       const raw      = GM_getValue(GMK.SIDEBAR_CACHE, '');
       let cachedAt = 0;
       try { cachedAt = raw ? (JSON.parse(raw).cachedAt || 0) : 0; } catch (_) {}
@@ -16096,7 +13685,8 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
   }
 
   // ─── BOOT ────────────────────────────────────────────────────────────────────
-  inject();
+  // The generated Hub adapter initializes synchronously later in this script.
+  queueMicrotask(inject);
   initLoanAutofill();
   initArmoryAnnotations();
   mountNativeLoanList();
@@ -16110,6444 +13700,2201 @@ ${d.freeloaders.length ? `<div class="warn"><b>${_num(d.freeloaders.length)}</b>
   injectSidebar();
   fetchRoleWeights();
 
-  // ─── Embedded: Torn War Payout Report v2.12.0 — isolated module, launched from the War tab ───
-  const TWPR = (function () {
-    'use strict';
-
-    /* ============================================================
-     * Torn War Payout Report
-     * ------------------------------------------------------------
-     * WHY: The in-game war page only shows score per member, never
-     * a wins / losses / stalemates breakdown. That detail only
-     * exists in faction/attacks, which is capped at 100 rows per
-     * call, so we paginate across the whole war window, dedupe,
-     * classify each hit, and tally per member.
-     *
-     * Uses the stable v1 faction selections (attacks, rankedwars,
-     * basic). If Torn fully retires v1 for you, ping me and I'll
-     * port the request layer to v2 — only fetchJSON / parsing
-     * would change.
-     * ============================================================ */
-
-    const LS_KEY = 'twpr_apikey';
-    const LS_FABPOS = 'twpr_fabpos';
-    const LS_COLORS = 'twpr_colors';
-    const API_BASE = 'https://api.torn.com';
-    const REQ_DELAY_MS = 650;          // stay well under 100 req/min
-    const PAGE_HARD_LIMIT = 250;       // safety: max paginated calls (covers very large wars)
-    const PAGE_SIZE = 100;             // Torn's fixed attacks cap
-
-    // Result strings, bucketed from the ATTACKER's point of view.
-    const WIN_RESULTS = new Set(['Attacked', 'Mugged', 'Hospitalized', 'Arrested', 'Looted', 'Special']);
-    const LOSS_RESULTS = new Set(['Lost']);
-    const STALE_RESULTS = new Set(['Stalemate']);
-    const ESCAPE_RESULTS = new Set(['Escape', 'Timeout']);
-    const ASSIST_RESULTS = new Set(['Assist']);
-
-    // A ranked-war hit carries the war bonus (modifiers.war > 1). This is the
-    // most reliable "is this a war hit" signal — it holds even when the
-    // attacker stealthed and hid their faction, which is how enemy hits slip
-    // through faction-based matching.
-    function hasWarBonus(a) {
-        const m = a && a.modifiers;
-        if (!m) return false;
-        const w = Number(m.war);
-        return Number.isFinite(w) && w > 1;
-    }
-
-    /* ----------------------- tiny utils ----------------------- */
-    const $ = (sel, root = document) => root.querySelector(sel);
-    const fmt = (n) => Number(n || 0).toLocaleString('en-US');
-    const fmtMoney = (n) => '$' + Math.round(Number(n || 0)).toLocaleString('en-US');
-    const fmtMoneyShort = (n) => {
-        n = Number(n || 0);
-        if (!n) return '$0';
-        const abs = Math.abs(n), trim = (x) => String(Math.round(x * 100) / 100);
-        if (abs >= 1e9) return '$' + trim(n / 1e9) + 'b';
-        if (abs >= 1e6) return '$' + trim(n / 1e6) + 'm';
-        if (abs >= 1e3) return '$' + trim(n / 1e3) + 'k';
-        return '$' + n;
-    };
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-    // Anything from Torn (player names, item names, raw news text) is escaped
-    // before it reaches innerHTML — a name containing < or & would otherwise
-    // break the table it lands in.
-    const escHtml = (s) => String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
-    function gmGet(key, def) {
-        try {
-            if (typeof GM !== 'undefined' && GM.getValue) return GM.getValue(key, def);
-            if (typeof GM_getValue === 'function') return Promise.resolve(GM_getValue(key, def));
-        } catch (e) {}
-        try { const v = localStorage.getItem(key); return Promise.resolve(v === null ? def : v); }
-        catch (e) { return Promise.resolve(def); }
-    }
-    function gmSet(key, val) {
-        try {
-            if (typeof GM !== 'undefined' && GM.setValue) return GM.setValue(key, val);
-            if (typeof GM_setValue === 'function') { GM_setValue(key, val); return Promise.resolve(); }
-        } catch (e) {}
-        try { localStorage.setItem(key, val); } catch (e) {}
-        return Promise.resolve();
-    }
-
-    /* ------------------- 30-day report cache ------------------ */
-    const CACHE_PREFIX = 'twpr_cache_';
-    const CACHE_INDEX = 'twpr_cache_index';
-    const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;   // 30 days
-
-    function humanAge(ms) {
-        const s = Math.max(0, Math.floor(ms / 1000));
-        if (s < 60) return `${s}s`;
-        const m = Math.floor(s / 60); if (m < 60) return `${m}m`;
-        const h = Math.floor(m / 60); if (h < 24) return `${h}h`;
-        return `${Math.floor(h / 24)}d`;
-    }
-
-    async function cacheIndexGet() {
-        try { const raw = await gmGet(CACHE_INDEX, ''); return raw ? JSON.parse(raw) : []; }
-        catch (e) { return []; }
-    }
-    async function cacheIndexSet(arr) { try { await gmSet(CACHE_INDEX, JSON.stringify(arr)); } catch (e) {} }
-
-    /**
-     * Write a war's cache entry, MERGING with whatever is already stored.
-     *
-     * Three callers write here and each knows about a different slice: the
-     * attack pull knows the full report, the drug pull knows the drug data, and
-     * the multi-war sweep knows the drug data plus the official hit list but
-     * never scans attacks. A plain overwrite meant each one silently destroyed
-     * the others' work — pulling a fresh war report wiped that war's drug
-     * report, and the sweep couldn't cache anything at all for a war it hadn't
-     * seen before. Every argument is now optional and absent means "leave what
-     * is there", so the entry accumulates instead of thrashing.
-     */
-    async function cacheSave(war, report, attacksScanned, partial, drugs, official, od) {
-        // Deliberately reads storage directly rather than cacheLoad(): that
-        // rejects report-less entries, which is exactly what a drug-only sweep
-        // writes, and merging against null would erase it on the second pass.
-        let prev = null;
-        try {
-            const raw = await gmGet(CACHE_PREFIX + war.warId, '');
-            if (raw) prev = JSON.parse(raw);
-        } catch (e) { prev = null; }
-        if (prev && Date.now() - (prev.savedAt || 0) > CACHE_TTL_MS) prev = null;   // expired: don't revive it
-
-        const slim = (r) => ({
-            list: r.list,
-            totalHits: r.totalHits,
-            totalRespect: r.totalRespect,
-            totalLosses: r.totalLosses,
-            totalEnemyOn: r.totalEnemyOn,
-            totalStealthOn: r.totalStealthOn,
-            enemyReportHits: r.enemyReportHits != null ? r.enemyReportHits : null,
-        });
-
-        const payload = {
-            v: 2,
-            savedAt: Date.now(),
-            warId: war.warId,
-            oppName: war.oppName,
-            attacksScanned: attacksScanned != null ? attacksScanned : (prev ? prev.attacksScanned : 0),
-            partial: !!partial,
-            drugs: drugs || (prev ? prev.drugs : null) || null,
-            // Torn's official per-member hits. Immutable once a war has ended,
-            // so caching it makes a re-sweep of the same wars completely free.
-            official: official || (prev ? prev.official : null) || null,
-            od: od || (prev ? prev.od : null) || null,
-            report: report ? slim(report) : ((prev && prev.report) || null),
-        };
-        try { await gmSet(CACHE_PREFIX + war.warId, JSON.stringify(payload)); } catch (e) { return; }
-        const idx = (await cacheIndexGet()).filter(x => x.warId !== war.warId);
-        idx.push({ warId: war.warId, savedAt: payload.savedAt, oppName: war.oppName });
-        await cacheIndexSet(idx);
-    }
-
-    async function cacheLoad(warId) {
-        try {
-            const raw = await gmGet(CACHE_PREFIX + warId, '');
-            if (!raw) return null;
-            const p = JSON.parse(raw);
-            // A sweep-written entry has drug data and no attack report. Demanding
-            // a report here is what stopped those entries from ever being read
-            // back, so the sweep re-pulled the same armoury log every time.
-            // Callers that need the attack report must check `p.report` — and do.
-            if (!p || !p.savedAt || (!p.report && !p.drugs && !p.official)) return null;
-            if (Date.now() - p.savedAt > CACHE_TTL_MS) { await cacheDelete(warId); return null; }
-            return p;
-        } catch (e) { return null; }
-    }
-
-    async function cacheDelete(warId) {
-        try { await gmSet(CACHE_PREFIX + warId, ''); } catch (e) {}
-        const idx = await cacheIndexGet();
-        await cacheIndexSet(idx.filter(x => x.warId !== warId));
-    }
-
-    async function cachePrune() {
-        const idx = await cacheIndexGet();
-        const now = Date.now();
-        const keep = [];
-        for (const x of idx) {
-            if (now - x.savedAt > CACHE_TTL_MS) { try { await gmSet(CACHE_PREFIX + x.warId, ''); } catch (e) {} }
-            else keep.push(x);
-        }
-        await cacheIndexSet(keep);
-    }
-
-    async function cacheClearAll() {
-        const idx = await cacheIndexGet();
-        // The key list is built OUTSIDE the try. Wrapping the lookups too would
-        // let a mistyped constant throw a ReferenceError straight into an empty
-        // catch, and Clear would report success while quietly leaving the data
-        // exactly where it was — the worst possible outcome for a button whose
-        // entire job is to remove things.
-        const keys = [];
-        for (const x of idx) keys.push(CACHE_PREFIX + x.warId, OD_BASELINE_PREFIX + x.warId);
-        // The overdose snapshot cache is permanent BY DESIGN — a past day's
-        // count cannot change, so it is never re-read. That makes it the one
-        // store with no self-healing path: if Torn ever hands back a wrong
-        // value that survives the validation guards, nothing would ever ask
-        // again. Clear must reach it, or "clear the cache and retry" stops
-        // being true advice.
-        keys.push(OD_DAYS_KEY, OD_LIFE_KEY);
-        for (const k of keys) { try { await gmSet(k, ''); } catch (e) {} }
-        await cacheIndexSet([]);
-    }
-
-    // Dual-bind tap so buttons fire once on both TornPDA (touch) and desktop (click).
-    function bindTap(el, handler) {
-        let touched = false;
-        el.addEventListener('touchend', (e) => {
-            touched = true;
-            e.preventDefault();
-            handler(e);
-            setTimeout(() => { touched = false; }, 400);
-        }, { passive: false });
-        el.addEventListener('click', (e) => {
-            if (touched) return;
-            handler(e);
-        });
-    }
-
-    /* --------------------- network layer ---------------------- */
-    // GM_xmlhttpRequest with a fetch fallback so it works on both
-    // TornPDA and desktop without GM grant conflicts.
-    function rawRequest(url) {
-        return new Promise((resolve, reject) => {
-            const gmx = (typeof GM !== 'undefined' && GM.xmlHttpRequest) ? GM.xmlHttpRequest
-                      : (typeof GM_xmlhttpRequest === 'function') ? GM_xmlhttpRequest : null;
-            if (gmx) {
-                gmx({
-                    method: 'GET',
-                    url,
-                    timeout: 20000,
-                    onload: (res) => resolve(res.responseText),
-                    onerror: () => reject(new Error('Network error')),
-                    ontimeout: () => reject(new Error('Request timed out')),
-                });
-            } else {
-                fetch(url).then(r => r.text()).then(resolve).catch(reject);
-            }
-        });
-    }
-
-    // Torn error codes that are transient (server/rate-limit side) and worth
-    // retrying rather than aborting the whole pull. 5=too many requests,
-    // 8=IP temporarily blocked, 9=API temporarily disabled, 17=backend error.
-    const RETRYABLE_CODES = new Set([5, 8, 9, 17]);
-    const MAX_RETRIES = 4;
-
-    async function fetchJSON(selectionPath, params, key, attempt = 0) {
-        const qs = new URLSearchParams({ ...params, key }).toString();
-        const url = `${API_BASE}/${selectionPath}?${qs}`;
-
-        let text;
-        try {
-            text = await rawRequest(url);
-        } catch (e) {
-            // Network hiccup — retry a few times before giving up.
-            if (attempt < MAX_RETRIES) {
-                await sleep(700 * (attempt + 1));
-                return fetchJSON(selectionPath, params, key, attempt + 1);
-            }
-            throw e;
-        }
-
-        let data;
-        try { data = JSON.parse(text); }
-        catch (e) {
-            if (attempt < MAX_RETRIES) {
-                await sleep(700 * (attempt + 1));
-                return fetchJSON(selectionPath, params, key, attempt + 1);
-            }
-            throw new Error('Bad response from Torn API');
-        }
-
-        if (data && data.error) {
-            const code = Number(data.error.code);
-            if (RETRYABLE_CODES.has(code) && attempt < MAX_RETRIES) {
-                // Backoff grows each attempt; error 5 (rate limit) waits longer.
-                const base = code === 5 ? 2000 : 900;
-                await sleep(base * (attempt + 1));
-                return fetchJSON(selectionPath, params, key, attempt + 1);
-            }
-            throw new Error(`API error ${code}: ${data.error.error}`);
-        }
-        return data;
-    }
-
-    // v2 uses a different base and a path-style route, but the SAME key and the
-    // same error envelope, so the retry/backoff logic above is reused verbatim.
-    // Only the armoury news needs v2: v1's `armorynews` selection returns the
-    // most recent ~100 entries with no reliable forward cursor, so a busy war
-    // would silently lose everything older than the last hundred lines.
-    async function fetchV2(path, params, key, attempt = 0) {
-        const qs = new URLSearchParams({ ...params, key, comment: 'TWPR' }).toString();
-        const url = `${API_BASE}/v2/${path}?${qs}`;
-
-        let text;
-        try { text = await rawRequest(url); }
-        catch (e) {
-            if (attempt < MAX_RETRIES) { await sleep(700 * (attempt + 1)); return fetchV2(path, params, key, attempt + 1); }
-            throw e;
-        }
-
-        let data;
-        try { data = JSON.parse(text); }
-        catch (e) {
-            if (attempt < MAX_RETRIES) { await sleep(700 * (attempt + 1)); return fetchV2(path, params, key, attempt + 1); }
-            throw new Error('Bad response from Torn API (v2)');
-        }
-
-        if (data && data.error) {
-            const code = Number(data.error.code);
-            if (RETRYABLE_CODES.has(code) && attempt < MAX_RETRIES) {
-                const base = code === 5 ? 2000 : 900;
-                await sleep(base * (attempt + 1));
-                return fetchV2(path, params, key, attempt + 1);
-            }
-            throw new Error(`API error ${code}: ${data.error.error}`);
-        }
-        return data;
-    }
-
-    /* ------------------- war + attack pulls ------------------- */
-    async function getFactionContext(key) {
-        const data = await fetchJSON('faction/', { selections: 'basic,rankedwars' }, key);
-        const members = data.members || {};
-        const wars = data.rankedwars || {};
-        return {
-            factionId: data.ID,
-            factionName: data.name,
-            members,                  // { id: { name, ... } }
-            wars,                     // { warId: { factions:{...}, war:{start,end} } }
-        };
-    }
-
-    // Normalise the rankedwars object into a clean list, newest first.
-    function listWars(ctx) {
-        const out = [];
-        for (const warId of Object.keys(ctx.wars)) {
-            const w = ctx.wars[warId];
-            const factions = w.factions || {};
-            const ids = Object.keys(factions).map(Number);
-            const oppId = ids.find(id => id !== ctx.factionId);
-            const opp = factions[oppId] || {};
-            const me = factions[ctx.factionId] || {};
-            const war = w.war || {};
-            out.push({
-                warId,
-                start: war.start || 0,
-                end: war.end || 0,             // 0 means still running
-                oppId,
-                oppName: opp.name || `Faction ${oppId}`,
-                myScore: me.score || 0,
-                oppScore: opp.score || 0,
-                winner: war.winner,
-            });
-        }
-        out.sort((a, b) => (b.start || 0) - (a.start || 0));
-        return out;
-    }
-
-    // Loop faction/attacks across [from, to], advancing by timestamp.
-    // Returns { list, partial } — partial is true if a page ultimately failed
-    // after retries but some attacks were already collected.
-    async function pullAttacks(key, from, to, onProgress) {
-        const seen = new Map();        // attackId -> attack
-        let cursor = from;
-        let iterations = 0;
-        let emptyStreak = 0;
-        let partial = false;
-
-        // Walk forward by timestamp until we reach the war-end time (`to`) or
-        // the feed is genuinely exhausted. Do NOT stop on a partial (<100) page:
-        // Torn's per-call caching can return a short page mid-stream, and
-        // stopping there silently drops every later attack (incoming hits get
-        // hit hardest by this). We only stop on repeated empty pages, a stalled
-        // cursor, or reaching `to`.
-        while (iterations < PAGE_HARD_LIMIT) {
-            iterations++;
-            let data;
-            try {
-                data = await fetchJSON('faction/', {
-                    selections: 'attacks',
-                    from: cursor,
-                    to: to,
-                }, key);
-            } catch (e) {
-                // Already retried inside fetchJSON. If we've collected data,
-                // keep it and stop gracefully rather than losing everything.
-                if (seen.size > 0) { partial = true; break; }
-                throw e;
-            }
-
-            const batch = data.attacks || {};
-            const ids = Object.keys(batch);
-
-            if (ids.length === 0) {
-                // One empty page might just be the 30s cache; confirm with a
-                // second before giving up.
-                if (++emptyStreak >= 2) break;
-                cursor += 1;
-                await sleep(REQ_DELAY_MS);
-                continue;
-            }
-            emptyStreak = 0;
-
-            let newCount = 0;
-            let maxStarted = cursor;
-            for (const id of ids) {
-                const a = batch[id];
-                if (!seen.has(id)) { seen.set(id, a); newCount++; }
-                const ts = Number(a.timestamp_started || 0);
-                if (ts > maxStarted) maxStarted = ts;
-            }
-
-            if (onProgress) onProgress(seen.size, iterations);
-
-            // Reached (or passed) the end of the war window.
-            if (maxStarted >= to) break;
-
-            // Advance the cursor. If timestamps didn't move forward (a cluster
-            // of same-second attacks, or a stale cached page), nudge by 1s so we
-            // don't loop — the Map dedupes any overlap.
-            cursor = maxStarted > cursor ? maxStarted : cursor + 1;
-
-            // If a short page returned only duplicates AND the clock didn't move,
-            // we're genuinely done.
-            if (newCount === 0 && maxStarted <= cursor - 1) break;
-
-            await sleep(REQ_DELAY_MS);
-        }
-
-        return { list: Array.from(seen.values()), partial };
-    }
-
-    /* ==================== drug analyzer ======================== */
-    /* WHY THIS EXISTS: the API has no "who used what drug" selection. Torn only
-     * records armoury consumption as a line of NEWS TEXT, so the numbers below
-     * are parsed out of the faction's armoury log rather than read from a field.
-     *
-     * SCOPE — read this before trusting a zero:
-     *   · Only FACTION ARMOURY drugs are visible. A member who buys their own
-     *     Xanax and pops it never appears in the armoury log at all, so "0 taken"
-     *     means "took none of the faction's", NOT "took none".
-     *   · Torn prunes faction news. Recent wars parse fully; an old war can come
-     *     back thin or empty, which is why the pane reports the window it
-     *     actually covered instead of quietly showing zeroes.
-     */
-
-    // "iSatomi used one of the faction's Xanax items."  ← the standard phrasing.
-    // The apostrophe is matched as a CLASS, not a literal: Torn serves that line
-    // with a straight ', a curly ’, or the entity &#039; depending on the route,
-    // and a literal ' silently matched none of the entity-encoded ones — which
-    // would have dropped every use line and reported a clean faction.
-    const USE_ONE_RE = /used\s+one of the faction['’]?s\s+(.+?)\s+items?\b/i;
-    // Defensive fallback for any bulk/alternate wording Torn may emit.
-    const USE_QTY_RE = /used\s+(\d+)\s*x?\s+(.+?)(?:\s+items?)?(?:\s+from the faction)?\s*\.?$/i;
-
-    // Torn's news is HTML, so the text carries entities. Decode the handful that
-    // appear in item and player names before any matching happens.
-    function decodeEntities(s) {
-        return String(s)
-            .replace(/&#0?39;|&apos;|&rsquo;/gi, "'")
-            .replace(/&quot;/gi, '"')
-            .replace(/&amp;/gi, '&')
-            .replace(/&nbsp;/gi, ' ');
-    }
-
-    // Anything the game classes as a drug, so the pane can separate "Xanax" from
-    // "everything else" without a second API call for item categories.
-    const DRUG_ITEMS = new Set([
-        'xanax', 'ecstasy', 'cannabis', 'ketamine', 'lsd', 'opium', 'pcp',
-        'shrooms', 'speed', 'vicodin', 'love juice',
-    ]);
-    const isDrug = (item) => DRUG_ITEMS.has(String(item || '').trim().toLowerCase());
-
-    // Drugs leave the armoury two ways, and ONLY counting one of them badly
-    // understates the drain: a member can pull 40 Xanax out with "gave 40x Xanax
-    // to themselves" and swallow them from their own inventory, at which point
-    // the armoury log never mentions them again. Verified against a live log —
-    // one member withdrew 227x Xanax and scored 0 on a use-only count.
-    const TAKE_RE = /\b(?:gave|loaned)\s+(\d[\d,]*)\s*x?\s+(.+?)\s+to\s+(.+?)\s+from the faction armou?ry/i;
-    const DEPOSIT_RE = /\bdeposited\s+(\d[\d,]*)\s*x?\s+(.+?)\s*\.?$/i;
-    const qtyNum = (s) => Number(String(s).replace(/,/g, '')) || 1;
-
-    function parseArmoryUse(entry) {
-        const raw = decodeEntities(String(entry.text ?? entry.news ?? ''));
-        const plain = raw.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-        const ts = Number(entry.timestamp ?? entry.ts ?? 0);
-        // Every profile link in the line, in order. The FIRST is always the actor;
-        // for a "gave X to Y" line the SECOND is the recipient, and the recipient
-        // is who actually ends up holding the drugs.
-        const links = [...raw.matchAll(/XID=(\d+)[^>]*>([^<]+)</gi)].map(m => ({ uid: String(m[1]), name: m[2] }));
-        // A line with no links at all (plain-text news, or a scraped page) still
-        // names the actor first — take it from the text rather than losing the
-        // attribution. Without this, "X gave 227x Xanax to themselves" resolved
-        // to a phantom member literally called "themselves".
-        const leadName = plain.split(/\s+(?:used|gave|loaned|deposited|returned|retrieved|filled)\b/i)[0].trim();
-        const actor = links[0] || (leadName ? { uid: null, name: leadName } : null);
-
-        let m = plain.match(USE_ONE_RE);
-        if (m) return mk('use', m[1], 1);
-
-        m = plain.match(TAKE_RE);
-        if (m) {
-            // "to themselves" keeps the actor; a named recipient takes the credit.
-            const self = /\bthem\s?selves\b|\bthemself\b/i.test(m[3]);
-            const who = self ? actor : (links[1] || actor);
-            return {
-                kind: 'take', ts,
-                uid: who ? who.uid : null,
-                name: (who ? who.name : m[3]) || 'Unknown',
-                item: String(m[2]).trim(), qty: qtyNum(m[1]),
-                actorName: actor ? actor.name : null,
-            };
-        }
-
-        m = plain.match(DEPOSIT_RE);
-        if (m) return mk('deposit', m[2], qtyNum(m[1]));
-
-        m = plain.match(USE_QTY_RE);
-        if (m) return mk('use', m[2], qtyNum(m[1]));
-
-        return null;   // a retrieve/return/fill line — nothing to attribute
-
-        function mk(kind, item, qty) {
-            return {
-                kind, ts,
-                uid: actor ? actor.uid : null,
-                name: (actor ? actor.name : plain.split(/\s+(?:used|deposited)\b/i)[0].trim()) || 'Unknown',
-                item: String(item).trim(), qty,
-                actorName: actor ? actor.name : null,
-            };
-        }
-    }
-
-    // Cursor-walk the armoury log across [from, to]. Same shape as pullAttacks:
-    // ASCENDING from a timestamp cursor so a burst of 100+ entries in one window
-    // is caught up on the next page instead of being stepped over permanently.
-    async function pullArmoryNews(key, from, to, onProgress) {
-        const seen = new Map();
-        let cursor = from, iterations = 0, partial = false, emptyStreak = 0;
-
-        while (iterations < PAGE_HARD_LIMIT) {
-            iterations++;
-            let data;
-            try {
-                data = await fetchV2('faction/news', {
-                    cat: 'armoryAction', striptags: 'false',
-                    limit: PAGE_SIZE, sort: 'ASC', from: cursor, to,
-                }, key);
-            } catch (e) {
-                if (seen.size > 0) { partial = true; break; }
-                throw e;
-            }
-
-            const raw = data.news;
-            const list = Array.isArray(raw)
-                ? raw
-                : Object.entries(raw || {}).map(([id, n]) => (n && typeof n === 'object' ? { id, ...n } : { id, text: n }));
-
-            if (!list.length) { if (++emptyStreak >= 2) break; cursor += 1; await sleep(REQ_DELAY_MS); continue; }
-            emptyStreak = 0;
-
-            let maxTs = cursor, newCount = 0;
-            for (const n of list) {
-                const id = String(n.id ?? n.ID ?? '');
-                if (id && !seen.has(id)) { seen.set(id, n); newCount++; }
-                const ts = Number(n.timestamp ?? n.ts ?? 0);
-                if (ts > maxTs) maxTs = ts;
-            }
-            if (onProgress) onProgress(seen.size, iterations);
-
-            if (list.length < PAGE_SIZE) break;      // genuinely the last page
-            if (maxTs >= to) break;
-            // Nudge by a second when a whole page shares one timestamp, or we'd
-            // re-request the same window forever. The id Map dedupes the overlap.
-            cursor = maxTs > cursor ? maxTs : cursor + 1;
-            if (newCount === 0) break;
-            await sleep(REQ_DELAY_MS);
-        }
-
-        return { list: Array.from(seen.values()), partial };
-    }
-
-    // Fold parsed uses into per-member rows and join them to the war report, so
-    // "took 40 Xanax" sits next to "landed 3 hits" — which is the only view that
-    // answers the question anyone actually asks after a war.
-    /**
-     * Everything DERIVED from the raw per-member counters, in one place.
-     *
-     * Kept separate and re-run on every load because the 30-day cache stores the
-     * whole report object, booleans included. A cached report therefore carries
-     * whatever the build that created it decided — so a fix to this logic could
-     * never reach an existing report, and the first live run showed "ok" for
-     * seven members who took Xanax and landed nothing. Raw counts are FACTS worth
-     * caching; conclusions drawn from them are not.
-     */
-    function deriveDrugFlags(rows) {
-        const list = rows.map(r => {
-            const xanax = Number(r.xanax) || 0;
-            const xanTaken = Number(r.xanTaken) || 0;
-            const xanDeposited = Number(r.xanDeposited) || 0;
-            const hits = Number(r.hits) || 0;
-            // What actually left the armoury because of this member: swallowed
-            // on the spot PLUS pulled into their own inventory.
-            const drawn = xanax + xanTaken;
-            const net = xanDeposited - xanTaken;
-            // Someone who put MORE in than they drew out is stocking the armoury,
-            // not draining it — never flag them. Note the exemption is `stocker`
-            // and NOT `net < 0`: a member who simply swallowed 3 Xanax never
-            // withdrew or deposited, so net === 0, and `net < 0` excluded every
-            // one of them.
-            const stocker = xanDeposited > 0 && net >= 0;
-            return {
-                ...r, xanax, xanTaken, xanDeposited, hits, drawn, net, stocker,
-                // Both measured on SWALLOWED, matching the sweep: a withdrawal
-                // is stock movement whose fate the log never reveals, so it can
-                // neither flag a member nor drag their efficiency down. The old
-                // drawn-based flag branded the quartermaster "no hits" here
-                // while the sweep cleared them — same person, two verdicts.
-                hitsPerXan: xanax > 0 ? hits / xanax : null,
-                freeloader: xanax > 0 && hits === 0 && !stocker,
-            };
-        });
-        list.sort((a, b) => b.drawn - a.drawn || b.hits - a.hits);
-        return list;
-    }
-
-    /** Re-derive a cached report so old conclusions can't outlive a logic fix. */
-    function refreshDrugReport(d) {
-        if (!d || !Array.isArray(d.list)) return d;
-        d.list = deriveDrugFlags(d.list);
-        d.freeloaders = d.list.filter(r => r.freeloader);
-        d.totalDrawn = d.list.reduce((s, r) => s + r.drawn, 0);
-        d.takers = d.list.filter(r => r.drawn > 0).length;
-        return d;
-    }
-
-    /* ================= multi-war drug sweep ==================
-     * Checking one war answers "who wasted stock last week". Checking every
-     * war answers the question a leader actually has: WHO KEEPS DOING IT.
-     * A single bad war is a hospital stay; the same name flagged in four
-     * straight wars is a pattern, and nothing in the game shows it.
-     *
-     * The expensive part of a single-war run is the attack walk — hundreds of
-     * paginated calls to work out who landed hits. That cost is unacceptable
-     * multiplied across ten wars, and it is also unnecessary: Torn publishes
-     * the OFFICIAL per-member hit count on the ranked war report, one call per
-     * war, exact. So a sweep is ~1 report call + a short armoury walk per war
-     * rather than a full attack pull, and the hits it uses are Torn's own
-     * numbers rather than our reconstruction of them.
-     * ========================================================== */
-
-    /**
-     * Official per-member war stats for OUR faction, from the ranked war report.
-     * One call, exact, and available for any ENDED war.
-     *
-     * Returns null when the report does not exist yet — which is the normal
-     * state for a live war. That null matters: without hits, "took Xanax and
-     * landed nothing" is unprovable, so the sweep must refuse to flag anyone in
-     * that war rather than reporting everybody as a freeloader.
-     */
-    async function fetchWarMemberStats(key, warId, factionId) {
-        try {
-            const data = await fetchJSON(`torn/${warId}`, { selections: 'rankedwarreport' }, key);
-            const rep = data.rankedwarreport;
-            const f = rep && rep.factions && (rep.factions[factionId] || rep.factions[String(factionId)]);
-            if (!f || !f.members) return null;
-            const list = [];
-            for (const mid of Object.keys(f.members)) {
-                const m = f.members[mid] || {};
-                list.push({
-                    id: String(mid),
-                    name: m.name || `#${mid}`,
-                    wins: Number(m.attacks || 0),
-                    respect: Number(m.score || 0),
-                });
-            }
-            return list.length ? { list } : null;
-        } catch (e) { return null; }
-    }
-
-    /**
-     * Run the drug analysis across several wars.
-     *
-     * Per war the order is: cached drugs → live pull. Reusing the 30-day cache
-     * is what makes a ten-war sweep tolerable; a re-run of the same wars costs
-     * nothing at all.
-     *
-     * `hits` carries WHERE the hit numbers came from, because that decides
-     * whether flags in that war mean anything:
-     *   'report' — Torn's official war report. Exact.
-     *   'cache'  — a full attack pull we did earlier and stored.
-     *   'none'   — unavailable (live war). Nobody is flagged; the UI says so.
-     */
-    async function sweepWars(key, ctx, wars, opts, onProgress) {
-        const leadDays = Math.max(0, Math.min(14, Number(opts.leadDays) || 0));
-        const tailHours = Math.max(0, Math.min(72, Number(opts.tailHours) || 0));
-        const out = [];
-
-        for (let i = 0; i < wars.length; i++) {
-            const war = wars[i];
-            const step = (msg) => onProgress && onProgress(i + 1, wars.length, war, msg);
-            const warStart = war.start;
-            const warEnd = war.end && war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
-            const from = warStart - Math.round(leadDays * 86400);
-            const to = warEnd + Math.round(tailHours * 3600);
-
-            const cached = opts.useCache ? await cacheLoad(war.warId) : null;
-
-            // Hits first — a drug report built without them can't be flagged.
-            // Order matters: a full attack pull beats the official report, since
-            // it carries losses and defends the report never had.
-            let warReport = null, hitsSrc = 'none', freshOfficial = null;
-            if (cached && cached.report && cached.report.list && cached.report.list.length) {
-                warReport = cached.report; hitsSrc = 'cache';
-            } else if (cached && cached.official && cached.official.list && cached.official.list.length) {
-                // Already fetched on an earlier sweep. A finished war's report
-                // never changes, so re-reading it would be a wasted call.
-                warReport = cached.official; hitsSrc = 'report';
-            } else {
-                step('reading the official war report…');
-                const off = await fetchWarMemberStats(key, war.warId, ctx.factionId);
-                await sleep(REQ_DELAY_MS);
-                // Only cache-worthy once the war has ENDED. A live war's report
-                // is absent now and will exist later, so caching the miss would
-                // pin "no hit data" onto a war that is about to have some.
-                if (off) { warReport = off; hitsSrc = 'report'; if (warEnd < Math.floor(Date.now() / 1000)) freshOfficial = off; }
-            }
-
-            let drugs = null, fromCache = false, partial = false, cachedNow = false;
-            if (cached && cached.drugs && cached.drugs.list) {
-                // Re-derive rather than trust: a report cached before a flag fix
-                // must not keep publishing the old conclusion.
-                drugs = refreshDrugReport(cached.drugs);
-                fromCache = true;
-            } else {
-                step('pulling the armoury log…');
-                const pulled = await pullArmoryNews(key, from, to, (count, page) => {
-                    step(`armoury log — ${fmt(count)} entries (page ${page})`);
-                });
-                partial = pulled.partial;
-                drugs = buildDrugReport(ctx, warReport, pulled.list, { warStart, warEnd });
-                drugs.leadDays = leadDays; drugs.tailHours = tailHours;
-                drugs.pullFrom = from; drugs.pullTo = to;
-                // Fold into the same 30-day cache the single-war view uses, so a
-                // war analysed by the sweep never has to be pulled again — by
-                // the sweep OR by the single-war pane.
-                //
-                // `null` for the report is the important argument: the sweep has
-                // no attack data, and cacheSave now keeps whatever report is
-                // already stored rather than being handed a report-derived stub
-                // that would silently drop the losses, defends and stalemates
-                // the payout view depends on.
-                //
-                // A partial pull is deliberately NOT cached. Caching a log the
-                // API cut short would freeze an undercount in place for thirty
-                // days, and an undercount here means somebody's Xanax quietly
-                // goes missing from the totals.
-                if (!partial) {
-                    await cacheSave(war, null, null, false, drugs, freshOfficial);
-                    cachedNow = true;
-                }
-            }
-
-            // A war whose drugs came from cache may still be learning its
-            // official hits for the first time — store those on their own.
-            if (!cachedNow && freshOfficial) await cacheSave(war, null, null, false, null, freshOfficial);
-
-            out.push({ war, drugs, hitsSrc, fromCache, partial, cachedNow });
-        }
-        return out;
-    }
-
-    /* ================= the cost of a Xanax =====================
-     * A Xanax is 250 energy. A war hit costs 25. So one Xanax is worth exactly
-     * TEN HITS, and that single fact reframes the whole report.
-     *
-     * The first version of this counted waste as "all the Xanax drawn in wars
-     * where they landed nothing", which is wrong in both directions:
-     *
-     *   · It misses the real waste. Someone who draws 10 and lands 5 has burnt
-     *     2,375 energy for nothing — far more than someone who draws 1 and
-     *     lands 0 — yet only the second was ever flagged.
-     *   · It sets the bar at zero. "Landed SOME hits" became a pass mark, so a
-     *     member converting 6 hits per Xanax looked identical to one converting
-     *     10, when the first is wasting 40% of everything they take.
-     *
-     * Waste is therefore energy that left the armoury and never became a hit:
-     *
-     *     wasted energy = (Xanax x 250) - (hits x 25)
-     *
-     * TWO THINGS THIS DELIBERATELY DOES NOT CLAIM:
-     *
-     *   · It is never negative. Natural regen is roughly 19 hits a day of free
-     *     energy, so an active fighter lands far more than their Xanax paid
-     *     for. That is not "negative waste", it is just someone doing their
-     *     job, and it must not be allowed to cancel out somebody else's waste
-     *     in a faction total.
-     *   · Energy spent at the GYM is counted here as war waste, because from
-     *     the war's point of view it is. That is a judgement about the war, not
-     *     an accusation of theft, and the pane says so.
-     */
-    const ENERGY_PER_XANAX = 250;
-    const ENERGY_PER_HIT = 25;
-    const HITS_PER_XANAX = ENERGY_PER_XANAX / ENERGY_PER_HIT;   // 10 — the break-even
-
-    /** Energy drawn but never converted into a war hit. Never below zero. */
-    function wastedEnergy(drawn, hits) {
-        return Math.max(0, (Number(drawn) || 0) * ENERGY_PER_XANAX - (Number(hits) || 0) * ENERGY_PER_HIT);
-    }
-    /** The same figure in the unit people actually think in. */
-    const asXanax = (energy) => energy / ENERGY_PER_XANAX;
-
-    /**
-     * Fold the per-war reports into one row per member.
-     *
-     * Members are keyed by Torn ID where we have one, name otherwise — the same
-     * fallback the single-war builder uses, because a plain-text armoury line
-     * carries no profile link and would otherwise split one person into two.
-     *
-     * `flagged` only counts wars whose hits were actually known. A live war with
-     * no report contributes drug totals but can never contribute a flag.
-     */
-    function buildSweep(perWar) {
-        const rows = new Map();
-        const wars = perWar.map(p => ({
-            warId: p.war.warId,
-            oppName: p.war.oppName,
-            start: p.war.start,
-            hitsSrc: p.hitsSrc,
-            drawn: p.drugs ? p.drugs.totalDrawn || 0 : 0,
-            hits: p.drugs ? p.drugs.totalHits || 0 : 0,
-            entries: p.drugs ? p.drugs.entries || 0 : 0,
-            empty: !p.drugs || p.drugs.uses === 0,
-        }));
-
-        /* IDENTITY FIRST, and this is not a nicety.
-         *
-         * A row only carries a Torn ID when something resolved it — a profile
-         * link in the armoury line, or a match against that war's report. A war
-         * with NO report (live) and plain-text log lines yields the same person
-         * with an empty id, so keying naively splits them in two: "Blight 2/2"
-         * and "Blight 0/1" instead of one honest "Blight 2/3". Both the repeat
-         * count and the totals come out wrong, which is the whole finding.
-         *
-         * So: learn every name→id pairing across ALL wars first, then key
-         * through it. A name held by two different ids stays unresolved rather
-         * than merging two people — the same refusal-to-guess the payout
-         * matcher makes. */
-        const nameToId = new Map();
-        for (const p of perWar) {
-            for (const r of (p.drugs && p.drugs.list) || []) {
-                if (!r.id) continue;
-                const n = String(r.name).toLowerCase();
-                if (!nameToId.has(n)) nameToId.set(n, String(r.id));
-                else if (nameToId.get(n) !== String(r.id)) nameToId.set(n, null);   // ambiguous
-            }
-        }
-        const idOf = (r) => r.id ? String(r.id) : (nameToId.get(String(r.name).toLowerCase()) || '');
-
-        for (const p of perWar) {
-            if (!p.drugs || !p.drugs.list) continue;
-            const known = p.hitsSrc !== 'none';
-            for (const r of p.drugs.list) {
-                const uid = idOf(r);
-                const key = uid ? 'u' + uid : 'n' + String(r.name).toLowerCase();
-                if (!rows.has(key)) {
-                    rows.set(key, {
-                        id: uid, name: r.name,
-                        totalDrawn: 0, totalHits: 0, totalOther: 0,
-                        warsSeen: 0, warsTook: 0, warsFlagged: 0, warsFought: 0,
-                        warsKnown: 0, wastedE: 0, worstWar: null,
-                        totalUsed: 0, totalTaken: 0, totalDeposited: 0,
-                        per: {},
-                    });
-                }
-                const g = rows.get(key);
-                if (r.name && !String(g.name).startsWith('#')) g.name = g.name || r.name;
-                // "Landed nothing" has to mean SWALLOWED, never drawn — judging
-                // it on drawn flags the quartermaster for the crime of restocking
-                // the faction. r.freeloader is the drawn-based flag and must NOT
-                // be used here; the per-war cell and the member counter both read
-                // this single swallowed-based value so they can never disagree.
-                const swallowed = Number(r.xanax) || 0;
-                const flaggedWar = known && swallowed > 0 && r.hits === 0 && !r.stocker;
-                g.totalDrawn += r.drawn;
-                g.totalUsed += swallowed;
-                g.totalTaken += Number(r.xanTaken) || 0;
-                g.totalDeposited += Number(r.xanDeposited) || 0;
-                g.totalHits += r.hits;
-                g.totalOther += r.otherDrugs || 0;
-                g.warsSeen++;
-                if (known) g.warsKnown++;
-                if (r.drawn > 0) g.warsTook++;
-                if (r.hits > 0) g.warsFought++;
-                if (known) {
-                    // Waste is measured on EVERY known war, not only the ones
-                    // where they landed nothing — 10 Xanax for 5 hits is a
-                    // bigger loss than 1 for 0, and the old rule saw only the
-                    // second. See the energy model above.
-                    // swallowed — NOT r.drawn, which folds in withdrawals whose
-                    // fate the log never reveals again.
-                    const e = wastedEnergy(swallowed, r.hits);
-                    g.wastedE += e;
-                    if (e > 0 && (!g.worstWar || e > g.worstWar.energy)) {
-                        g.worstWar = { energy: e, drawn: swallowed, hits: r.hits,
-                                       opp: p.war.oppName, start: p.war.start };
-                    }
-                    if (flaggedWar) g.warsFlagged++;
-                }
-                g.per[p.war.warId] = {
-                    // used = swallowed. taken = moved into their own inventory.
-                    // Every judgement below is made on "used"; "taken" is
-                    // reported and never charged, because the armoury log never
-                    // mentions it again and cannot say what became of it.
-                    used: swallowed,
-                    taken: Number(r.xanTaken) || 0,
-                    drawn: r.drawn, hits: r.hits,
-                    flagged: flaggedWar,
-                    stocker: r.stocker, known,
-                };
-            }
-        }
-
-        const list = [...rows.values()].map(g => ({
-            ...g,
-            // A member whose ONLY wars are still live has no hit data at all.
-            // Their totals would compute to 0 and publish "landed nothing, 0.00
-            // efficiency" about someone we know nothing about — the same
-            // unknown-as-zero trap the per-war cells already refuse. Everything
-            // derived from hits is null for them, and the UI shows "?".
-            hitsKnown: g.warsKnown > 0,
-            avgHits: g.warsKnown > 0 ? g.totalHits / g.warsKnown : null,
-            // Both ratios are measured on what was SWALLOWED. A member who only
-            // ever withdrew has no measurable efficiency — not a zero one.
-            hitsPerXan: (g.warsKnown > 0 && g.totalUsed > 0) ? g.totalHits / g.totalUsed : null,
-            // Xanax-equivalents of energy that never became a hit, BEFORE any
-            // overdose is taken into account. applyOdExcuses derives the
-            // reported figure from this, so it can run repeatedly without
-            // subtracting the same excuse twice.
-            wastedRaw: g.warsKnown > 0 ? asXanax(g.wastedE) : null,
-            wasted: g.warsKnown > 0 ? asXanax(g.wastedE) : null,
-            excused: 0, warsExcused: 0, odWars: [],
-            // What share of what they drew was actually converted. 100% means
-            // every Xanax became ten hits; it can exceed 100% because natural
-            // regen is free energy, and that is not an error.
-            efficiency: (g.warsKnown > 0 && g.totalUsed > 0)
-                ? (g.totalHits / (g.totalUsed * HITS_PER_XANAX)) : null,
-            // Stock that left the armoury into someone's pocket and was never
-            // mentioned again. Reported, never charged as waste: the log simply
-            // cannot say what happened to it.
-            unaccounted: Math.max(0, g.totalTaken - g.totalDeposited),
-            // The whole point of the sweep. One flagged war is an anecdote.
-            repeat: g.warsFlagged >= 2,
-        }));
-        // Repeat offenders first — the reason anyone opened this view — then by
-        // how much stock they actually WASTED, not how much they drew. Ordering
-        // on totalDrawn put the faction's biggest contributor near the top for
-        // the crime of being active.
-        // Worst waste first. This is now a continuous measure, so it ranks the
-        // whole faction rather than only sorting the flagged to the top.
-        list.sort((a, b) => (b.wasted || 0) - (a.wasted || 0)
-                         || b.warsFlagged - a.warsFlagged || b.totalDrawn - a.totalDrawn);
-
-        return {
-            wars, list,
-            totalDrawn: list.reduce((s, r) => s + r.totalDrawn, 0),
-            totalHits: list.reduce((s, r) => s + r.totalHits, 0),
-            // Faction-wide waste: Xanax that left the armoury and produced
-            // nothing. The headline figure for this whole pane.
-            totalWasted: list.reduce((s, r) => s + (r.wasted || 0), 0),
-            totalExcused: 0,
-            odMembers: [],
-            totalUsed: list.reduce((s, r) => s + r.totalUsed, 0),
-            totalUnaccounted: list.reduce((s, r) => s + r.unaccounted, 0),
-            repeats: list.filter(r => r.repeat),
-            flaggedAny: list.filter(r => r.warsFlagged > 0),
-            unknownWars: wars.filter(w => w.hitsSrc === 'none'),
-            emptyWars: wars.filter(w => w.empty),
-        };
-    }
-
-    // `win` = { warStart, warEnd } — the ACTUAL fighting window. The news pull
-    // covers a wider span (build-up + tail), so every use is bucketed by when it
-    // happened rather than lumped together: stacking Xanax in the days before a
-    // war is the intended behaviour, and a leader needs to see it SEPARATELY
-    // from mid-war use, not blended into one number that hides both.
-    function buildDrugReport(ctx, warReport, newsEntries, win) {
-        const warStart = Number(win && win.warStart) || 0;
-        const warEnd = Number(win && win.warEnd) || Infinity;
-        const phaseOf = (ts) => (ts < warStart ? 'pre' : ts > warEnd ? 'post' : 'war');
-
-        const uses = [];
-        const kinds = { use: 0, take: 0, deposit: 0 };
-        const unrecognised = [];
-        let unparsed = 0;
-        for (const n of newsEntries) {
-            const u = parseArmoryUse(n);
-            if (u) { uses.push(u); kinds[u.kind] = (kinds[u.kind] || 0) + 1; }
-            else {
-                unparsed++;
-                // Keep a few samples. If a phrasing this script doesn't know ever
-                // starts carrying real drug movement, the footer will show it
-                // rather than silently under-reporting the total.
-                if (unrecognised.length < 5) {
-                    unrecognised.push(String(n.text ?? n.news ?? '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 80));
-                }
-            }
-        }
-
-        // Hits, keyed by both id and lowercased name — the news link gives us an
-        // id most of the time, but a plain-text line only gives a name.
-        const hitsById = new Map(), hitsByName = new Map();
-        for (const r of (warReport ? warReport.list : [])) {
-            hitsById.set(String(r.id), r);
-            hitsByName.set(String(r.name).toLowerCase(), r);
-        }
-
-        const rows = new Map();
-        const itemTotals = new Map();
-        const ensure = (uid, name) => {
-            const key = uid ? 'u' + uid : 'n' + String(name).toLowerCase();
-            if (!rows.has(key)) {
-                const member = (uid && hitsById.get(uid)) || hitsByName.get(String(name).toLowerCase()) || null;
-                rows.set(key, {
-                    id: uid || (member ? member.id : ''),
-                    name: (member && member.name) || name,
-                    xanax: 0, xanPre: 0, xanWar: 0, xanPost: 0,
-                    xanTaken: 0, xanDeposited: 0, drugTaken: 0,
-                    otherDrugs: 0, nonDrug: 0, total: 0,
-                    byItem: {},
-                    hits: member ? member.wins : 0,
-                    respect: member ? member.respect : 0,
-                    inFaction: !!(uid && ctx.members[uid]) || !!member,
-                });
-            }
-            return rows.get(key);
-        };
-
-        let firstTs = 0, lastTs = 0;
-        for (const u of uses) {
-            const row = ensure(u.uid, u.name);
-            const item = u.item;
-            const lower = item.toLowerCase();
-
-            // Withdrawals and deposits are stock MOVEMENT, never consumption.
-            // Blending them into "used" would rank whoever restocks the armoury
-            // as its heaviest abuser — the live log has a leader who deposited
-            // 300 Xanax and drew 227 back, i.e. a net contributor of 73.
-            if (u.kind === 'take') {
-                if (lower === 'xanax') row.xanTaken += u.qty;
-                else if (isDrug(item)) row.drugTaken += u.qty;
-                continue;
-            }
-            if (u.kind === 'deposit') {
-                if (lower === 'xanax') row.xanDeposited += u.qty;
-                continue;
-            }
-
-            row.byItem[item] = (row.byItem[item] || 0) + u.qty;
-            row.total += u.qty;
-            if (lower === 'xanax') {
-                row.xanax += u.qty;
-                const p = phaseOf(u.ts);
-                if (p === 'pre') row.xanPre += u.qty;
-                else if (p === 'post') row.xanPost += u.qty;
-                else row.xanWar += u.qty;
-            }
-            else if (isDrug(item)) row.otherDrugs += u.qty;
-            else row.nonDrug += u.qty;
-            itemTotals.set(item, (itemTotals.get(item) || 0) + u.qty);
-            if (!firstTs || u.ts < firstTs) firstTs = u.ts;
-            if (u.ts > lastTs) lastTs = u.ts;
-        }
-
-        // Members who fought but drew nothing from the armoury still belong in
-        // the table — "0 taken, 62 hits" is a finding, not an absence of data.
-        for (const r of (warReport ? warReport.list : [])) {
-            if (!r.wins) continue;
-            const key = 'u' + String(r.id);
-            if (!rows.has(key) && !rows.has('n' + String(r.name).toLowerCase())) {
-                rows.set(key, {
-                    id: r.id, name: r.name, xanax: 0, xanPre: 0, xanWar: 0, xanPost: 0,
-                    xanTaken: 0, xanDeposited: 0, drugTaken: 0, otherDrugs: 0, nonDrug: 0,
-                    total: 0, byItem: {}, hits: r.wins, respect: r.respect, inFaction: true,
-                });
-            }
-        }
-
-        const list = deriveDrugFlags(Array.from(rows.values()));
-
-        const totalXan = list.reduce((s, r) => s + r.xanax, 0);
-        const totalHits = list.reduce((s, r) => s + r.hits, 0);
-        return {
-            list,
-            totalXan,
-            totalXanPre: list.reduce((s, r) => s + r.xanPre, 0),
-            totalXanWar: list.reduce((s, r) => s + r.xanWar, 0),
-            totalXanPost: list.reduce((s, r) => s + r.xanPost, 0),
-            totalXanTaken: list.reduce((s, r) => s + r.xanTaken, 0),
-            totalXanDeposited: list.reduce((s, r) => s + r.xanDeposited, 0),
-            totalDrawn: list.reduce((s, r) => s + r.drawn, 0),
-            warStart, warEnd,
-            totalHits,
-            totalOtherDrugs: list.reduce((s, r) => s + r.otherDrugs, 0),
-            takers: list.filter(r => r.xanax > 0).length,
-            freeloaders: list.filter(r => r.freeloader),
-            hitsPerXan: totalXan > 0 ? totalHits / totalXan : null,
-            items: Array.from(itemTotals.entries()).sort((a, b) => b[1] - a[1]),
-            entries: newsEntries.length,
-            uses: uses.length,
-            kinds, unrecognised,
-            unparsed,
-            firstTs, lastTs,
-        };
-    }
-
-    /* ==================== overdose check ======================
-     * "They took 12 Xanax and landed nothing" has an innocent explanation more
-     * often than people assume, and the most common one is an OVERDOSE — an OD
-     * puts you in hospital for hours and ends your war.
-     *
-     * Torn publishes `overdosed` on personalstats, which ANY key can read for
-     * ANY player (same number as the Personal Stats tab of their profile). But
-     * that counter is LIFETIME. "Has OD'd 4 times ever" is not evidence that one
-     * happened during your war, and reporting it as though it were would put a
-     * false accusation in front of a leader. So this reports one of four things
-     * and never blurs them:
-     *
-     *   delta     — an OD count from BEFORE the war compared to AFTER it.
-     *               Proof. Says how many.
-     *   baseline  — no history yet; today's count is stored so the NEXT check
-     *               can produce a real delta. Answers nothing this run.
-     *   lifetime  — only the all-time count is available. Explicitly not a
-     *               claim about this war.
-     *   error     — the lookup failed. Say so rather than implying "clean".
-     */
-
-    const OD_BASELINE_PREFIX = 'twpr_od_';
-
-    // Torn has moved this field's name and nesting between API revisions
-    // (`overdosed`, `overdoses`, nested under a drugs group in v2). Rather than
-    // hard-coding one shape and silently reading undefined — which would report
-    // every member as having zero ODs — walk the response for any key that looks
-    // like an overdose count and take the first number found.
-    function pluckOverdoses(obj, depth = 0) {
-        if (obj == null || depth > 5) return null;
-        if (Array.isArray(obj)) {
-            for (const v of obj) {
-                // v2's stat= form returns [{name:'overdoses', value:N}]
-                if (v && typeof v === 'object' && /overdos/i.test(String(v.name || v.stat || ''))) {
-                    const n = Number(v.value ?? v.total);
-                    if (Number.isFinite(n)) return n;
-                }
-                const hit = pluckOverdoses(v, depth + 1);
-                if (hit != null) return hit;
-            }
-            return null;
-        }
-        if (typeof obj !== 'object') return null;
-        for (const [k, v] of Object.entries(obj)) {
-            if (/overdos/i.test(k) && Number.isFinite(Number(v))) return Number(v);
-        }
-        for (const v of Object.values(obj)) {
-            const hit = pluckOverdoses(v, depth + 1);
-            if (hit != null) return hit;
-        }
-        return null;
-    }
-
-    /* ================= overdose snapshot cache ==================
-     * A member's overdose count ON A PAST DAY CANNOT CHANGE. It is a historical
-     * fact, so once read it never needs reading again — not for this war, not
-     * for the next one, not ever. That makes the OD check almost free after its
-     * first run, and it makes checking five wars cost far less than five times
-     * one war, because neighbouring wars share boundary days.
-     *
-     * Two rules keep the cache honest, and the second one is the important one:
-     *
-     *   · Only PAST days are stored. Today's count can still go up, so caching
-     *     it would freeze a number that is still moving.
-     *
-     *   · A ZERO is only stored when the member's lifetime count is also zero.
-     *     Torn's timestamped personalstats returns 0 instead of an error, and a
-     *     false zero written to a permanent cache would clear an unchecked
-     *     member forever — the worst thing this feature can do, made permanent.
-     *     A genuine never-OD'd member still caches fine, because their lifetime
-     *     is zero too.
-     */
-    const OD_DAYS_KEY = 'twpr_od_days';       // { uid: { 'YYYY-MM-DD': count } }
-    const OD_LIFE_KEY = 'twpr_od_life';       // { uid: { v, at } } — lifetime, TTL'd
-    const OD_LIFE_TTL_MS = 6 * 60 * 60 * 1000;
-
-    async function loadOdDays() {
-        try { const raw = await gmGet(OD_DAYS_KEY, ''); return raw ? JSON.parse(raw) : {}; }
-        catch (e) { return {}; }
-    }
-    async function saveOdDays(map) {
-        try { await gmSet(OD_DAYS_KEY, JSON.stringify(map)); } catch (e) {}
-    }
-    async function loadOdLife() {
-        try { const raw = await gmGet(OD_LIFE_KEY, ''); return raw ? JSON.parse(raw) : {}; }
-        catch (e) { return {}; }
-    }
-    async function saveOdLife(map) {
-        try { await gmSet(OD_LIFE_KEY, JSON.stringify(map)); } catch (e) {}
-    }
-
-    /** Is this day finished, and therefore safe to remember? */
-    const odDayIsPast = (day, nowSec) => day < dayOfTs(nowSec || Math.floor(Date.now() / 1000));
-
-    /** Store a reading, or decline to. See the two rules above. */
-    function odDaysPut(map, uid, day, val, lifetime, nowSec) {
-        if (!Number.isFinite(val)) return false;
-        if (!odDayIsPast(day, nowSec)) return false;
-        if (val === 0 && Number(lifetime) > 0) return false;   // the false-zero guard
-        (map[uid] || (map[uid] = {}))[day] = val;
-        return true;
-    }
-
-    async function loadOdBaseline(warId) {
-        try { const raw = await gmGet(OD_BASELINE_PREFIX + warId, ''); return raw ? JSON.parse(raw) : {}; }
-        catch (e) { return {}; }
-    }
-    async function saveOdBaseline(warId, map) {
-        try { await gmSet(OD_BASELINE_PREFIX + warId, JSON.stringify(map)); } catch (e) {}
-    }
-
-    /*
-     * Historical personal stats. Request shape and timing conventions are lifted
-     * from the Frostbite backend, which learned them the hard way:
-     *
-     *   · It is **v1** — user/{id}?selections=personalstats&stat=&timestamp=.
-     *     The v2 route this originally used returned nothing, which is why every
-     *     member came back "unknown" on the first live run.
-     *   · 02:00 UTC, not midday. Torn stores these at Torn City midnight and
-     *     returns the CLOSEST one, so midday is exactly equidistant between two
-     *     days — when it resolves forward you silently get the next day's numbers
-     *     and every delta comes out zero.
-     *   · A query for day D returns the value as of the END of D. Measured
-     *     directly by the Frostbite team: a live reading on 07-18 matched the
-     *     timestamped query for 07-17.
-     */
-    const dayOfTs = (ts) => new Date(ts * 1000).toISOString().slice(0, 10);
-    const dayShift = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
-    const dayToEpoch = (day) => Math.floor(Date.parse(day + 'T02:00:00Z') / 1000);
-
-    /**
-     * One day's overdose count. Answers from cache when it can — a past day is
-     * immutable, so a cached reading is as good as a fresh one and costs
-     * nothing. `st` accumulates {calls, hits} so the caller can report savings.
-     */
-    async function odAtDay(key, uid, day, ctx) {
-        const cached = ctx && ctx.days[uid] && ctx.days[uid][day];
-        if (Number.isFinite(cached)) { if (ctx) ctx.hits++; return cached; }
-        try {
-            const data = await fetchJSON(`user/${uid}`, {
-                selections: 'personalstats', stat: 'overdosed', timestamp: dayToEpoch(day),
-            }, key);
-            if (ctx) ctx.calls++;
-            const v = pluckOverdoses(data && (data.personalstats || data));
-            if (ctx && odDaysPut(ctx.days, uid, day, v, ctx.life[uid], ctx.nowSec)) ctx.dirty = true;
-            return v;
-        } catch (e) { if (ctx) ctx.calls++; return null; }
-    }
-
-    async function checkOverdoses(key, members, war, onProgress) {
-        const baseline = await loadOdBaseline(war.warId);
-        const nowSec = Math.floor(Date.now() / 1000);
-        const warEnded = war.end && war.end > 0 && war.end < nowSec;
-        const out = {};
-        let done = 0;
-
-        // Shared across every member in this run AND across runs.
-        const days = await loadOdDays();
-        const lifeCache = await loadOdLife();
-        const ctx = { days, life: {}, nowSec, calls: 0, hits: 0, dirty: false };
-
-        for (const m of members) {
-            if (onProgress) onProgress(++done, members.length, m.name);
-
-            // Lifetime count first — every other reading is validated against it.
-            // Short TTL rather than permanent: unlike a dated snapshot this one
-            // genuinely moves, and a stale high value would mask a real OD.
-            let lifetime = null, err = null;
-            const lc = lifeCache[m.id];
-            if (lc && Number.isFinite(lc.v) && (nowSec * 1000 - lc.at) < OD_LIFE_TTL_MS) {
-                lifetime = lc.v;
-                ctx.hits++;
-            } else {
-                try {
-                    const v1 = await fetchJSON(`user/${m.id}`, { selections: 'personalstats' }, key);
-                    ctx.calls++;
-                    lifetime = pluckOverdoses(v1 && v1.personalstats);
-                    if (Number.isFinite(lifetime)) lifeCache[m.id] = { v: lifetime, at: nowSec * 1000 };
-                } catch (e) { err = e.message; ctx.calls++; }
-            }
-            ctx.life[m.id] = lifetime;
-
-            if (lifetime == null) {
-                out[m.id] = { mode: 'error', err: err || 'no overdose field in the response' };
-                await sleep(REQ_DELAY_MS);
-                continue;
-            }
-
-            // A lifetime total of zero settles it outright: they have never
-            // overdosed, so they certainly did not overdose during this war.
-            // Two dated lookups per member skipped, which is what makes
-            // checking a whole roster affordable rather than a six-minute wait.
-            if (lifetime === 0) {
-                out[m.id] = { mode: 'delta', ods: 0, before: 0, after: 0, lifetime: 0 };
-                baseline[m.id] = 0;
-                continue;
-            }
-
-            // Best case: ask Torn what the count was on each side of the war.
-            // A query for day D holds the value as of the END of D, so the
-            // "before" reading is the day BEFORE the war started.
-            let before = null, after = null;
-            if (warEnded) {
-                // Pacing is skipped on a cache hit — there is no request to pace.
-                const bDay = dayShift(dayOfTs(war.start), -1);
-                const hadB = ctx.hits;
-                before = await odAtDay(key, m.id, bDay, ctx);
-                if (ctx.hits === hadB) await sleep(REQ_DELAY_MS);
-
-                const aDay = dayOfTs(war.end);
-                const hadA = ctx.hits;
-                after = await odAtDay(key, m.id, aDay, ctx);
-                if (ctx.hits === hadA) await sleep(REQ_DELAY_MS);
-
-                // Torn sometimes has no snapshot yet for a very recent day. One
-                // step forward is worth trying before giving up on the delta.
-                if (!Number.isFinite(after)) {
-                    const hadA2 = ctx.hits;
-                    after = await odAtDay(key, m.id, dayShift(aDay, 1), ctx);
-                    if (ctx.hits === hadA2) await sleep(REQ_DELAY_MS);
-                }
-            }
-
-            /*
-             * THE TRAP, and the reason this guard exists: Torn's timestamped
-             * personalstats has a documented habit of returning 0 for everything
-             * rather than an error. Taken at face value that reads 0 → 0 = "no
-             * overdose", and the script would CLEAR a member it never actually
-             * checked — the single worst outcome this feature can produce.
-             * Someone with 65 lifetime ODs did not have 0 before the war.
-             */
-            const zeroSuspect = before === 0 && after === 0 && lifetime > 0;
-            if (zeroSuspect || (Number.isFinite(after) && after > lifetime)) {
-                before = after = null;
-                // Whatever nonsense produced that must not be remembered. The
-                // cache-write guard already refuses a false zero, but an
-                // above-lifetime reading is a different failure and gets purged
-                // here so a re-check genuinely re-asks rather than replaying it.
-                if (days[m.id]) {
-                    delete days[m.id][dayShift(dayOfTs(war.start), -1)];
-                    delete days[m.id][dayOfTs(war.end)];
-                    ctx.dirty = true;
-                }
-            }
-
-            if (Number.isFinite(before) && Number.isFinite(after) && after >= before) {
-                out[m.id] = { mode: 'delta', ods: after - before, before, after, lifetime };
-            } else if (Number.isFinite(baseline[m.id]) && lifetime >= baseline[m.id]) {
-                // A snapshot we took on an earlier run gives a real delta too,
-                // just anchored to when we first looked rather than to the war.
-                out[m.id] = { mode: 'baseline', ods: lifetime - baseline[m.id],
-                              before: baseline[m.id], after: lifetime, lifetime,
-                              since: baseline.__at || null };
-            } else {
-                out[m.id] = { mode: 'lifetime', lifetime };
-            }
-
-            baseline[m.id] = lifetime;      // anchor the next check
-            await sleep(REQ_DELAY_MS);
-        }
-
-        baseline.__at = nowSec;
-        await saveOdBaseline(war.warId, baseline);
-        if (ctx.dirty) await saveOdDays(days);
-        await saveOdLife(lifeCache);
-        // Non-enumerable so it can ride along without appearing as a member id
-        // to anything that iterates the results — odCell would try to render it.
-        Object.defineProperty(out, '__stats', { value: { calls: ctx.calls, hits: ctx.hits }, enumerable: false });
-        return out;
-    }
-
-    /* --------------------- classification --------------------- */
-    function blankRow(id, name) {
-        return {
-            id, name,
-            wins: 0,          // offensive WAR HITS (successful hits on the enemy)
-            offLost: 0,       // offensive: attacked the enemy and lost
-            stalemates: 0,    // offensive stalemates vs enemy
-            assists: 0,
-            respect: 0,
-            lossAll: 0,       // DEFENSIVE: beaten by ANYONE during the war window
-            lossEnemy: 0,     // DEFENSIVE: beaten specifically by the enemy faction (subset of lossAll)
-            enemyOn: 0,       // DEFENSIVE: incoming attacks confirmed from the enemy faction
-            stealthOn: 0,     // DEFENSIVE: incoming stealthed attacks (attacker hidden — almost always the enemy mid-war)
-            defHeld: 0,       // DEFENSIVE: held / repelled an incoming attack
-            totalOff: 0,      // total offensive attacks vs the enemy
-        };
-    }
-
-    function buildReport(ctx, war, attacks) {
-        const rows = new Map();        // memberId -> row
-        // Seed every current member so 0-hit members still appear.
-        for (const id of Object.keys(ctx.members)) {
-            rows.set(String(id), blankRow(id, ctx.members[id].name || `ID ${id}`));
-        }
-        const ensure = (id, name) => {
-            const k = String(id);
-            if (!rows.has(k)) rows.set(k, blankRow(k, name || `ID ${id}`));
-            return rows.get(k);
-        };
-
-        const oppId = war.oppId;
-        let totalHits = 0, totalRespect = 0, totalLosses = 0, totalEnemyOn = 0, totalStealthOn = 0;
-
-        for (const a of attacks) {
-            const result = a.result;
-            const attackerIn = a.attacker_faction === ctx.factionId;
-            const defenderIsEnemy = a.defender_faction === oppId;
-            const attackerIsEnemy = a.attacker_faction === oppId;
-            const defenderIn = a.defender_faction === ctx.factionId;
-            const isStealthed = Number(a.stealthed) === 1;
-            const warHit = hasWarBonus(a);
-
-            // Offensive: our member hit the enemy faction.
-            if (attackerIn && defenderIsEnemy && a.attacker_id) {
-                const row = ensure(a.attacker_id, a.attacker_name);
-                row.totalOff++;
-                if (WIN_RESULTS.has(result)) { row.wins++; totalHits++; }
-                else if (LOSS_RESULTS.has(result)) row.offLost++;
-                else if (STALE_RESULTS.has(result)) row.stalemates++;
-                else if (ASSIST_RESULTS.has(result)) row.assists++;
-                row.respect += Number(a.respect_gain || 0);
-                totalRespect += Number(a.respect_gain || 0);
-            }
-
-            // Defensive: one of our members got attacked during the war.
-            // An incoming attack is an enemy war hit if it carries the war bonus
-            // (definitive, even when stealthed) OR the attacker's faction is the
-            // opponent. Remaining stealthed hits with no war bonus are tracked
-            // separately as "likely enemy".
-            if (defenderIn && a.defender_id && a.attacker_faction !== ctx.factionId) {
-                const row = ensure(a.defender_id, a.defender_name);
-                const enemyHit = attackerIsEnemy || warHit;
-                if (enemyHit) { row.enemyOn++; totalEnemyOn++; }
-                else if (isStealthed) { row.stealthOn++; totalStealthOn++; }
-                if (WIN_RESULTS.has(result)) {           // attacker won = our member was beaten
-                    row.lossAll++;
-                    totalLosses++;
-                    if (enemyHit) row.lossEnemy++;
-                } else if (LOSS_RESULTS.has(result) || STALE_RESULTS.has(result) || ESCAPE_RESULTS.has(result)) {
-                    row.defHeld++;
-                }
-            }
-        }
-
-        const list = Array.from(rows.values());
-        list.sort((a, b) => b.wins - a.wins || b.lossAll - a.lossAll);
-        return { list, totalHits, totalRespect, totalLosses, totalEnemyOn, totalStealthOn };
-    }
-
-    /* ----------------------- loss scope ----------------------- */
-    // Which loss number drives the table: all attackers, or enemy only.
-    function lossScope() {
-        const el = $('#twpr-lossscope');
-        return el && el.value === 'enemy' ? 'enemy' : 'all';
-    }
-    function scopedLoss(row) {
-        return lossScope() === 'enemy' ? row.lossEnemy : row.lossAll;
-    }
-
-    /* ========================= UI ============================= */
-    const CSS = `
-    #twpr-fab{position:fixed;z-index:2147483646;width:54px;height:54px;border-radius:50%;
-      background:linear-gradient(135deg,#7b2ff7,#2f80ed);color:#fff;border:none;font-size:22px;cursor:grab;
-      box-shadow:0 6px 18px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;
-      touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;
-      padding:0;line-height:1;}
-    #twpr-fab:active{cursor:grabbing;}
-    #twpr-overlay{position:fixed;inset:0;z-index:2147483647;background:rgba(8,10,20,.55);backdrop-filter:blur(3px);
-      display:none;align-items:flex-start;justify-content:center;padding:24px 10px;overflow:auto;}
-    #twpr-overlay.open{display:flex;}
-    #twpr-panel{width:min(960px,100%);background:rgba(20,22,34,.92);border:1px solid rgba(255,255,255,.12);
-      border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.5);color:#e9ecf5;font-family:system-ui,Segoe UI,Roboto,sans-serif;
-      backdrop-filter:blur(14px);overflow:hidden;
-      --twpr-name:#f2f4fb;--twpr-id:#7f86a0;--twpr-text:#e9ecf5;--twpr-win:#7fe3a0;
-      --twpr-loss:#ff9a9a;--twpr-stale:#ffd479;--twpr-respect:#cfd3e6;--twpr-pay:#9fc7ff;}
-    #twpr-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;
-      background:linear-gradient(135deg,rgba(123,47,247,.35),rgba(47,128,237,.25));border-bottom:1px solid rgba(255,255,255,.1);}
-    #twpr-head h2{margin:0;font-size:16px;font-weight:600;letter-spacing:.3px;}
-    #twpr-close{background:none;border:none;color:#cfd3e6;font-size:22px;cursor:pointer;line-height:1;}
-    .twpr-body{padding:16px 18px;}
-    .twpr-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;}
-    .twpr-row label{font-size:12px;color:#aab0c6;display:block;margin-bottom:3px;}
-    .twpr-field{display:flex;flex-direction:column;}
-    .twpr-input,.twpr-select{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);
-      color:#fff;border-radius:8px;padding:8px 10px;font-size:13px;outline:none;}
-    .twpr-input:focus,.twpr-select:focus{border-color:#7b2ff7;}
-    /* The dropdown POPUP is drawn by the browser, not by this panel, and it
-       defaults to a WHITE background — so the color:#fff above made every option
-       white text on white paper: the wars were all there and all invisible.
-       An <option> does not inherit the select's background, so it has to be
-       told explicitly, and "optgroup" needs the same treatment or its label
-       vanishes the same way. Colours are literal rather than translucent
-       because the popup is not composited over the panel. */
-    .twpr-select option,.twpr-select optgroup{background:#1b1f2e;color:#e9ecf5;}
-    .twpr-select option:disabled{color:#6a7080;}
-    /* A multi-select renders inline, so its own selected-row highlight applies
-       and must not fall back to the same washed-out default. */
-    .twpr-select[multiple]{background:#151926;padding:4px;}
-    .twpr-select[multiple] option{padding:3px 6px;border-radius:4px;}
-    .twpr-select[multiple] option:checked{background:#7b2ff7;color:#fff;font-weight:600;}
-    .twpr-btn{background:linear-gradient(135deg,#7b2ff7,#2f80ed);color:#fff;border:none;border-radius:9px;
-      padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;}
-    .twpr-btn.ghost{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);}
-    .twpr-note{font-size:11px;color:#8b90a6;margin-top:4px;}
-    .twpr-status{font-size:12px;color:#9fe8c0;margin:8px 0;min-height:16px;}
-    .twpr-status.err{color:#ff8b8b;}
-    .twpr-tablewrap{max-height:48vh;overflow:auto;border:1px solid rgba(255,255,255,.1);border-radius:10px;margin-top:10px;}
-    table.twpr{width:100%;border-collapse:collapse;font-size:12.5px;}
-    table.twpr th,table.twpr td{padding:7px 9px;text-align:right;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,.06);}
-    table.twpr th:first-child,table.twpr td:first-child{text-align:left;position:sticky;left:0;background:rgba(20,22,34,.96);}
-    table.twpr thead th{position:sticky;top:0;background:rgba(30,33,50,.98);cursor:pointer;color:#c7cbe0;}
-    table.twpr tbody tr:hover{background:rgba(255,255,255,.04);}
-    #twpr-panel .twpr td{color:var(--twpr-text) !important;}
-    #twpr-panel .twpr-name{color:var(--twpr-name) !important;font-weight:500;}
-    #twpr-panel .twpr-id{color:var(--twpr-id) !important;}
-    #twpr-panel .twpr-win{color:var(--twpr-win) !important;}
-    #twpr-panel .twpr-loss{color:var(--twpr-loss) !important;}
-    #twpr-panel .twpr-stale{color:var(--twpr-stale) !important;}
-    #twpr-panel .twpr-respect{color:var(--twpr-respect) !important;}
-    #twpr-panel .twpr-pay{color:var(--twpr-pay) !important;font-weight:600;}
-    .twpr-colortoggle{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);color:#cfd3e6;
-      border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;}
-    .twpr-colors{display:none;flex-wrap:wrap;gap:12px;margin:8px 0;padding:12px;border:1px solid rgba(255,255,255,.1);
-      border-radius:10px;background:rgba(255,255,255,.03);align-items:flex-end;}
-    .twpr-colors.open{display:flex;}
-    .twpr-cpick{display:flex;flex-direction:column;gap:4px;}
-    .twpr-cpick label{font-size:11px;color:#aab0c6;}
-    .twpr-cpick input[type=color]{width:46px;height:30px;border:1px solid rgba(255,255,255,.2);border-radius:6px;
-      background:none;cursor:pointer;padding:2px;}
-    .twpr-guide{display:none;margin:0 0 10px;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;
-      background:rgba(255,255,255,.04);font-size:12.5px;line-height:1.5;color:#c7cbe0;}
-    .twpr-guide.open{display:block;}
-    .twpr-guide p{margin:0 0 8px;} .twpr-guide p:last-child{margin-bottom:0;}
-    .twpr-guide b{color:#e9ecf5;}
-    .twpr-guide .twpr-gh{margin:10px 0 4px;font-weight:600;color:#c7cbe0;}
-    .twpr-guide .twpr-key{margin:0 0 4px;padding-left:18px;}
-    .twpr-guide .twpr-key li{margin:2px 0;}
-    .twpr-raffle{display:none;margin:0 0 10px;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;
-      background:rgba(255,255,255,.04);}
-    .twpr-raffle.open{display:block;}
-    .twpr-raffle-sum{font-size:12.5px;color:#c7cbe0;}
-    .twpr-raffle-winner{min-height:34px;margin:6px 0;text-align:center;}
-    .twpr-spin{font-size:20px;font-weight:700;color:#ffd479;opacity:.85;}
-    .twpr-winner{font-size:15px;margin:4px 0;color:#7fe3a0;}
-    .twpr-winner b{color:#fff;}
-    .twpr-winner .sub{font-size:11.5px;color:#8b90a6;font-weight:400;}
-    .twpr-raffle-odds{margin-top:6px;font-size:12px;color:#aab0c6;}
-    .twpr-raffle-odds summary{cursor:pointer;color:#9fc7ff;}
-    .twpr-raffle-odds table{width:100%;border-collapse:collapse;margin-top:6px;}
-    .twpr-raffle-odds td{padding:3px 6px;border-bottom:1px solid rgba(255,255,255,.06);}
-    .twpr-raffle-odds td:last-child{text-align:right;color:#c7cbe0;}
-    .twpr-foot{display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;margin-top:12px;}
-    .twpr-summary{font-size:12px;color:#aab0c6;}
-    .twpr-drugs{display:none;margin:0 0 10px;padding:12px 14px;border:1px solid rgba(255,255,255,.12);border-radius:10px;
-      background:rgba(255,255,255,.04);}
-    .twpr-drugs.open{display:block;}
-    .twpr-drugs .twpr-tablewrap{max-height:40vh;}
-    /* ── Tabs ──────────────────────────────────────────────────────────
-       Every pane already had ".open" as its show/hide switch, so the tab bar
-       drives that same class rather than introducing a second mechanism the
-       two could disagree about. */
-    .twpr-tabs{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 12px;
-      border-bottom:1px solid rgba(255,255,255,.12);padding-bottom:0;}
-    .twpr-tab{background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-1px;
-      color:#8b90a6;font-size:13px;font-weight:600;padding:9px 14px;cursor:pointer;
-      border-radius:8px 8px 0 0;white-space:nowrap;transition:color .12s,background .12s;}
-    .twpr-tab:hover{color:#c7cbe0;background:rgba(255,255,255,.05);}
-    .twpr-tab.active{color:#fff;border-bottom-color:#7b2ff7;background:rgba(123,47,247,.14);}
-    /* A dot, not a number: it says "there is something in here" without
-       implying the count means anything. */
-    .twpr-tabdot{display:none;width:7px;height:7px;border-radius:50%;background:#7fe3a0;
-      vertical-align:middle;margin-left:5px;}
-    .twpr-tabdot.on{display:inline-block;}
-    .twpr-tabdot.warn{background:#ff8080;}
-    .twpr-pane{display:none;}
-    .twpr-pane.open{display:block;}
-    .twpr-pane-report{margin-top:2px;}
-    /* One honest empty state per pane, rather than hiding the whole panel and
-       leaving the user to guess which button unlocks it. */
-    .twpr-blank{padding:26px 18px;text-align:center;font-size:13px;color:#aab0c6;line-height:1.7;
-      border:1px dashed rgba(255,255,255,.14);border-radius:10px;background:rgba(255,255,255,.02);}
-    .twpr-blank span{font-size:12px;color:#8b90a6;}
-    /* ── Numbered sections ──────────────────────────────────────────────
-       The sweep controls used to be one long wrapping row, so "which wars",
-       "how far back" and the export buttons all had equal weight and no
-       order. Three steps, in the order you actually answer them. */
-    .twpr-sec{border:1px solid rgba(255,255,255,.1);border-radius:10px;margin:0 0 10px;
-      background:rgba(255,255,255,.022);overflow:hidden;}
-    .twpr-sec-h{display:flex;align-items:center;gap:9px;padding:9px 13px;
-      background:rgba(255,255,255,.04);border-bottom:1px solid rgba(255,255,255,.08);
-      font-size:12px;font-weight:700;color:#e9ecf5;letter-spacing:.02em;}
-    .twpr-sec-h .n{display:inline-flex;align-items:center;justify-content:center;
-      width:19px;height:19px;border-radius:50%;background:#7b2ff7;color:#fff;
-      font-size:11px;font-weight:700;flex:0 0 19px;}
-    .twpr-sec-h .sub{margin-left:auto;font-weight:400;font-size:11.5px;color:#8b90a6;}
-    .twpr-sec-b{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;padding:12px 13px;}
-    .twpr-btnrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
-    .twpr-hint{font-size:11px;color:#8b90a6;margin-top:7px;line-height:1.45;}
-    /* ── Colour pickers ─────────────────────────────────────────────────
-       Seven swatches stacked vertically left an enormous empty panel and made
-       you scroll to reach Reset. A grid, with each swatch beside a live sample
-       of the thing it actually colours. */
-    .twpr-cgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(196px,1fr));gap:9px;}
-    .twpr-cpick{display:flex;align-items:center;gap:10px;padding:8px 11px;
-      border:1px solid rgba(255,255,255,.1);border-radius:9px;background:rgba(255,255,255,.03);}
-    .twpr-cpick input[type=color]{width:34px;height:26px;padding:0;border:1px solid rgba(255,255,255,.2);
-      border-radius:6px;background:none;cursor:pointer;flex:0 0 34px;}
-    .twpr-cpick .cl{display:flex;flex-direction:column;min-width:0;gap:1px;}
-    .twpr-cpick .cl b{font-size:12px;color:#e9ecf5;font-weight:600;}
-    .twpr-cpick .cl .ex{font-size:11px;font-variant-numeric:tabular-nums;}
-    .twpr-oddstable{width:100%;border-collapse:collapse;font-size:12px;}
-    .twpr-oddstable td{padding:4px 8px;border-bottom:1px solid rgba(255,255,255,.05);}
-    .twpr-oddsbar{display:block;height:7px;border-radius:4px;background:rgba(255,255,255,.07);overflow:hidden;}
-    .twpr-oddsbar i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#7b2ff7,#2f80ed);}
-    .twpr-sweep-head{margin:16px 0 6px;padding-top:12px;border-top:1px solid rgba(255,255,255,.12);
-      font-size:13px;font-weight:700;color:#e9ecf5;letter-spacing:.02em;}
-    .twpr-check{white-space:nowrap;font-size:12px;color:#aab0c6;align-self:center;}
-    .twpr-check input{vertical-align:middle;margin-right:4px;}
-    /* Per-war cells pack two numbers into one column. Two numbers side by side
-       are meaningless unless the reader knows which is which — so each one is
-       COLOUR-CODED and the same two colours label the header and the legend.
-       Amber is always Xanax, green is always hits, everywhere. */
-    /* ONE colour per quantity, everywhere in this pane: amber is Xanax, green
-       is hits. The per-column hue is a background wash (below) so it can never
-       be mistaken for a verdict — a green NUMBER reads as a pass no matter what
-       the legend says, which is exactly how "3 / 0" in the green column came to
-       look like good news. */
-    .twpr-wcell{white-space:nowrap;font-variant-numeric:tabular-nums;}
-    .twpr-wcell .x{color:#ffd479;font-weight:700;}
-    .twpr-wcell .h{color:#7fe3a0;}
-    .twpr-wcell .sep{color:#5c6178;}
-    /* Column tints: enough to track a column across, far too faint to read as
-       meaning. Semantic colours live in the text and always win.
-       The long selector is deliberate — the zebra rule further down is
-       (0,2,4), so a bare .twpr-wcell.col0 at (0,2,0) would lose on every even
-       row and the tint would appear on alternate rows only.
-       The sticky HEADER is deliberately left opaque: a translucent thead lets
-       the table body scroll visibly through it. */
-    table.twpr tbody td.twpr-wcell.col0{background:rgba(127,212,255,.055);}
-    table.twpr tbody td.twpr-wcell.col1{background:rgba(255,212,121,.055);}
-    table.twpr tbody td.twpr-wcell.col2{background:rgba(142,230,160,.055);}
-    table.twpr tbody td.twpr-wcell.col3{background:rgba(255,158,207,.055);}
-    table.twpr tbody td.twpr-wcell.col4{background:rgba(195,166,255,.055);}
-    table.twpr tbody td.twpr-wcell.col5{background:rgba(255,179,122,.055);}
-    table.twpr tbody td.twpr-wcell.col6{background:rgba(142,230,213,.055);}
-    table.twpr tbody td.twpr-wcell.col7{background:rgba(232,224,122,.055);}
-    table.twpr tbody td.twpr-wcell.col8{background:rgba(255,154,154,.055);}
-    table.twpr tbody td.twpr-wcell.col9{background:rgba(168,200,255,.055);}
-    /* A flag outranks its column, and hover outranks everything. */
-    table.twpr tbody td.twpr-wcell.flag{background:rgba(255,120,120,.17);}
-    table.twpr tbody tr:hover td.twpr-wcell{background:rgba(127,180,255,.12);}
-    .twpr-wcell.flag{background:rgba(255,120,120,.16);}
-    .twpr-wcell.flag .x{color:#ffb3b3;}
-    .twpr-wcell.flag .h{color:#ff8080;font-weight:700;}
-    /* A flag must never be signalled by COLOUR ALONE — roughly one man in
-       twelve cannot separate that red from the greys around it. The mark is
-       the signal; the tint is reinforcement. */
-    .twpr-wcell.flag .mk{color:#ff8080;font-size:10px;margin-left:3px;}
-    /* An excused war is blue, not red — the numbers look the same as a flag but
-       the verdict is the opposite, and colour is what people read first. */
-    .twpr-wcell.excused .od{color:#9fc7ff;font-size:9.5px;font-weight:700;margin-left:3px;}
-    /* Stock moved into a pocket, shown but never charged. */
-    .twpr-wcell .tk{color:#7f8aa3;font-size:10px;}
-    table.twpr tbody td.twpr-wcell.excused{background:rgba(127,180,255,.13);}
-    .twpr-wcell.none{color:#4e5468;}
-    /* Zebra striping. Eleven columns is further than the eye tracks unaided —
-       without a banded background you lose your row halfway across and read
-       someone else's numbers. */
-    table.twpr tbody tr:nth-child(even) td{background:rgba(255,255,255,.028);}
-    table.twpr tbody tr:hover td{background:rgba(127,180,255,.10);}
-    table.twpr tbody tr:nth-child(even) td:first-child{background:rgba(24,26,40,.97);}
-    table.twpr tbody tr:hover td:first-child{background:rgba(30,40,60,.99);}
-    /* The vertical rule where per-member totals end and per-war history begins. */
-    .twpr-split{border-left:2px solid rgba(255,255,255,.16) !important;}
-    /* Group header: one label over each block, so no column has to explain
-       itself twice. */
-    .twpr-grp th{padding:5px 9px 4px;font-size:10px;font-weight:700;letter-spacing:.09em;
-      text-transform:uppercase;color:#8b90a6;background:rgba(30,33,50,.98);
-      border-bottom:1px solid rgba(255,255,255,.08);cursor:default;}
-    .twpr-grp th.g-tot{color:#9fb0d0;}
-    .twpr-grp th.g-war{color:#c9a6ff;}
-    .twpr-repeat{color:#ff7a7a;font-weight:700;}
-    /* Two-line war header: who and when, then the unit line so nobody has to
-       guess what the pair of numbers underneath means. */
-    .twpr-wh{line-height:1.25;text-align:right;}
-    .twpr-wh .n{display:block;font-weight:700;color:#e9ecf5;}
-    .twpr-wh .d{display:block;font-size:10px;color:#8b90a6;font-weight:400;}
-    .twpr-wh .u{display:block;font-size:9.5px;font-weight:400;letter-spacing:.02em;}
-    .twpr-wh .u .x{color:#ffd479;}
-    .twpr-wh .u .h{color:#7fe3a0;}
-    .twpr-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;padding:8px 11px;
-      border:1px solid rgba(255,255,255,.1);border-radius:8px;background:rgba(255,255,255,.03);
-      font-size:11.5px;color:#aab0c6;line-height:1.5;}
-    .twpr-legend b{color:#e9ecf5;}
-    .twpr-legend .sw{display:inline-block;padding:1px 6px;border-radius:4px;font-weight:700;
-      font-variant-numeric:tabular-nums;}
-    .twpr-kpis{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;}
-    .twpr-kpi{flex:1;min-width:104px;padding:9px 12px;border:1px solid rgba(255,255,255,.1);border-radius:9px;
-      background:rgba(255,255,255,.04);}
-    .twpr-kpi .k{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#8b90a6;}
-    .twpr-kpi .v{font-size:20px;font-weight:700;color:#e9ecf5;line-height:1.2;margin-top:2px;}
-    .twpr-kpi .s{font-size:11px;color:#8b90a6;}
-    .twpr-flag{color:#ff9a9a !important;font-weight:600;}
-    .twpr-ok{color:#7fe3a0 !important;}
-    .twpr-warnbox{margin:8px 0;padding:9px 12px;border-radius:8px;font-size:12px;line-height:1.5;
-      background:rgba(255,154,154,.09);border:1px solid rgba(255,154,154,.28);color:#ffc9c9;}
-    `;
-
-    function injectCSS() {
-        if ($('#twpr-css')) return;
-        const s = document.createElement('style');
-        s.id = 'twpr-css';
-        s.textContent = CSS;
-        document.head.appendChild(s);
-    }
-
-    let state = { ctx: null, wars: [], report: null, war: null, drugs: null, odResults: null, sweep: null, sweepOd: null };
-
-    /* --------------------- color settings --------------------- */
-    const COLORS = [
-        { key: 'name',    label: 'Member name', cssVar: '--twpr-name',    def: '#f2f4fb', sample: 'Blight' },
-        { key: 'id',      label: 'Torn ID',     cssVar: '--twpr-id',      def: '#7f86a0', sample: '[797339]' },
-        { key: 'win',     label: 'Hits',        cssVar: '--twpr-win',     def: '#7fe3a0', sample: '76' },
-        { key: 'loss',    label: 'Losses',      cssVar: '--twpr-loss',    def: '#ff9a9a', sample: '12' },
-        { key: 'stale',   label: 'Stalemates',  cssVar: '--twpr-stale',   def: '#ffd479', sample: '3' },
-        { key: 'respect', label: 'Respect',     cssVar: '--twpr-respect', def: '#cfd3e6', sample: '665.31' },
-        { key: 'text',    label: 'Other numbers', cssVar: '--twpr-text',  def: '#e9ecf5', sample: '1,571' },
-    ];
-
-    function buildColorUI() {
-        const wrap = $('#twpr-colors');
-        if (!wrap) return;
-        // Each swatch sits beside a live sample of the thing it colours, so you
-        // pick against the real rendering rather than against a word.
-        wrap.innerHTML =
-            `<div class="twpr-note" style="margin:0 0 10px;">Colours apply to every table in this panel and are saved to this browser.</div>` +
-            `<div class="twpr-cgrid">` +
-            COLORS.map(c =>
-                `<div class="twpr-cpick">` +
-                `<input type="color" data-key="${c.key}" value="${c.def}">` +
-                `<span class="cl"><b>${c.label}</b>` +
-                `<span class="ex" style="color:var(${c.cssVar})">${c.sample}</span></span></div>`
-            ).join('') +
-            `</div>` +
-            `<div style="margin-top:12px;"><button class="twpr-colortoggle" id="twpr-colorreset" type="button">↺ Reset all colours</button></div>`;
-    }
-
-    function loadColors() {
-        const panel = $('#twpr-panel');
-        gmGet(LS_COLORS, '').then(raw => {
-            let saved = {};
-            try { saved = raw ? JSON.parse(raw) : {}; } catch (e) {}
-            COLORS.forEach(c => {
-                const val = saved[c.key] || c.def;
-                panel.style.setProperty(c.cssVar, val);
-                const inp = $(`#twpr-colors input[data-key="${c.key}"]`);
-                if (inp) inp.value = val;
-            });
-        });
-    }
-
-    function saveColors() {
-        const out = {};
-        COLORS.forEach(c => {
-            const inp = $(`#twpr-colors input[data-key="${c.key}"]`);
-            if (inp) out[c.key] = inp.value;
-        });
-        gmSet(LS_COLORS, JSON.stringify(out));
-    }
-
-    function resetColors() {
-        const panel = $('#twpr-panel');
-        COLORS.forEach(c => {
-            panel.style.setProperty(c.cssVar, c.def);
-            const inp = $(`#twpr-colors input[data-key="${c.key}"]`);
-            if (inp) inp.value = c.def;
-        });
-        gmSet(LS_COLORS, JSON.stringify({}));
-    }
-
-    /** The war table exists now; stop telling the user to go and make one. */
-    function showReport() {
-        const blank = $('#twpr-report-blank');
-        if (blank) blank.style.display = 'none';
-        const res = $('#twpr-result');
-        if (res) res.style.display = 'block';
-        const t = $('#twpr-tabs');
-        if (t) t.style.display = 'flex';
-    }
-
-    function setStatus(msg, isErr) {
-        const el = $('#twpr-status');
-        if (!el) return;
-        el.textContent = msg || '';
-        el.classList.toggle('err', !!isErr);
-    }
-
-    function buildPanel() {
-        injectCSS();
-        if ($('#twpr-overlay')) return;
-
-        const overlay = document.createElement('div');
-        overlay.id = 'twpr-overlay';
-        overlay.innerHTML = `
-          <div id="twpr-panel">
-            <div id="twpr-head">
-              <h2>⚔️ War Payout Report</h2>
-              <button id="twpr-close" title="Close">×</button>
-            </div>
-            <div class="twpr-body">
-              <div class="twpr-row">
-                <div class="twpr-field" style="flex:1;min-width:220px;">
-                  <label>Torn API key (faction access)</label>
-                  <input class="twpr-input" id="twpr-key" type="password" placeholder="paste key…" autocomplete="off">
-                  <div class="twpr-note">Leader/AA key. <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" style="color:#9fc7ff;">Create one →</a> (stored locally only)</div>
-                </div>
-                <div class="twpr-field">
-                  <label>&nbsp;</label>
-                  <button class="twpr-btn ghost" id="twpr-load">Load wars</button>
-                </div>
-              </div>
-
-              <div class="twpr-row" id="twpr-war-row" style="display:none;align-items:flex-end;">
-                <div class="twpr-field" style="flex:1;min-width:200px;">
-                  <label>War</label>
-                  <select class="twpr-select" id="twpr-war"></select>
-                </div>
-                <div class="twpr-field">
-                  <label>&nbsp;</label>
-                  <button class="twpr-btn" id="twpr-run">Pull report</button>
-                </div>
-                <div class="twpr-field" style="min-width:auto;">
-                  <label style="white-space:nowrap;"><input type="checkbox" id="twpr-fresh" style="vertical-align:middle;"> Fresh pull</label>
-                  <button class="twpr-colortoggle" id="twpr-cache-clear" type="button" style="padding:4px 8px;font-size:11px;">Clear cache</button>
-                </div>
-              </div>
-
-              <div class="twpr-status" id="twpr-status"></div>
-
-              <!-- The tab bar deliberately sits OUTSIDE the result wrapper.
-                   It used to live inside it, so Colors, Guide and the sweep —
-                   none of which need a war report — were all unreachable until
-                   you had pulled one. -->
-              <div class="twpr-tabs" id="twpr-tabs" style="display:none;">
-
-                <!-- Six panels stacked behind four toggle buttons meant the
-                     multi-war sweep sat below a full drug report below a war
-                     table — its Copy button was real but three screens down,
-                     which is the same as not existing. One pane at a time. -->
-                  <button class="twpr-tab active" data-pane="twpr-pane-report" type="button">⚔️ War report</button>
-                  <button class="twpr-tab" data-pane="twpr-drugs" type="button">💊 Drugs <span class="twpr-tabdot" id="twpr-tabdot-drugs"></span></button>
-                  <button class="twpr-tab" data-pane="twpr-sweep" type="button">📊 Multi-war <span class="twpr-tabdot" id="twpr-tabdot-sweep"></span></button>
-                  <button class="twpr-tab" data-pane="twpr-raffle" type="button">🎟️ Raffle</button>
-                  <button class="twpr-tab" data-pane="twpr-guide" type="button">ℹ️ Guide</button>
-                  <button class="twpr-tab" data-pane="twpr-colors" type="button">🎨 Colors</button>
-              </div>
-
-              <div id="twpr-panes">
-                <div class="twpr-pane twpr-guide" id="twpr-guide">
-                  <p><b>How to use:</b> pick the war, hit <b>Pull report</b>, then read the breakdown or <b>Copy table</b> to export it. The dropdown sets whether "Losses" counts all attackers or only the enemy.</p>
-                  <p class="twpr-gh">⚔️ Offensive — what your member did to the enemy</p>
-                  <ul class="twpr-key">
-                    <li><b>Hits</b> — successful war hits landed on the enemy (your score).</li>
-                    <li><b>Stale</b> — your attacks on the enemy that ended in a stalemate.</li>
-                    <li><b>Assist</b> — assists on enemy targets.</li>
-                    <li><b>Respect</b> — respect earned from your war hits.</li>
-                  </ul>
-                  <p class="twpr-gh">🛡️ Defensive — what was done to your member</p>
-                  <ul class="twpr-key">
-                    <li><b>Enemy Hits</b> — total times the enemy attacked this member (win or not). Includes stealthed hits, caught via the war bonus.</li>
-                    <li><b>Losses</b> — times this member was beaten (per the dropdown: all attackers or enemy only).</li>
-                    <li><b>vs Enemy</b> — of those losses, how many the enemy dealt.</li>
-                    <li><b>Defended</b> — incoming attacks this member survived: the attacker lost, stalemated, or ran out of time. (Low here because the enemy beat your members most times they attacked.)</li>
-                  </ul>
-                  <p class="twpr-gh">In the CSV/TSV export you also get:</p>
-                  <ul class="twpr-key">
-                    <li><b>LossesAll / LossesEnemy</b> — beaten by anyone / beaten by the enemy.</li>
-                    <li><b>EnemyConfirmed / Stealthed</b> — enemy hits with a visible faction or war bonus / hidden-attacker hits counted as enemy.</li>
-                    <li><b>OffLost</b> — your attacks on the enemy that you lost.</li>
-                  </ul>
-                  <p class="twpr-gh">💊 Drug Report — Xanax vs hits</p>
-                  <ul class="twpr-key">
-                    <li><b>Pre-war / In war</b> — Xanax stacked during the build-up vs taken once the fighting started. Set <b>Build-up (days before)</b> to match how long your faction preps; 4 days is the usual.</li>
-                    <li><b>Xanax</b> — the total of both, from the <b>faction armoury</b>.</li>
-                    <li><b>Hits/Xan</b> — hits landed per Xanax taken. The efficiency number.</li>
-                    <li><b>⚠ no hits</b> — took faction Xanax and landed nothing. Check hospital time and travel before you accuse anyone.</li>
-                    <li>Personal Xanax is <b>invisible</b> — Torn exposes no endpoint for it, so 0 means "took none of yours", not "took none".</li>
-                    <li>Torn prunes faction news, so an old war may return thin or empty. The pane tells you the window it actually covered.</li>
-                  </ul>
-                  <p class="twpr-gh">📊 Multi-war sweep</p>
-                  <ul class="twpr-key">
-                    <li><b>Flagged</b> — how many of the swept wars this member took Xanax in and landed nothing. <b>2 or more is the finding</b>; one is usually a hospital stay.</li>
-                    <li>Each war column reads <b>Xanax out / hits landed</b>. Red is that war's flag.</li>
-                    <li>Hits come from Torn's <b>official war report</b> — exact, one call per war, no attack pull. A <b>LIVE</b> war has no report yet, so its cells read <b>/ ?</b> and it can never flag anyone.</li>
-                    <li>A war showing no armoury activity at all is <b>pruned news</b>, not a clean faction — the pane says which wars those were.</li>
-                  </ul>
-                  <p><b>Enemy total:</b> the summary's "Enemy hits on us" uses the official war report when available (the fully accurate faction total); otherwise it's the attack-log estimate. Re-pull after the war ends for the exact number.</p>
-                </div>
-                </div>
-                <div class="twpr-pane twpr-colors" id="twpr-colors"></div>
-
-                <div class="twpr-pane twpr-raffle" id="twpr-raffle">
-                  <div class="twpr-sec">
-                    <div class="twpr-sec-h"><span class="n">1</span> What earns a ticket</div>
-                    <div class="twpr-sec-b" id="twpr-raffle-weights"></div>
-                    <div class="twpr-note" style="margin:0;padding:0 13px 12px;">
-                      Set how many tickets each thing is worth. Zero switches a source off entirely.
-                      Fractions are fine — <b>0.1</b> per respect turns 665 respect into 66 tickets.
-                      Presets: <button class="twpr-colortoggle" id="twpr-rf-p-loss" type="button">Consolation</button>
-                      <button class="twpr-colortoggle" id="twpr-rf-p-hits" type="button">Reward fighters</button>
-                      <button class="twpr-colortoggle" id="twpr-rf-p-bal" type="button">Balanced</button>
-                      <button class="twpr-colortoggle" id="twpr-rf-p-part" type="button">Everyone who showed up</button>
-                    </div>
-                  </div>
-
-                  <div class="twpr-sec">
-                    <div class="twpr-sec-h"><span class="n">2</span> Draw <span class="sub" id="twpr-raffle-sum"></span></div>
-                    <div class="twpr-sec-b">
-                      <div class="twpr-field"><label>Winners to draw</label>
-                        <input class="twpr-input" id="twpr-raffle-n" type="number" min="1" value="1" style="width:86px;"></div>
-                      <div class="twpr-field"><label title="Nobody can hold more than this many tickets, however big their numbers. Stops one member owning the draw. 0 = no cap.">Ticket cap per member</label>
-                        <input class="twpr-input" id="twpr-raffle-cap" type="number" min="0" step="1" value="0" style="width:86px;"></div>
-                      <div class="twpr-field"><label title="Members below this many tickets are excluded from the draw entirely.">Minimum tickets</label>
-                        <input class="twpr-input" id="twpr-raffle-min" type="number" min="0" step="1" value="1" style="width:86px;"></div>
-                      <div class="twpr-field"><label>&nbsp;</label>
-                        <div class="twpr-btnrow">
-                          <button class="twpr-btn" id="twpr-raffle-draw" type="button">🎲 Draw</button>
-                          <button class="twpr-colortoggle" id="twpr-raffle-wheel" type="button">Copy for wheelofnames</button>
-                          <button class="twpr-colortoggle" id="twpr-raffle-csv" type="button">⬇ Odds CSV</button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="twpr-raffle-winner" id="twpr-raffle-winner"></div>
-                  <details class="twpr-raffle-odds" open><summary>Odds — tickets per member</summary><div id="twpr-raffle-oddsbody"></div></details>
-                  <div class="twpr-note">The draw uses your browser's cryptographic RNG, weighted by tickets — genuinely random, not a shuffle. Drawing several winners removes each one before the next draw, so nobody wins twice.</div>
-                </div>
-
-                <div class="twpr-pane twpr-drugs" id="twpr-drugs">
-                  <div class="twpr-blank" id="twpr-drug-blank">
-                    Pull a war report first — the drug report ties Xanax to the hits that war produced.
-                  </div>
-                  <div id="twpr-drug-body">
-                    <div class="twpr-note" style="font-size:12.5px;">
-                      Pulls the faction <b>armoury log</b> for this war's window and ties every Xanax taken
-                      to the hits that member actually landed. Press <b>Pull drug data</b> to fetch it.
-                    </div>
-                  </div>
-                  <div class="twpr-row" style="gap:10px;align-items:flex-end;margin:10px 0 0;">
-                    <div class="twpr-field">
-                      <label title="Xanax stacked BEFORE the fighting starts still counts — this is how far back to look.">Build-up (days before)</label>
-                      <input class="twpr-input" id="twpr-drug-lead" type="number" min="0" max="14" step="1" value="4" style="width:76px;">
-                    </div>
-                    <div class="twpr-field">
-                      <label title="Catches the last hits' Xanax if the log timestamp lands just after the war ends.">Tail (hours after)</label>
-                      <input class="twpr-input" id="twpr-drug-tail" type="number" min="0" max="72" step="1" value="6" style="width:76px;">
-                    </div>
-                    <button class="twpr-btn" id="twpr-drug-run" type="button">💊 Pull drug data</button>
-                    <div class="twpr-field">
-                      <label>Show</label>
-                      <select class="twpr-select" id="twpr-drug-filter">
-                        <option value="all">Everyone</option>
-                        <option value="took">Took Xanax</option>
-                        <option value="freeload">Took Xanax · zero hits</option>
-                        <option value="nodrug">Hits · no faction Xanax</option>
-                      </select>
-                    </div>
-                    <button class="twpr-colortoggle" id="twpr-drug-od" type="button" title="For members who took drugs but landed no hits, read Torn's public overdose stat. An OD hospitalises you for hours and ends your war — it's the most common innocent explanation.">🩺 Check for ODs</button>
-                    <div class="twpr-field">
-                      <label>Export</label>
-                      <select class="twpr-select" id="twpr-drug-fmt">
-                        <option value="shown">Exactly as shown (CSV)</option>
-                        <option value="full">Full data (raw columns)</option>
-                        <option value="discord">Discord (code block)</option>
-                      </select>
-                    </div>
-                    <button class="twpr-colortoggle" id="twpr-drug-copy" type="button">Copy</button>
-                    <button class="twpr-colortoggle" id="twpr-drug-csv" type="button">⬇ Download</button>
-                    <button class="twpr-colortoggle" id="twpr-drug-html" type="button">⬇ HTML report</button>
-                  </div>
-
-                </div>
-
-                <div class="twpr-pane twpr-drugs" id="twpr-sweep">
-                  <div class="twpr-blank" id="twpr-sweep-blank">
-                    Press <b>Load wars</b> above to list your wars, then sweep them.
-                  </div>
-                  <div id="twpr-sweep-main" style="display:none;">
-
-                  <!-- Three numbered steps, because the old single wrapping row
-                       put "which wars", "how far back", "use cache" and the two
-                       export buttons on one line in no particular order. -->
-                  <div class="twpr-sec">
-                    <div class="twpr-sec-h"><span class="n">1</span> Which wars</div>
-                    <div class="twpr-sec-b">
-                      <div class="twpr-field" style="flex:1;min-width:270px;">
-                        <label title="Ctrl/Cmd-click or drag to pick several. Newest first.">Pick one or more — this is the only thing that changes how long a sweep takes</label>
-                        <select class="twpr-select" id="twpr-sweep-wars" multiple size="7"></select>
-                      </div>
-                      <div class="twpr-field" style="gap:6px;">
-                        <label>Quick pick</label>
-                        <div class="twpr-btnrow">
-                          <button class="twpr-colortoggle" id="twpr-sweep-last3" type="button">Last 3</button>
-                          <button class="twpr-colortoggle" id="twpr-sweep-last5" type="button">Last 5</button>
-                          <button class="twpr-colortoggle" id="twpr-sweep-all" type="button">All</button>
-                        </div>
-                        <label class="twpr-check" style="margin-top:8px;" title="A live war has no published hit report, so nobody can be judged in it. Its Xanax still shows, but every hits cell reads '?'.">
-                          <input type="checkbox" id="twpr-sweep-skiplive"> Skip live wars
-                        </label>
-                        <div class="twpr-hint" id="twpr-sweep-cost">—</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="twpr-sec">
-                    <div class="twpr-sec-h"><span class="n">2</span> How to read them</div>
-                    <div class="twpr-sec-b">
-                      <div class="twpr-field">
-                        <label title="Xanax stacked BEFORE the fighting starts still counts — this is how far back to look.">Build-up (days before)</label>
-                        <input class="twpr-input" id="twpr-sweep-lead" type="number" min="0" max="14" step="1" value="4" style="width:86px;">
-                      </div>
-                      <div class="twpr-field">
-                        <label title="Catches the last hits' Xanax if the log timestamp lands just after the war ends.">Tail (hours after)</label>
-                        <input class="twpr-input" id="twpr-sweep-tail" type="number" min="0" max="72" step="1" value="6" style="width:86px;">
-                      </div>
-                      <div class="twpr-field" style="gap:7px;">
-                        <label>Also</label>
-                        <label class="twpr-check" title="Reuse the 30-day cache where a war has already been analysed. Untick to re-pull everything live.">
-                          <input type="checkbox" id="twpr-sweep-cache" checked> Use cached wars (free)
-                        </label>
-                        <label class="twpr-check" title="After sweeping, read Torn's overdose stat for everyone who took Xanax and landed nothing. An OD hospitalises you for hours and is the most common innocent explanation. Readings are cached permanently, so this is cheap after the first run.">
-                          <input type="checkbox" id="twpr-sweep-autood"> Check overdoses automatically
-                        </label>
-                      </div>
-                      <button class="twpr-btn" id="twpr-sweep-run" type="button" style="align-self:flex-end;">📊 Sweep wars</button>
-                    </div>
-                  </div>
-
-                  <div class="twpr-sec" id="twpr-sweep-filters" style="display:none;">
-                    <div class="twpr-sec-h"><span class="n">3</span> Who to show <span class="sub" id="twpr-sweep-count"></span></div>
-                    <div class="twpr-sec-b">
-                      <div class="twpr-field">
-                        <label>Show</label>
-                        <select class="twpr-select" id="twpr-sweep-show" style="min-width:240px;">
-                          <option value="all">Everyone</option>
-                          <option value="took">Took faction Xanax</option>
-                          <option value="zero">Landed ZERO hits in every war</option>
-                          <option value="under">Hits below a threshold…</option>
-                          <option value="waste">Wasted more than…</option>
-                          <option value="flagged">Took Xanax, landed nothing (any war)</option>
-                          <option value="repeat">Repeat offenders (2+ wars)</option>
-                          <option value="od">Overdosed during a war</option>
-                        </select>
-                      </div>
-                      <div class="twpr-field">
-                        <label title="Used by “Hits below” and “Wasted more than”.">Threshold</label>
-                        <input class="twpr-input" id="twpr-sweep-thresh" type="number" min="0" step="1" value="10" style="width:86px;">
-                      </div>
-                      <div class="twpr-field">
-                        <label title="Compare against their run across ALL swept wars, or against their per-war average — a member in 5 wars and one in 1 are not comparable on totals.">Measured as</label>
-                        <select class="twpr-select" id="twpr-sweep-basis">
-                          <option value="total">Total across swept wars</option>
-                          <option value="avg">Average per war they were in</option>
-                        </select>
-                      </div>
-                      <div class="twpr-field" style="gap:7px;">
-                        <label>Narrow further</label>
-                        <label class="twpr-check" title="Someone who never touched the armoury is a different conversation — they cost the faction nothing.">
-                          <input type="checkbox" id="twpr-sweep-onlytook"> Only members who took Xanax
-                        </label>
-                        <label class="twpr-check" title="Hide anyone whose overdose check came back positive — an OD ended their war, which is an explanation rather than an excuse.">
-                          <input type="checkbox" id="twpr-sweep-hideod"> Hide confirmed overdoses
-                        </label>
-                      </div>
-                      <div class="twpr-field">
-                        <label>Export (follows this filter)</label>
-                        <div class="twpr-btnrow">
-                          <select class="twpr-select" id="twpr-sweep-fmt">
-                            <option value="html">HTML report</option>
-                            <option value="csv">CSV (per-war columns)</option>
-                            <option value="discord-full">Discord — with each war</option>
-                            <option value="discord">Discord — totals only</option>
-                          </select>
-                          <button class="twpr-colortoggle" id="twpr-sweep-copy" type="button">Copy</button>
-                          <button class="twpr-colortoggle" id="twpr-sweep-dl" type="button">⬇ Download</button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div id="twpr-sweep-body"></div>
-                  </div>
-                </div>
-
-                <div class="twpr-pane twpr-pane-report open" id="twpr-pane-report">
-                <div class="twpr-blank" id="twpr-report-blank">
-                  Load your wars, pick one, then press <b>Pull report</b>.<br>
-                  <span>The other tabs work without it — Multi-war only needs the war list.</span>
-                </div>
-                <div id="twpr-result" style="display:none;">
-                <div class="twpr-row" style="margin-bottom:8px;gap:14px;">
-                  <div class="twpr-field">
-                    <label>Count "losses" as</label>
-                    <select class="twpr-select" id="twpr-lossscope">
-                      <option value="all">All losses during war (any attacker)</option>
-                      <option value="enemy">Losses to enemy faction only</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div class="twpr-tablewrap">
-                  <table class="twpr">
-                    <thead><tr>
-                      <th data-k="name" title="Faction member [their Torn ID]">Member</th>
-                      <th data-k="wins" title="Successful war hits landed on the enemy faction">Hits</th>
-                      <th data-k="loss" title="Times this member was beaten during the war (any attacker, per the dropdown)">Losses</th>
-                      <th data-k="lossEnemy" title="Of those losses, how many came from the war opponent">vs Enemy</th>
-                      <th data-k="enemyHits" title="Times the enemy attacked this member — confirmed enemy hits plus stealthed hits (attacker hidden, almost always the enemy during a war)">Enemy Hits</th>
-                      <th data-k="defHeld" title="Incoming attacks this member survived — the attacker lost, stalemated, or ran out of time">Defended</th>
-                      <th data-k="stalemates" title="Stalemates against the enemy">Stale</th>
-                      <th data-k="assists" title="Assists against the enemy">Assist</th>
-                      <th data-k="respect" title="Respect earned from war hits">Respect</th>
-                    </tr></thead>
-                    <tbody id="twpr-tbody"></tbody>
-                  </table>
-                </div>
-
-                <div class="twpr-foot">
-                  <div class="twpr-summary" id="twpr-summary"></div>
-                  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    <select class="twpr-select" id="twpr-fmt" style="padding:8px 10px;">
-                      <option value="aligned">Aligned table</option>
-                      <option value="discord">Discord (code block)</option>
-                      <option value="tsv">Spreadsheet (TSV)</option>
-                      <option value="csv">CSV</option>
-                    </select>
-                    <button class="twpr-btn" id="twpr-copy-table">Copy table</button>
-                  </div>
-                </div>
-                </div>
-              </div>
-            </div>
-          </div>`;
-        document.body.appendChild(overlay);
-
-        bindTap($('#twpr-close'), closePanel);
-        overlay.addEventListener('click', (e) => { if (e.target === overlay) closePanel(); });
-        bindTap($('#twpr-load'), onLoadWars);
-        bindTap($('#twpr-run'), onRun);
-        bindTap($('#twpr-copy-table'), onCopyTable);
-
-        // Color settings: build pickers, restore saved values, wire toggle.
-        buildColorUI();
-        loadColors();
-        // (The Colors toggle button became a tab; its binding went with it.)
-        bindTap($('#twpr-colorreset'), resetColors);   // built by buildColorUI, not in the static markup
-        showPane('twpr-pane-report');
-
-        // Tabs. One pane visible at a time — see the markup for why.
-        overlay.querySelectorAll('.twpr-tab').forEach(t => bindTap(t, () => showPane(t.dataset.pane)));
-        bindTap($('#twpr-drug-run'), onDrugRun);
-        bindTap($('#twpr-drug-od'), onDrugOD);
-        bindTap($('#twpr-drug-copy'), onDrugCopy);
-        bindTap($('#twpr-drug-csv'), onDrugCsvDownload);
-        bindTap($('#twpr-drug-html'), onDrugHTML);
-        bindTap($('#twpr-sweep-run'), onSweepRun);
-        bindTap($('#twpr-sweep-copy'), onSweepCopy);
-        bindTap($('#twpr-sweep-dl'), onSweepDownload);
-        bindTap($('#twpr-sweep-last3'), () => pickSweep(3));
-        bindTap($('#twpr-sweep-last5'), () => pickSweep(5));
-        bindTap($('#twpr-sweep-all'), () => pickSweep(null));
-        // Keep the cost line honest as the selection changes.
-        ['#twpr-sweep-wars', '#twpr-sweep-skiplive'].forEach(sel => {
-            const el = $(sel);
-            if (el) el.addEventListener('change', updateSweepCost);
-        });
-        bindTap($('#twpr-raffle-draw'), onRaffleDraw);
-        bindTap($('#twpr-raffle-wheel'), onCopyWheel);
-        bindTap($('#twpr-raffle-csv'), onRaffleCsv);
-        // Odds must move as you type a weight, or the numbers you draw against
-        // are not the ones on screen.
-        overlay.addEventListener('input', (e) => {
-            if (e.target.id && (e.target.id.startsWith('twpr-rw-') ||
-                ['twpr-raffle-cap', 'twpr-raffle-min'].includes(e.target.id))) renderRaffle();
-        });
-        bindTap($('#twpr-rf-p-loss'), () => applyRafflePreset({ loss: 1 }));
-        bindTap($('#twpr-rf-p-hits'), () => applyRafflePreset({ wins: 1 }));
-        bindTap($('#twpr-rf-p-bal'),  () => applyRafflePreset({ wins: 1, loss: 1, defHeld: 1, assists: 1 }));
-        bindTap($('#twpr-rf-p-part'), () => applyRafflePreset({ flat: 1 }));
-        bindTap($('#twpr-cache-clear'), async () => {
-            await cacheClearAll();
-            // Refresh the 💾 markers if wars are loaded.
-            if (state.wars && state.wars.length) {
-                const sel = $('#twpr-war');
-                const cur = sel.value;
-                sel.innerHTML = state.wars.map((w, i) => {
-                    const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
-                    const live = w.end ? '' : ' [LIVE]';
-                    return `<option value="${i}">${when} vs ${w.oppName} (${w.myScore}–${w.oppScore})${live}</option>`;
-                }).join('');
-                sel.value = cur;
-            }
-            setStatus('Cleared all cached reports, drug data and overdose readings.');
-        });
-
-        // Live color updates.
-        overlay.addEventListener('input', (e) => {
-            const t = e.target;
-            if (t.matches && t.matches('#twpr-colors input[type=color]')) {
-                const cfg = COLORS.find(c => c.key === t.dataset.key);
-                if (cfg) $('#twpr-panel').style.setProperty(cfg.cssVar, t.value);
-                saveColors();
-            }
-        });
-        overlay.addEventListener('change', (e) => {
-            if (e.target.id === 'twpr-lossscope') { renderTable(); renderRaffle(); }
-            if (e.target.id && e.target.id.startsWith('twpr-rw-')) renderRaffle();
-            if (e.target.id === 'twpr-drug-filter') renderDrugs();
-            if (e.target.id && e.target.id.startsWith('twpr-sweep-') &&
-                !['twpr-sweep-wars', 'twpr-sweep-fmt'].includes(e.target.id)) renderSweep();
-        });
-        // The threshold is a number field — it must repaint as you type, not
-        // only when focus leaves it.
-        overlay.addEventListener('input', (e) => {
-            if (e.target.id === 'twpr-sweep-thresh') renderSweep();
-        });
-
-        // Sortable headers.
-        overlay.querySelectorAll('table.twpr thead th').forEach(th => {
-            bindTap(th, () => sortBy(th.dataset.k));
-        });
-
-        // Prefill saved key.
-        gmGet(LS_KEY, '').then(k => { if (k) $('#twpr-key').value = k; });
-    }
-
-    /**
-     * Show exactly one pane.
-     *
-     * Drives the SAME `.open` class the panes already used, rather than adding
-     * a parallel display mechanism the two could drift apart on. The raffle is
-     * rendered on reveal because its table depends on the loss-scope dropdown,
-     * which can change while another tab is in front.
-     */
-    function showPane(id) {
-        const overlay = $('#twpr-overlay');
-        if (!overlay) return;
-        overlay.querySelectorAll('.twpr-pane').forEach(p => p.classList.toggle('open', p.id === id));
-        overlay.querySelectorAll('.twpr-tab').forEach(t => t.classList.toggle('active', t.dataset.pane === id));
-        if (id === 'twpr-raffle') renderRaffle();
-        if (id === 'twpr-sweep') fillSweepWars();   // wars may have loaded since this pane was last seen
-    }
-
-    /** A dot on a tab means "there is something in here", nothing more. */
-    function markTab(which, on, warn) {
-        const d = $('#twpr-tabdot-' + which);
-        if (!d) return;
-        d.classList.toggle('on', !!on);
-        d.classList.toggle('warn', !!warn);
-    }
-
-    function openPanel() { buildPanel(); $('#twpr-overlay').classList.add('open'); }
-    function closePanel() { const o = $('#twpr-overlay'); if (o) o.classList.remove('open'); }
-
-    async function onLoadWars() {
-        const key = $('#twpr-key').value.trim();
-        if (!key) { setStatus('Enter your API key first.', true); return; }
-        gmSet(LS_KEY, key);
-        setStatus('Loading faction + wars…');
-        try {
-            await cachePrune();
-            state.ctx = await getFactionContext(key);
-            state.wars = listWars(state.ctx);
-            if (!state.wars.length) { setStatus('No ranked wars found for this faction.', true); return; }
-            const cachedIds = new Set((await cacheIndexGet()).map(x => x.warId));
-            const sel = $('#twpr-war');
-            sel.innerHTML = state.wars.map((w, i) => {
-                const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
-                const live = w.end ? '' : ' [LIVE]';
-                const cached = cachedIds.has(w.warId) ? ' 💾' : '';
-                return `<option value="${i}">${when} vs ${w.oppName} (${w.myScore}–${w.oppScore})${live}${cached}</option>`;
-            }).join('');
-            $('#twpr-war-row').style.display = 'flex';
-            // Wars are the only prerequisite the sweep has, so it unlocks here —
-            // it does NOT need a war report, and used to be gated behind one.
-            $('#twpr-tabs').style.display = 'flex';
-            $('#twpr-sweep-blank').style.display = 'none';
-            $('#twpr-sweep-main').style.display = 'block';
-            fillSweepWars();
-            updateSweepCost();
-            pickSweep(Math.min(3, state.wars.length));
-            setStatus(`Found ${state.wars.length} war(s) for ${state.ctx.factionName}. 💾 = cached. Pick one and pull, ` +
-                      `or open 💊 Drug Report → Multi-war sweep to check them all at once.`);
-        } catch (e) {
-            setStatus(e.message || 'Failed to load.', true);
-        }
-    }
-
-    async function onRun() {
-        const key = $('#twpr-key').value.trim();
-        const idx = Number($('#twpr-war').value);
-        const war = state.wars[idx];
-        if (!war) { setStatus('Select a war.', true); return; }
-        state.war = war;
-        // Drug data is per-war — never carry the last war's numbers over.
-        state.drugs = null;
-        state.odResults = null;
-        if ($('#twpr-drug-body')) {
-            $('#twpr-drug-body').innerHTML =
-                '<div class="twpr-note" style="font-size:12.5px;">Press <b>Pull drug data</b> to fetch the ' +
-                'faction armoury log for this war and tie Xanax taken to hits landed.</div>';
-        }
-
-        const from = war.start;
-        const to = war.end && war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
-        if (!from) { setStatus('That war has no start timestamp.', true); return; }
-
-        // Serve from the 30-day cache unless "Fresh pull" is ticked.
-        const forceFresh = !!($('#twpr-fresh') && $('#twpr-fresh').checked);
-        if (!forceFresh) {
-            const cached = await cacheLoad(war.warId);
-            // `cached.report` is now optional: the multi-war sweep writes drug
-            // data for wars it never pulled attacks for. Such an entry can't
-            // serve this pane — it must fall through to a live attack pull —
-            // but its drug report is still restored below rather than discarded.
-            if (cached && cached.report) {
-                state.report = cached.report;
-                state.report.__scanned = cached.attacksScanned || 0;
-                showReport();
-                renderTable();
-                renderRaffle();
-                let drugNote = '';
-                // refreshDrugReport, not a bare assignment: the cache holds the
-                // raw counts AND whatever flags the build that saved it derived.
-                // Re-deriving means a fix to the flag logic applies to reports
-                // saved before that fix existed.
-                if (cached.od) state.odResults = cached.od;   // before renderDrugs, so the OD column paints
-                if (cached.drugs) {
-                    state.drugs = refreshDrugReport(cached.drugs);
-                    renderDrugs();
-                    drugNote = ' Drug report restored too.' + (cached.od ? ' Overdose checks too.' : '');
-                }
-                const age = humanAge(Date.now() - cached.savedAt);
-                setStatus(`Loaded from cache (saved ${age} ago, ${fmt(cached.attacksScanned || 0)} attacks).${drugNote} Tick "Fresh pull" for live data.`);
-                return;
-            }
-            // Sweep-only entry: no attack report, but the drug work is done.
-            // Restore it before the attack pull so the drug pane isn't blank
-            // and the log isn't fetched a second time for no reason.
-            if (cached && !cached.report && cached.drugs) {
-                if (cached.od) state.odResults = cached.od;
-                state.drugs = refreshDrugReport(cached.drugs);
-                renderDrugs();
-            }
-        }
-
-        $('#twpr-run').disabled = true;
-        setStatus('Pulling attacks… (this can take a moment for big wars)');
-        try {
-            const pulled = await pullAttacks(key, from, to, (count, page) => {
-                setStatus(`Pulling attacks… ${fmt(count)} loaded (page ${page})`);
-            });
-            const attacks = pulled.list;
-            state.report = buildReport(state.ctx, war, attacks);
-            state.report.__scanned = attacks.length;
-            showReport();
-            renderTable();
-            renderRaffle();
-            const partialNote = pulled.partial ? ' (partial — Torn had a backend hiccup; re-pull to fill in the rest)' : '';
-            setStatus(`Scanned ${fmt(attacks.length)} attacks${partialNote}. Checking the war report for the enemy's hit total…`);
-            // Authoritative enemy hit count comes from the ranked war report,
-            // since the attack log doesn't capture every incoming hit.
-            state.report.enemyReportHits = await fetchEnemyHits(key, war.warId, war.oppId);
-            renderTable();
-            // Cache the finished report for 30 days (skip caching partial pulls).
-            if (!pulled.partial) await cacheSave(war, state.report, attacks.length, pulled.partial);
-            const source = state.report.enemyReportHits != null
-                ? 'Enemy hit total taken from the war report.'
-                : 'War report not available yet (live war) — enemy count is the attack-log estimate; re-pull after the war ends for the exact total.';
-            const cacheNote = pulled.partial ? ' Not cached (partial).' : ' Cached for 30 days.';
-            setStatus(`Done. ${source}${partialNote}${cacheNote}`, pulled.partial);
-        } catch (e) {
-            setStatus(e.message || 'Pull failed.', true);
-        } finally {
-            $('#twpr-run').disabled = false;
-        }
-    }
-
-    // Pull the enemy faction's total hits from the ranked war report. Returns
-    // a number, or null if the report isn't available (e.g. war still live).
-    async function fetchEnemyHits(key, warId, oppId) {
-        try {
-            const data = await fetchJSON(`torn/${warId}`, { selections: 'rankedwarreport' }, key);
-            const rep = data.rankedwarreport;
-            if (!rep || !rep.factions) return null;
-            const enemy = rep.factions[oppId] || rep.factions[String(oppId)];
-            if (!enemy) return null;
-            // Prefer a faction-level attacks count; otherwise sum each member's.
-            let total = Number(enemy.attacks || 0);
-            if (!total && enemy.members) {
-                for (const mid of Object.keys(enemy.members)) {
-                    const m = enemy.members[mid] || {};
-                    total += Number(m.attacks || m.hits || 0);
-                }
-            }
-            return Number.isFinite(total) ? total : null;
-        } catch (e) {
-            return null;
-        }
-    }
-
-    let sortKey = 'wins', sortDir = -1;
-    function sortBy(k) {
-        if (!state.report) return;
-        if (sortKey === k) sortDir *= -1; else { sortKey = k; sortDir = (k === 'name') ? 1 : -1; }
-        renderTable();
-    }
-
-    function sortedRows() {
-        const list = state.report.list.slice();
-        list.sort((a, b) => {
-            let av, bv;
-            if (sortKey === 'loss') { av = scopedLoss(a); bv = scopedLoss(b); }
-            else if (sortKey === 'enemyHits') { av = a.enemyOn + a.stealthOn; bv = b.enemyOn + b.stealthOn; }
-            else if (sortKey === 'name') { return a.name.localeCompare(b.name) * sortDir; }
-            else { av = a[sortKey]; bv = b[sortKey]; }
-            return (av - bv) * sortDir;
-        });
-        return list;
-    }
-
-    function renderTable() {
-        if (!state.report) return;
-        const list = sortedRows();
-        const tbody = $('#twpr-tbody');
-        tbody.innerHTML = list.map(row => {
-            return `<tr>
-              <td><span class="twpr-name">${row.name}</span> <span class="twpr-id">[${row.id}]</span></td>
-              <td class="twpr-win">${fmt(row.wins)}</td>
-              <td class="twpr-loss">${fmt(scopedLoss(row))}</td>
-              <td>${fmt(row.lossEnemy)}</td>
-              <td>${fmt(row.enemyOn + row.stealthOn)}</td>
-              <td>${fmt(row.defHeld)}</td>
-              <td class="twpr-stale">${fmt(row.stalemates)}</td>
-              <td>${fmt(row.assists)}</td>
-              <td class="twpr-respect">${fmt(row.respect.toFixed ? row.respect.toFixed(2) : row.respect)}</td>
-            </tr>`;
-        }).join('');
-
-        const rep = state.report;
-        const logEnemy = rep.totalEnemyOn + rep.totalStealthOn;
-        let enemyStr;
-        if (rep.enemyReportHits != null) {
-            enemyStr = `Enemy hits on us: <b>${fmt(rep.enemyReportHits)}</b> <span style="color:#8b90a6;">(war report · log saw ${fmt(logEnemy)})</span>`;
-        } else {
-            enemyStr = `Enemy hits on us: <b>~${fmt(logEnemy)}</b> <span style="color:#8b90a6;">(attack-log estimate — undercounts incoming)</span>`;
-        }
-        $('#twpr-summary').innerHTML =
-            `War hits: <b>${fmt(rep.totalHits)}</b> · Our losses: <b class="twpr-loss">${fmt(rep.totalLosses)}</b> · ` +
-            enemyStr + ` · Respect: <b>${fmt(rep.totalRespect.toFixed(2))}</b>`;
-    }
-
-    // Shared row set: drop members who did nothing at all.
-    function reportRows() {
-        return sortedRows()
-            .filter(row => row.wins || row.lossAll || row.defHeld || row.assists || row.stalemates)
-            .map(row => ({
-                name: row.name,
-                id: row.id,
-                player: `${row.name} [${row.id}]`,
-                hits: row.wins,
-                loss: scopedLoss(row),
-                lossAll: row.lossAll,
-                enemy: row.lossEnemy,
-                enemyHits: row.enemyOn + row.stealthOn,
-                enemyConfirmed: row.enemyOn,
-                stealth: row.stealthOn,
-                held: row.defHeld,
-                stale: row.stalemates,
-                assist: row.assists,
-                offlost: row.offLost,
-                respect: (row.respect.toFixed ? row.respect.toFixed(2) : row.respect),
-            }));
-    }
-
-    // Full column spec for the data formats (CSV / TSV).
-    const COPY_COLS = [
-        ['Member',      r => r.name],
-        ['ID',          r => r.id],
-        ['Hits',        r => r.hits],
-        ['Losses',      r => r.loss],
-        ['LossesAll',   r => r.lossAll],
-        ['LossesEnemy', r => r.enemy],
-        ['EnemyHits',   r => r.enemyHits],
-        ['EnemyConfirmed', r => r.enemyConfirmed],
-        ['Stealthed',   r => r.stealth],
-        ['Defended',    r => r.held],
-        ['Stalemates',  r => r.stale],
-        ['Assists',     r => r.assist],
-        ['OffLost',     r => r.offlost],
-        ['Respect',     r => r.respect],
-    ];
-
-    // Compact, human-readable monospace table.
-    function buildAligned(rows) {
-        const headers = ['Player', 'Hits', 'Loss', 'Enmy', 'EnHits', 'Def', 'Stl', 'Ast', 'Respect'];
-        const body = rows.map(r => [
-            r.player, String(r.hits), String(r.loss), String(r.enemy), String(r.enemyHits),
-            String(r.held), String(r.stale), String(r.assist), String(r.respect),
-        ]);
-        const all = [headers, ...body];
-        const w = headers.map((_, i) => Math.max(...all.map(row => row[i].length)));
-        const line = (row) => row.map((c, i) => i === 0 ? c.padEnd(w[i]) : c.padStart(w[i])).join('  ');
-        const sep = w.map(x => '-'.repeat(x)).join('  ');
-        return [line(headers), sep, ...body.map(line)].join('\n');
-    }
-
-    function buildDelimited(rows, delim, quoteNames) {
-        const head = COPY_COLS.map(c => c[0]).join(delim);
-        const lines = [head];
-        for (const r of rows) {
-            lines.push(COPY_COLS.map(c => {
-                const v = c[1](r);
-                return (quoteNames && c[0] === 'Member') ? `"${v}"` : v;
-            }).join(delim));
-        }
-        return lines.join('\n');
-    }
-
-    // One-line war summary used at the top of the human-readable exports.
-    function summaryLine() {
-        const rep = state.report;
-        if (!rep) return '';
-        const logEnemy = rep.totalEnemyOn + rep.totalStealthOn;
-        const enemy = rep.enemyReportHits != null
-            ? `${fmt(rep.enemyReportHits)} (war report)`
-            : `~${fmt(logEnemy)} (attack-log estimate)`;
-        const when = state.war ? (state.war.oppName || 'enemy') : 'enemy';
-        return `War vs ${when} — our hits: ${fmt(rep.totalHits)} · our losses: ${fmt(rep.totalLosses)} · enemy hits on us: ${enemy}`;
-    }
-
-    function onCopyTable() {
-        if (!state.report) return;
-        const rows = reportRows();
-        if (!rows.length) { setStatus('No active members to copy.', true); return; }
-        const mode = $('#twpr-fmt') ? $('#twpr-fmt').value : 'aligned';
-        const summary = summaryLine();
-        let text, label;
-        if (mode === 'aligned')      { text = summary + '\n\n' + buildAligned(rows);                 label = 'Aligned table copied.'; }
-        else if (mode === 'discord') { text = '```\n' + summary + '\n\n' + buildAligned(rows) + '\n```'; label = 'Discord block copied.'; }
-        else if (mode === 'tsv')     { text = buildDelimited(rows, '\t', false);  label = 'TSV copied — paste into a spreadsheet.'; }
-        else                         { text = buildDelimited(rows, ',', true);    label = 'CSV copied.'; }
-        copy(text, label);
-    }
-
-    /* =================== drug report UI ======================= */
-    const dayStr = (ts) => ts ? new Date(ts * 1000).toISOString().slice(0, 16).replace('T', ' ') : '—';
-
-    function drugFilter() {
-        const el = $('#twpr-drug-filter');
-        return el ? el.value : 'all';
-    }
-
-    /*
-     * The OD verdict and the flag, as PLAIN TEXT. The table and the CSV both read
-     * these, so an export can never disagree with the screen it was taken from —
-     * which is the whole point of an "exactly as shown" export.
-     */
-    function odText(r) {
-        const od = state.odResults && state.odResults[r.id];
-        if (!od) return '–';
-        if (od.mode === 'delta') return od.ods > 0 ? `💊 OD ×${od.ods}` : 'no OD';
-        if (od.mode === 'baseline') return od.ods > 0 ? `💊 OD ×${od.ods}?` : 'no OD*';
-        if (od.mode === 'lifetime') return `? (${fmt(od.lifetime)} ever)`;
-        return 'could not check';
-    }
-    function flagText(r) {
-        return r.freeloader ? '⚠ no hits' : r.stocker ? '📦 stocker' : (r.drawn ? 'ok' : '');
-    }
-
-    // Renders the four possible answers as four visibly different things. The
-    // whole point of the OD check is that "no OD" and "we couldn't find out" must
-    // never look the same — one clears a member, the other clears nobody.
-    function odCell(r) {
-        const od = state.odResults && state.odResults[r.id];
-        const label = odText(r);
-        if (!od) return '<span style="color:#5b6070">–</span>';
-        if (od.mode === 'delta') {
-            return od.ods > 0
-                ? `<span class="twpr-stale" title="Overdose count rose by ${od.ods} between the war's start and end (${od.before} → ${od.after}). An OD hospitalises for hours — this very likely explains the missing hits.">${label}</span>`
-                : `<span class="twpr-ok" title="Overdose count did not move across the war window (${od.before} → ${od.after}). No OD.">${label}</span>`;
-        }
-        if (od.mode === 'baseline') {
-            const when = od.since ? ' (' + dayStr(od.since) + ')' : '';
-            return od.ods > 0
-                ? `<span class="twpr-stale" title="Overdose count rose by ${od.ods} since this script last looked${when} — that span is wider than the war, so the OD may have happened outside it.">${label}</span>`
-                : `<span class="twpr-ok" title="No overdose since this script last looked${when}.">${label}</span>`;
-        }
-        if (od.mode === 'lifetime') {
-            return `<span style="color:#8b90a6" title="Torn would only give the LIFETIME total: ${od.lifetime} overdose(s) ever. That says nothing about this war. Re-run the check after the next war for a real comparison.">${label}</span>`;
-        }
-        return `<span class="twpr-loss" title="The lookup failed: ${od.err || 'unknown error'}. This is NOT a clean result.">${label}</span>`;
-    }
-
-    function drugRows() {
-        if (!state.drugs) return [];
-        const mode = drugFilter();
-        return state.drugs.list.filter(r => {
-            if (mode === 'took') return r.drawn > 0;
-            if (mode === 'freeload') return r.freeloader;
-            if (mode === 'nodrug') return r.hits > 0 && r.drawn === 0;
-            return r.drawn > 0 || r.hits > 0 || r.total > 0 || r.xanDeposited > 0;
-        });
-    }
-
-    function renderDrugs() {
-        const box = $('#twpr-drug-body');
-        if (!box) return;
-        const d = state.drugs;
-        if (!d) return;
-
-        const rows = drugRows();
-        const flagged = d.freeloaders.length;
-
-        // A window that returned nothing is NOT the same as a faction that took
-        // nothing, and the pane has to say which one it is.
-        const noData = d.uses === 0;
-
-        const kpis = `
-          <div class="twpr-kpis">
-            <div class="twpr-kpi"><div class="k">Xanax swallowed</div><div class="v" style="color:#ffd479">${fmt(d.totalXan)}</div>
-              <div class="s">${fmt(d.takers)} member${d.takers === 1 ? '' : 's'}</div></div>
-            <div class="twpr-kpi"><div class="k">Build-up</div><div class="v" style="color:#9fc7ff">${fmt(d.totalXanPre || 0)}</div>
-              <div class="s">before fighting started</div></div>
-            <div class="twpr-kpi"><div class="k">During war</div><div class="v" style="color:#ffd479">${fmt(d.totalXanWar || 0)}</div>
-              <div class="s">${d.totalXanPost ? fmt(d.totalXanPost) + ' after the bell' : 'while it was live'}</div></div>
-            <div class="twpr-kpi"><div class="k">Withdrawn</div><div class="v" style="color:#ff9a9a">${fmt(d.totalXanTaken || 0)}</div>
-              <div class="s">pulled to inventory${d.totalXanDeposited ? ' · ' + fmt(d.totalXanDeposited) + ' put in' : ''}</div></div>
-            <div class="twpr-kpi"><div class="k">Hits landed</div><div class="v">${fmt(d.totalHits)}</div>
-              <div class="s">war hits only</div></div>
-            <div class="twpr-kpi"><div class="k">Hits per Xanax</div>
-              <div class="v">${d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2)}</div>
-              <div class="s">faction average</div></div>
-            <div class="twpr-kpi"><div class="k">Took · no hits</div>
-              <div class="v" style="color:${flagged ? '#ff9a9a' : '#7fe3a0'}">${fmt(flagged)}</div>
-              <div class="s">${flagged ? 'burned stock for nothing' : 'nobody wasted stock'}</div></div>
-            <div class="twpr-kpi"><div class="k">Other drugs</div><div class="v">${fmt(d.totalOtherDrugs)}</div>
-              <div class="s">E, LSD, PCP, etc.</div></div>
-          </div>`;
-
-        const flagBox = flagged
-            ? `<div class="twpr-warnbox"><b>${fmt(flagged)}</b> member${flagged === 1 ? '' : 's'} swallowed faction Xanax
-               and landed <b>zero</b> war hits with it:
-               ${d.freeloaders.slice(0, 12).map(r => `${escHtml(r.name)} (${fmt(r.xanax)})`).join(', ')}${flagged > 12 ? ` … +${flagged - 12} more` : ''}.
-               Worth checking before you accuse anyone — a hospital stay, a travel trip, or Xanax taken for
-               a chain outside the war window all land here too.</div>`
-            : '';
-
-        const table = noData ? '' : `
-          <div class="twpr-tablewrap">
-            <table class="twpr">
-              <thead><tr>
-                <th title="Faction member [Torn ID]">Member</th>
-                <th title="Xanax taken from the armoury in the build-up, BEFORE the fighting started">Pre-war</th>
-                <th title="Xanax taken from the armoury while the war was live">In war</th>
-                <th title="Xanax swallowed straight from the armoury — 'used one of the faction's Xanax items'">Used</th>
-                <th title="Xanax pulled OUT of the armoury into their own inventory (gave/loaned to themselves). It leaves the faction either way, and after this the log never mentions it again.">Withdrew</th>
-                <th title="Used + withdrawn — everything that left the armoury because of this member">Total out</th>
-                <th title="Every other drug taken from the armoury (Ecstasy, LSD, PCP…)">Other</th>
-                <th title="Successful war hits landed on the enemy">Hits</th>
-                <th title="Hits landed per Xanax SWALLOWED — withdrawals are excluded, since the log cannot say whether they were ever used">Hits/Xan</th>
-                <th title="Respect earned from war hits">Respect</th>
-                <th title="Overdose check — only run for members who took drugs and landed no hits">OD</th>
-                <th title="Swallowed faction Xanax but landed nothing with it. Withdrawing stock never flags — that is supply, not use.">Flag</th>
-              </tr></thead>
-              <tbody>${rows.map(r => `<tr>
-                <td><span class="twpr-name">${escHtml(r.name)}</span> <span class="twpr-id">[${escHtml(r.id || '?')}]</span></td>
-                <td class="${r.xanPre ? 'twpr-pay' : ''}">${r.xanPre ? fmt(r.xanPre) : '—'}</td>
-                <td class="${r.xanWar ? 'twpr-stale' : ''}">${r.xanWar ? fmt(r.xanWar) : '—'}</td>
-                <td class="${r.xanax ? 'twpr-stale' : ''}">${fmt(r.xanax)}</td>
-                <td class="${r.xanTaken ? 'twpr-loss' : ''}">${r.xanTaken ? fmt(r.xanTaken) : '—'}</td>
-                <td><b>${fmt(r.drawn)}</b>${r.xanDeposited ? ` <span class="twpr-ok" title="Also put ${fmt(r.xanDeposited)} Xanax INTO the armoury">+${fmt(r.xanDeposited)} in</span>` : ''}</td>
-                <td>${r.otherDrugs ? fmt(r.otherDrugs) : '—'}</td>
-                <td class="twpr-win">${fmt(r.hits)}</td>
-                <td>${r.hitsPerXan == null ? '—' : r.hitsPerXan.toFixed(2)}</td>
-                <td class="twpr-respect">${fmt(Number(r.respect || 0).toFixed(2))}</td>
-                <td>${odCell(r)}</td>
-                <td class="${r.freeloader ? 'twpr-flag' : 'twpr-ok'}">${r.freeloader ? '⚠ no hits' : r.stocker ? '📦 stocker' : (r.drawn ? 'ok' : '')}</td>
-              </tr>`).join('')}</tbody>
-            </table>
-          </div>
-          <div class="twpr-note">${fmt(rows.length)} row(s) shown ·
-            drug window ${dayStr(d.pullFrom || d.firstTs)} → ${dayStr(d.pullTo || d.lastTs)} UTC
-            (${fmt(d.leadDays || 0)}d build-up + war + ${fmt(d.tailHours || 0)}h tail) ·
-            fighting started ${dayStr(d.warStart)} ·
-            ${fmt(d.entries)} armoury entries scanned${d.kinds ? ` — ${fmt(d.kinds.use || 0)} item uses, ${fmt(d.kinds.take || 0)} withdrawals, ${fmt(d.kinds.deposit || 0)} deposits` : ''}${d.unparsed ? `, ${fmt(d.unparsed)} other (retrieve / return / blood-bag fills)` : ''}.
-            ${d.unrecognised && d.unrecognised.length ? `<br><span style="color:#6a7080">Unrecognised phrasing sample: ${d.unrecognised.map(t => escHtml(t)).join(' · ')}</span>` : ''}</div>`;
-
-        const emptyNote = noData
-            ? `<div class="twpr-warnbox">The armoury log returned <b>no drug use at all</b> for this war window.
-               That usually means Torn has already pruned the news that far back (faction news doesn't keep
-               forever), or the faction genuinely runs on personal Xanax rather than armoury stock.
-               Recent wars parse cleanly — try the newest one to confirm the pull itself works.</div>`
-            : '';
-
-        markTab('drugs', true, flagged > 0);
-        const db = $('#twpr-drug-blank');
-        if (db) db.style.display = 'none';
-        box.innerHTML = kpis + flagBox + emptyNote + table +
-            `<div class="twpr-note" style="margin-top:8px;">
-               <b>Armoury only.</b> This counts Xanax taken <i>from the faction</i>. Somebody using their own
-               stash is invisible to the API entirely — there is no endpoint for it — so a 0 here means
-               "took none of yours", not "took none".</div>`;
-    }
-
-    async function onDrugRun() {
-        const key = $('#twpr-key').value.trim();
-        const war = state.war;
-        if (!key) { setStatus('Enter your API key first.', true); return; }
-        if (!war) { setStatus('Pull a war report first.', true); return; }
-
-        // The fighting window and the DRUG window are deliberately different.
-        // war.start is when hits begin, but the stack-up happens in the days
-        // before that, so the log pull reaches back over the build-up and the
-        // report buckets each use by which side of war.start it landed on.
-        const leadDays = Math.max(0, Math.min(14, Number($('#twpr-drug-lead').value) || 0));
-        const tailHours = Math.max(0, Math.min(72, Number($('#twpr-drug-tail').value) || 0));
-        const warStart = war.start;
-        const warEnd = war.end && war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
-        const from = warStart - Math.round(leadDays * 86400);
-        const to = warEnd + Math.round(tailHours * 3600);
-
-        const btn = $('#twpr-drug-run');
-        if (btn) btn.disabled = true;
-        setStatus('Pulling the faction armoury log…');
-        try {
-            const pulled = await pullArmoryNews(key, from, to, (count, page) => {
-                setStatus(`Pulling armoury log… ${fmt(count)} entries (page ${page})`);
-            });
-            state.drugs = buildDrugReport(state.ctx, state.report, pulled.list, { warStart, warEnd });
-            state.drugs.leadDays = leadDays;
-            state.drugs.tailHours = tailHours;
-            state.drugs.pullFrom = from;
-            state.drugs.pullTo = to;
-            renderDrugs();
-            const partialNote = pulled.partial ? ' (partial — Torn hiccuped; re-pull to fill in the rest)' : '';
-            setStatus(`Drug report built from ${fmt(pulled.list.length)} armoury entries${partialNote}. ` +
-                      `${fmt(state.drugs.totalXan)} Xanax taken by ${fmt(state.drugs.takers)} member(s).`, pulled.partial);
-            // Fold it into the same 30-day cache entry as the war report.
-            if (!pulled.partial && state.report) {
-                await cacheSave(war, state.report, state.report.__scanned || 0, false, state.drugs);
-            }
-        } catch (e) {
-            setStatus(e.message || 'Drug pull failed.', true);
-        } finally {
-            if (btn) btn.disabled = false;
-        }
-    }
-
-    /**
-     * Overdose check across a whole sweep.
-     *
-     * Only the population the question is about: members who took Xanax and
-     * landed nothing in that war. Checking everyone would multiply the call
-     * count by the roster to answer a question nobody asked about the people
-     * who obviously fought.
-     *
-     * A live war is skipped outright — with no published hits nobody is flagged
-     * in it, so there is no one to check and nothing the answer could mean.
-     */
-    /**
-     * @param opts.cacheOnly  Only reuse overdose checks already on disk; never
-     *                        call Torn. Costs nothing, so the sweep can do this
-     *                        pass unconditionally instead of hiding what it
-     *                        already knows behind a checkbox.
-     *
-     * Each war's result has been written to that war's cache slot since the
-     * feature shipped — it was simply never read back, so every sweep re-checked
-     * wars whose overdoses were already known and could not change.
-     */
-    async function sweepOverdoses(key, perWar, onProgress, opts) {
-        const cacheOnly = !!(opts && opts.cacheOnly);
-        const out = {};
-        for (const p of perWar) {
-            p.odEligible = false; p.odChecked = false; p.odFromCache = false;
-            if (p.hitsSrc === 'none' || !p.drugs || !p.drugs.list) continue;
-            // Not just the members who landed NOTHING. Someone who swallowed 8
-            // and landed 30 still burnt five Xanax worth of energy, and if an
-            // overdose is why, that is not waste either. The population is
-            // everyone whose war has measurable waste — which an OD would
-            // excuse. Members who have never overdosed cost one cached call.
-            const targets = p.drugs.list.filter(r =>
-                r.id && r.xanax > 0 && wastedEnergy(r.xanax, r.hits) >= ENERGY_PER_XANAX);
-            if (!targets.length) continue;
-            p.odEligible = true;
-
-            // A finished war's overdoses are settled history, so a stored result
-            // is as good as a fresh one. A LIVE war is different — someone can
-            // still overdose in it — so its cached result is never reused.
-            let res = null;
-            const ended = !!(p.war.end && p.war.end > 0);
-            if (ended) {
-                try {
-                    const c = await cacheLoad(p.war.warId);
-                    if (c && c.od) { res = c.od; p.odFromCache = true; }
-                } catch (e) { res = null; }
-            }
-            if (!res) {
-                if (cacheOnly) continue;
-                res = await checkOverdoses(key, targets, p.war,
-                    (i, n, name) => onProgress && onProgress(p.war, i, n, name));
-                // Stash the per-war (single-war-shaped) OD result in that war's cache
-                // slot, so selecting the war in the single-war view shows its OD column
-                // without re-checking Torn.
-                try { await cacheSave(p.war, null, null, false, null, null, res); } catch (e) {}
-            }
-            p.odChecked = true;
-            for (const [uid, o] of Object.entries(res)) {
-                const g = out[uid] || (out[uid] = { checked: 0, ods: 0, wars: 0, unknown: 0, byWar: {} });
-                g.checked++;
-                if ((o.mode === 'delta' || o.mode === 'baseline') && o.ods > 0) {
-                    g.ods += o.ods; g.wars++;
-                    // WHICH war matters twice over: it is what a leader is told,
-                    // and it is what decides whether that war's Xanax counts as
-                    // wasted at all.
-                    g.byWar[p.war.warId] = { ods: o.ods, opp: p.war.oppName, start: p.war.start };
-                } else if (o.mode === 'lifetime' || o.mode === 'error') g.unknown++;
-            }
-        }
-        return out;
-    }
-
-    /**
-     * An overdose is not waste.
-     *
-     * An OD puts you in hospital for hours and ends your war. The Xanax
-     * swallowed before it was not squandered — the member was physically
-     * prevented from spending that energy, which is a different thing entirely
-     * from taking stock and not bothering.
-     *
-     * So the affected war's waste moves OUT of "wasted" and into "excused". It
-     * is not deleted: both numbers stay visible, because "wasted 17" and
-     * "wasted 2, excused 15 to an overdose" are different conversations and a
-     * leader should be able to see which one they are having.
-     *
-     * Derived from wastedRaw every time, so running it twice is harmless.
-     */
-    function applyOdExcuses(sweep, odMap) {
-        if (!sweep || !sweep.list) return sweep;
-        for (const r of sweep.list) {
-            r.excused = 0; r.warsExcused = 0; r.odWars = [];
-            for (const p of Object.values(r.per)) { delete p.od; delete p.excused; }
-
-            const o = odMap && odMap[r.id];
-            if (o && o.byWar) {
-                for (const [warId, rec] of Object.entries(o.byWar)) {
-                    const p = r.per[warId];
-                    if (!p || !p.known) continue;
-                    p.od = rec.ods;
-                    // Excuse the SWALLOWED Xanax an OD prevented them spending —
-                    // p.used, not p.drawn. Charging the excuse on drawn would
-                    // credit a quartermaster's withdrawals back as if they were
-                    // wasted energy the OD saved, inflating the Excused total.
-                    const e = asXanax(wastedEnergy(p.used != null ? p.used : p.drawn, p.hits));
-                    if (e > 0) { r.excused += e; p.excused = true; }
-                    if (p.flagged) r.warsExcused++;
-                    r.odWars.push({ warId, ...rec });
-                }
-            }
-            r.wasted = r.wastedRaw == null ? null : Math.max(0, r.wastedRaw - r.excused);
-            // A member flagged three times, two of them overdoses, is not a
-            // repeat offender — the pattern is one war, not three.
-            r.warsFlaggedNet = Math.max(0, r.warsFlagged - r.warsExcused);
-            r.repeat = r.warsFlaggedNet >= 2;
-        }
-        sweep.totalWasted = sweep.list.reduce((t, r) => t + (r.wasted || 0), 0);
-        sweep.totalExcused = sweep.list.reduce((t, r) => t + (r.excused || 0), 0);
-        sweep.repeats = sweep.list.filter(r => r.repeat);
-        sweep.odMembers = sweep.list.filter(r => r.odWars && r.odWars.length);
-        sweep.list.sort((a, b) => (b.wasted || 0) - (a.wasted || 0)
-                               || b.warsFlaggedNet - a.warsFlaggedNet || b.totalUsed - a.totalUsed);
-        return sweep;
-    }
-
-    /* ---------------- multi-war sweep: UI ---------------- */
-
-    function fillSweepWars() {
-        const sel = $('#twpr-sweep-wars');
-        if (!sel || !state.wars || !state.wars.length) return;
-        // Called on every visit to the tab, so a rebuild would silently throw
-        // away a selection the user made before switching away.
-        const chosen = new Set([...sel.selectedOptions].map(o => o.value));
-        const markup = state.wars.map((w, i) => {
-            const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
-            const live = w.end ? '' : ' [LIVE]';
-            return `<option value="${i}">${when} vs ${escHtml(w.oppName)}${live}</option>`;
-        }).join('');
-        if (sel.innerHTML === markup) return;
-        sel.innerHTML = markup;
-        if (chosen.size) [...sel.options].forEach(o => { o.selected = chosen.has(o.value); });
-        else pickSweep(Math.min(3, state.wars.length));
-        updateSweepCost();
-    }
-
-    function pickSweep(n) {
-        const sel = $('#twpr-sweep-wars');
-        if (!sel) return;
-        [...sel.options].forEach((o, i) => { o.selected = n == null ? true : i < n; });
-    }
-
-    function sweepSelection() {
-        const sel = $('#twpr-sweep-wars');
-        if (!sel) return [];
-        let picked = [...sel.selectedOptions].map(o => state.wars[Number(o.value)]).filter(Boolean);
-        if ($('#twpr-sweep-skiplive') && $('#twpr-sweep-skiplive').checked) {
-            picked = picked.filter(w => w.end && w.end > 0);
-        }
-        return picked;
-    }
-
-    /**
-     * Say what a sweep will cost BEFORE it runs.
-     *
-     * Only war count moves the needle — the armoury log is one faction-wide
-     * stream per war, so no member filter can make the pull smaller. Saying so
-     * here stops the filters below from looking like they save time.
-     */
-    function updateSweepCost() {
-        const el = $('#twpr-sweep-cost');
-        if (!el) return;
-        const wars = sweepSelection();
-        if (!wars.length) { el.textContent = 'Pick at least one war.'; return; }
-        const live = [...($('#twpr-sweep-wars') || { selectedOptions: [] }).selectedOptions]
-            .map(o => state.wars[Number(o.value)]).filter(w => w && !(w.end > 0)).length;
-        el.innerHTML = `<b>${fmt(wars.length)}</b> war${wars.length === 1 ? '' : 's'} selected`
-            + (live && $('#twpr-sweep-skiplive') && $('#twpr-sweep-skiplive').checked
-                ? ` · ${live} live war${live === 1 ? '' : 's'} skipped` : '')
-            + `.<br>Roughly ${fmt(wars.length)}–${fmt(wars.length * 4)} API calls; cached wars cost nothing.`;
-    }
-
-    // Newest war on the RIGHT, so the row reads left-to-right as a timeline.
-    function sweepWarCols(s) { return s.wars.slice().sort((a, b) => (a.start || 0) - (b.start || 0)); }
-
-    /**
-     * Apply the Show filter.
-     *
-     * The threshold deliberately offers TOTAL or AVERAGE, because on a 5-war
-     * sweep they answer different questions: someone in one war with 8 hits and
-     * someone in five with 8 hits are not the same person, and a totals-only
-     * filter would quietly convict the first for having joined recently.
-     */
-    function sweepVisible(s) {
-        if (!s) return [];
-        const mode = ($('#twpr-sweep-show') || {}).value || 'all';
-        const thresh = Math.max(0, Number(($('#twpr-sweep-thresh') || {}).value) || 0);
-        const basis = ($('#twpr-sweep-basis') || {}).value || 'total';
-        const onlyTook = !!($('#twpr-sweep-onlytook') && $('#twpr-sweep-onlytook').checked);
-        const hideOd = !!($('#twpr-sweep-hideod') && $('#twpr-sweep-hideod').checked);
-
-        return s.list.filter(r => {
-            // Never show a row that carries no information at all.
-            if (!(r.totalDrawn > 0 || r.totalHits > 0)) return false;
-            if (onlyTook && r.totalDrawn <= 0) return false;
-            // An overdose ended their war. That is an explanation, and this
-            // lets a leader set it aside rather than argue with it.
-            if (hideOd) {
-                const o = state.sweepOd && state.sweepOd[r.id];
-                if (o && o.ods > 0) return false;
-            }
-            if (mode === 'took') return r.totalDrawn > 0;
-            // NET of overdose excuses — the HTML export's filter already is,
-            // and a member whose only flags were ODs must not be surfaced by
-            // a filter whose label says overdoses are excused.
-            if (mode === 'flagged') return (r.warsFlaggedNet ?? r.warsFlagged) > 0;
-            if (mode === 'repeat') return r.repeat;
-            // Both hit-based filters accuse someone of not fighting. Neither may
-            // fire on a member whose only wars are still live — we have no hit
-            // data on them, and "unknown" must never be filtered as "zero".
-            if (mode === 'zero') return r.hitsKnown && r.totalHits === 0;
-            if (mode === 'under') {
-                if (!r.hitsKnown) return false;
-                const v = basis === 'avg' ? (r.avgHits == null ? 0 : r.avgHits) : r.totalHits;
-                return v < thresh;
-            }
-            if (mode === 'waste') {
-                if (r.wasted == null) return false;   // unmeasured is not "over the line"
-                const v = basis === 'avg' ? (r.warsKnown ? r.wasted / r.warsKnown : 0) : r.wasted;
-                return v > thresh;
-            }
-            if (mode === 'od') {
-                const o = state.sweepOd && state.sweepOd[r.id];
-                return !!(o && o.ods > 0);
-            }
-            return true;
-        });
-    }
-
-    // One sentence naming exactly what is on screen, so a screenshot of this
-    // table can never be mistaken for the whole faction.
-    function sweepFilterLabel(shown, total) {
-        const mode = ($('#twpr-sweep-show') || {}).value || 'all';
-        const thresh = Number(($('#twpr-sweep-thresh') || {}).value) || 0;
-        const basis = ($('#twpr-sweep-basis') || {}).value || 'total';
-        const onlyTook = !!($('#twpr-sweep-onlytook') && $('#twpr-sweep-onlytook').checked);
-        const hideOd = !!($('#twpr-sweep-hideod') && $('#twpr-sweep-hideod').checked);
-        const what = {
-            all: 'everyone with any drug or hit activity',
-            took: 'members who took faction Xanax',
-            zero: 'members who landed ZERO hits in every swept war',
-            under: `members under ${fmt(thresh)} ${basis === 'avg' ? 'hits per war on average' : 'total hits'}`,
-            waste: `members who wasted more than ${fmt(thresh)} Xanax ${basis === 'avg' ? 'per war on average' : 'in total'}`,
-            od: 'members with a confirmed overdose during a war',
-            flagged: 'members flagged in at least one war',
-            repeat: 'repeat offenders — flagged in 2 or more wars',
-        }[mode];
-        return `Showing <b>${fmt(shown)}</b> of ${fmt(total)} — ${what}`
-             + (onlyTook && mode !== 'took' ? ', and only those who took Xanax' : '')
-             + (hideOd ? ', excluding confirmed overdoses' : '') + '.';
-    }
-
-    /* RAINBOW COLUMNS, corrected.
-     *
-     * The first version painted the Xanax number in its column's hue. That was
-     * a mistake, and it was spotted immediately from a screenshot: the Disciples
-     * column is green, so "3 / 0" there looked like a PASS — green reads as good
-     * in every other part of this tool. The hue meant "column 3" and nothing
-     * else, but nobody reads it that way, and a colour that looks like a verdict
-     * IS a verdict whatever the legend claims.
-     *
-     * So the hue moved off the text and onto the column BACKGROUND, which is
-     * what a rainbow-CSV viewer actually does. You still track a column by tint,
-     * and the numbers are now free to mean something:
-     *
-     *     Xanax  — always amber, matching the "Xanax out" tile above
-     *     Hits   — green when they landed some, red when they landed none
-     *
-     * One colour per quantity, the same everywhere in the pane. */
-    const SWEEP_HUES = ['#7fd4ff', '#ffd479', '#8ee6a0', '#ff9ecf', '#c3a6ff',
-                        '#ffb37a', '#8ee6d5', '#e8e07a', '#ff9a9a', '#a8c8ff'];
-    const hueOf = (i) => SWEEP_HUES[i % SWEEP_HUES.length];
-
-    /**
-     * Overdose verdict for a sweep row.
-     *
-     * Four visibly different outcomes, and "not checked" must never look like
-     * "clean" — that distinction is the entire reason this feature exists
-     * rather than a blank column.
-     */
-    function odCellSweep(r) {
-        const o = state.sweepOd && state.sweepOd[r.id];
-        if (!o) return '<span style="color:#4e5468" title="Not checked — tick “Check overdoses automatically” and sweep again">·</span>';
-        if (o.ods > 0) {
-            // Name the wars. "1 overdose" is not actionable; "overdosed during
-            // Bravo Company" is, and the war window is the honest resolution —
-            // Torn's snapshot is daily, so a precise time would be invented.
-            const where = (r.odWars || []).map(x =>
-                escHtml(x.opp) + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '')
-                + (x.ods > 1 ? ' ×' + x.ods : '')).join(', ');
-            return `<span style="color:#ff8080;font-weight:700" title="Overdosed during ${where || o.wars + ' war(s)'} — that ended their war, so those Xanax are excused rather than wasted">💊 ${where || o.ods}</span>`;
-        }
-        if (o.unknown) return `<span style="color:#ffd479" title="${o.unknown} of ${o.checked} war(s) could not be determined — Torn returned only a lifetime total">?</span>`;
-        return '<span style="color:#7fe3a0" title="Checked across every flagged war — no overdose">—</span>';
-    }
-
-    /** Waste is a scale, not a yes/no — so is its colour. */
-    function wasteColor(r) {
-        if (r.wasted == null) return '#5c6178';
-        if (r.wasted < 0.05) return '#7fe3a0';
-        if (r.wasted < 3) return '#ffd479';
-        return '#ff8080';
-    }
-
-    function renderSweep() {
-        const box = $('#twpr-sweep-body');
-        if (!box) return;
-        const s = state.sweep;
-        if (!s) { box.innerHTML = ''; return; }
-
-        const filterRow = $('#twpr-sweep-filters');
-        if (filterRow) filterRow.style.display = 'block';
-
-        const cols = sweepWarCols(s);
-        const repeats = s.repeats.length;
-        const everyone = s.list.filter(r => r.totalDrawn > 0 || r.totalHits > 0);
-        const rows = sweepVisible(s);
-
-        const kpis = `
-          <div class="twpr-kpis">
-            <div class="twpr-kpi"><div class="k">Wars swept</div><div class="v">${fmt(s.wars.length)}</div>
-              <div class="s">${s.unknownWars.length ? fmt(s.unknownWars.length) + ' without hit data' : 'all with hit data'}</div></div>
-            <div class="twpr-kpi"><div class="k">Xanax wasted</div>
-              <div class="v" style="color:${s.totalWasted ? '#ff8080' : '#7fe3a0'}">${fmt(s.totalWasted)}</div>
-              <div class="s">of ${fmt(s.totalUsed)} swallowed · ${fmt(Math.round(s.totalWasted * ENERGY_PER_XANAX))} energy</div></div>
-            <div class="twpr-kpi"><div class="k">Hits landed</div><div class="v" style="color:#7fe3a0">${fmt(s.totalHits)}</div>
-              <div class="s">official war reports</div></div>
-            <div class="twpr-kpi"><div class="k">Wasted a war</div>
-              <div class="v" style="color:${s.flaggedAny.length ? '#ffd479' : '#7fe3a0'}">${fmt(s.flaggedAny.length)}</div>
-              <div class="s">took Xanax, landed 0 hits</div></div>
-            <div class="twpr-kpi"><div class="k">Repeat offenders</div>
-              <div class="v" style="color:${repeats ? '#ff9a9a' : '#7fe3a0'}">${fmt(repeats)}</div>
-              <div class="s">did it in 2+ wars</div></div>
-          </div>`;
-
-        // The one finding a single-war report physically cannot produce.
-        const repeatBox = repeats
-            ? `<div class="twpr-warnbox"><b>${fmt(repeats)}</b> member${repeats === 1 ? '' : 's'} drew Xanax and landed
-               nothing in <b>two or more</b> wars:
-               ${s.repeats.slice(0, 12).map(r => `${escHtml(r.name)} — ${(r.wasted || 0).toFixed(1)} Xanax wasted, ${r.warsFlaggedNet ?? r.warsFlagged} of ${r.warsSeen} wars with nothing landed`).join(' · ')}${repeats > 12 ? ` … +${repeats - 12} more` : ''}.
-               One bad war is a hospital stay. The same name every war is a pattern — but check travel and
-               hospital time before you act on it.</div>`
-            : (s.flaggedAny.length
-                ? `<div class="twpr-note" style="margin:8px 0;">Nobody was flagged in more than one war — the misses
-                   look like one-offs rather than a habit.</div>`
-                : '');
-
-        const caveats = [];
-        if (s.unknownWars.length) {
-            caveats.push(`<b>${fmt(s.unknownWars.length)} war${s.unknownWars.length === 1 ? '' : 's'}</b> had no hit data
-              (${s.unknownWars.map(w => escHtml(w.oppName)).join(', ')}) — Torn only publishes the report once a war ENDS.
-              Their Xanax still counts, but <b>nobody can be flagged in them</b>, so <b>?</b> in the hits slot means
-              unknown, not idle.`);
-        }
-        if (s.emptyWars.length) {
-            caveats.push(`<b>${fmt(s.emptyWars.length)} war${s.emptyWars.length === 1 ? '' : 's'}</b> returned no armoury
-              activity (${s.emptyWars.map(w => escHtml(w.oppName)).join(', ')}) — Torn prunes faction news, so older wars
-              come back thin or empty. That is missing data, not a clean faction.`);
-        }
-        const caveatBox = caveats.length
-            ? `<div class="twpr-warnbox" style="border-color:rgba(255,212,121,.35);">${caveats.join('<br><br>')}</div>` : '';
-
-        // Read this and the table needs no explaining.
-        const legend = `
-          <div class="twpr-legend">
-            <span>Each war cell reads
-              <span class="sw" style="color:#ffd479;background:rgba(255,212,121,.14)">14</span>
-              <b>Xanax they swallowed</b> <span style="color:#5c6178">/</span>
-              <span class="sw" style="color:#7fe3a0">9</span> <b>hits they landed</b>
-              — amber is always Xanax, green is always hits.</span>
-            <span><span class="sw" style="color:#7f8aa3">+431</span>
-              also withdrew stock into their own inventory — supplying the faction,
-              so it is <b>never</b> counted as waste</span>
-            <span><span class="sw" style="color:#ff8080;background:rgba(255,120,120,.16)">3 / 0 ⚠</span>
-              took Xanax, landed <b>nothing</b> that war</span>
-            <span><span class="sw" style="color:#4e5468">–</span> not in that war &nbsp;
-              <span class="sw" style="color:#4e5468">/ ?</span> war still live, hits not published yet</span>
-          </div>`;
-
-        const cell = (r, w, i) => {
-            const p = r.per[w.warId];
-            const c = hueOf(i);
-            // Swallowed is what the cell reports. A withdrawal is shown as a
-            // separate "+N" so a quartermaster's activity is visible without
-            // being counted against them.
-            const u = p && (p.used != null ? p.used : p.drawn);
-            const tk = p ? (p.taken || 0) : 0;
-            const plus = tk ? ` <span class="tk" title="Also withdrew ${fmt(tk)} into their own inventory — not counted as waste">+${fmt(tk)}</span>` : '';
-            // The hue is a BACKGROUND wash now, never the number's colour.
-            const sp = `twpr-wcell col${i % SWEEP_HUES.length}` + (i === 0 ? ' twpr-split' : '');
-            if (!p) return `<td class="${sp} none" title="${escHtml(r.name)} does not appear in this war's data at all — they were not in the faction, or took nothing and landed nothing">–</td>`;
-            if (!p.known) {
-                return `<td class="${sp} none" title="${escHtml(w.oppName)} is still live — Torn publishes hits only after a war ends, so this cannot be judged">`
-                     + `<span class="x">${fmt(u)}</span> <span class="sep">/ ?</span>${plus}</td>`;
-            }
-            // An overdose outranks the flag. They took the Xanax and landed
-            // nothing, but they were hospitalised — leaving the red warning on
-            // would keep accusing someone the data has already explained.
-            if (p.od) {
-                return `<td class="${sp} excused" title="Overdosed during ${escHtml(w.oppName)} — an OD hospitalises you for hours and ends your war, so these ${fmt(u)} Xanax are excused rather than wasted">`
-                     + `<span class="x">${fmt(u)}</span> <span class="sep">/</span> <span class="h">${fmt(p.hits)}</span><span class="od">OD</span>${plus}</td>`;
-            }
-            if (p.flagged) {
-                return `<td class="${sp} flag" title="Swallowed ${fmt(u)} Xanax from the armoury and landed 0 hits vs ${escHtml(w.oppName)} — ${fmt(u)} wasted">`
-                     + `<span class="x">${fmt(u)}</span> <span class="sep">/</span> <span class="h">0</span><span class="mk">⚠</span>${plus}</td>`;
-            }
-            const tip = p.stocker
-                ? `${escHtml(r.name)} put more Xanax INTO the armoury than they took out — never flagged`
-                : `${fmt(u)} swallowed · ${fmt(p.hits)} hits landed vs ${escHtml(w.oppName)}${tk ? ` · ${fmt(tk)} withdrawn, not charged` : ''}`;
-            return `<td class="${sp}" title="${tip}">`
-                 + `<span class="x">${fmt(u)}</span> `
-                 + `<span class="sep">/</span> <span class="h">${fmt(p.hits)}</span>${plus}</td>`;
-        };
-
-        const table = !rows.length
-            ? `<div class="twpr-warnbox">No member matches this filter. ${fmt(everyone.length)} member(s) have activity —
-               set <b>Show</b> back to <b>Everyone</b> to see them.</div>`
-            : `<div class="twpr-tablewrap">
-            <table class="twpr">
-              <thead>
-              <tr class="twpr-grp">
-                <th></th>
-<th class="g-tot" colspan="9">Totals across ${fmt(s.wars.length)} war${s.wars.length === 1 ? '' : 's'}</th>
-                <th class="g-war twpr-split" colspan="${cols.length}">Each war — Xanax swallowed / hits landed</th>
-              </tr>
-              <tr>
-                <th title="Faction member [Torn ID]">Member</th>
-                <th title="How many of the swept wars this member took Xanax in and landed ZERO hits. This is the column that matters — 2 or more is a pattern.">Wasted<br><span style="font-weight:400;color:#8b90a6;font-size:10px">wars</span></th>
-                <th title="Energy that left the armoury and never became a war hit, expressed in Xanax. A Xanax is 250 energy and a hit costs 25, so one Xanax is worth TEN hits — someone who draws 10 and lands 5 has wasted 9.5 of them. Never negative: natural regen means an active fighter lands more than their Xanax paid for, and that surplus must not cancel out somebody else's waste.">Wasted<br><span style="font-weight:400;color:#ff8080;font-size:10px">Xanax</span></th>
-                <th title="Waste an overdose excuses. An OD hospitalises you for hours and ends your war, so the Xanax swallowed before it was not squandered — the member was prevented from spending that energy. Shown separately rather than deleted, because “wasted 2, excused 15” and “wasted 17” are different conversations.">Excused<br><span style="font-weight:400;color:#9fc7ff;font-size:10px">overdose</span></th>
-                <th title="Xanax this member SWALLOWED straight from the armoury. This is the figure waste and efficiency are measured on, because this energy certainly entered a body.">Used<br><span style="font-weight:400;color:#ffd479;font-size:10px">swallowed</span></th>
-                <th title="Xanax moved out of the armoury into their own inventory, minus anything they put back. The log never mentions it again, so this is NOT counted as waste — they may be handing it out, holding it for the next war, or restocking. A large number here is a question, not a verdict.">Withdrew<br><span style="font-weight:400;color:#9fc7ff;font-size:10px">net, unspent</span></th>
-                <th title="Total successful war hits across every swept war, from Torn's official reports">Hits<br><span style="font-weight:400;color:#7fe3a0;font-size:10px">total</span></th>
-                <th title="Average hits per war this member actually appeared in — the fair comparison when people joined at different times">Avg<br><span style="font-weight:400;color:#8b90a6;font-size:10px">hits/war</span></th>
-                <th title="Overdoses confirmed during the swept wars, for members who took Xanax and landed nothing. An OD hospitalises you for hours and ends your war — the most common innocent explanation. A dot means NOT CHECKED; it never means clean.">OD<br><span style="font-weight:400;color:#8b90a6;font-size:10px">during war</span></th>
-                <th title="Hits landed per Xanax taken. TEN is break-even — that is exactly what 250 energy buys. Below 10 they are not converting what they take; above 10 they are also fighting on natural regen, which is what you want to see.">Hits/Xan<br><span style="font-weight:400;color:#8b90a6;font-size:10px">10 = break-even</span></th>
-                ${cols.map((w, i) => `<th class="twpr-wh${i === 0 ? ' twpr-split' : ''}" title="${escHtml(w.oppName)} — ${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : 'date unknown'}${w.hitsSrc === 'none' ? ' · still live, no hit data' : ''}">
-                    <span class="n" style="color:${hueOf(i)}">${escHtml(String(w.oppName).slice(0, 12))}</span>
-                    <span class="d">${w.start ? new Date(w.start * 1000).toISOString().slice(5, 10).replace('-', '/') : '?'}${w.hitsSrc === 'none' ? ' LIVE' : ''}</span>
-                    <span class="u"><span class="x" style="color:${hueOf(i)}">xan</span> / <span class="h">hits</span></span>
-                  </th>`).join('')}
-              </tr></thead>
-              <tbody>${rows.map(r => {
-                // "?" not "0" — see hitsKnown in buildSweep.
-                const unk = `<span class="twpr-wcell none" title="Every war this member appears in is still live, so Torn has published no hits for them. This is unknown, not zero.">?</span>`;
-                return `<tr>
-                <td><span class="twpr-name">${escHtml(r.name)}</span> <span class="twpr-id">[${escHtml(r.id || '?')}]</span></td>
-                <td class="${(r.warsFlaggedNet ?? r.warsFlagged) ? (r.repeat ? 'twpr-repeat' : 'twpr-flag') : 'twpr-ok'}"
-                    title="${r.warsFlagged
-                      ? `Took Xanax and landed nothing in ${r.warsFlagged} of the ${r.warsSeen} war(s) they appear in${r.warsExcused ? ` — ${r.warsExcused} explained by an overdose` : ''}`
-                      : 'Never took Xanax without landing hits'}">${(r.warsFlaggedNet ?? r.warsFlagged)
-                        ? `${r.warsFlaggedNet ?? r.warsFlagged} of ${r.warsSeen}` : '—'}${r.warsExcused ? ' <span style="color:#9fc7ff;font-size:10px">+' + r.warsExcused + ' OD</span>' : ''}</td>
-                <td style="color:${wasteColor(r)};font-weight:${(r.wasted || 0) >= 1 ? 700 : 400}"
-                    title="${r.wasted == null ? 'No hit data yet — waste cannot be measured'
-                      : r.wasted < 0.05 ? 'Converted everything they drew into hits'
-                      : `${Math.round(r.wasted * ENERGY_PER_XANAX).toLocaleString()} energy drawn but never spent on a war hit${r.worstWar ? ` — worst vs ${escHtml(r.worstWar.opp)}: ${fmt(r.worstWar.drawn)} Xanax for ${fmt(r.worstWar.hits)} hits` : ''}`}">${r.wasted == null ? '?' : r.wasted < 0.05 ? '—' : r.wasted.toFixed(1)}</td>
-                <td style="color:${(r.excused || 0) >= 0.05 ? '#9fc7ff' : '#4e5468'}"
-                    title="${(r.excused || 0) >= 0.05
-                      ? `${r.excused.toFixed(1)} Xanax not counted as waste because they overdosed`
-                      : 'Nothing excused'}">${(r.excused || 0) >= 0.05 ? r.excused.toFixed(1) : '—'}</td>
-                <td style="color:#ffd479;font-weight:700">${fmt(r.totalUsed)}</td>
-                <td style="color:${r.unaccounted ? '#9fc7ff' : '#5c6178'}"
-                    title="${r.unaccounted ? `${fmt(r.totalTaken)} withdrawn${r.totalDeposited ? `, ${fmt(r.totalDeposited)} deposited back` : ''} — whereabouts unknown, so not charged as waste` : 'Never moved stock into their own inventory'}">${r.unaccounted ? fmt(r.unaccounted) : '—'}</td>
-                <td style="color:#7fe3a0">${r.hitsKnown ? fmt(r.totalHits) : unk}</td>
-                <td>${r.avgHits == null ? unk : r.avgHits.toFixed(1)}</td>
-                <td>${odCellSweep(r)}</td>
-                <td style="color:${r.hitsPerXan == null ? '#5c6178' : r.hitsPerXan >= HITS_PER_XANAX ? '#7fe3a0' : r.hitsPerXan >= HITS_PER_XANAX / 2 ? '#ffd479' : '#ff8080'};font-weight:600"
-                    title="${r.hitsPerXan == null ? '' : `${(r.hitsPerXan / HITS_PER_XANAX * 100).toFixed(0)}% of what their Xanax could have bought`}">${r.hitsPerXan == null ? (r.hitsKnown ? '—' : unk) : r.hitsPerXan.toFixed(1)}</td>
-                ${cols.map((w, i) => cell(r, w, i)).join('')}
-              </tr>`; }).join('')}</tbody>
-            </table>
-          </div>`;
-
-        const shownNote = `<div class="twpr-note">${sweepFilterLabel(rows.length, everyone.length)}
-            Wars run oldest → newest, left to right. Exports follow this filter.</div>`;
-
-        markTab('sweep', true, repeats > 0);
-        const cnt = $('#twpr-sweep-count');
-        if (cnt) cnt.textContent = `${fmt(rows.length)} of ${fmt(everyone.length)} shown`;
-        box.innerHTML = kpis + repeatBox + caveatBox + legend + table + shownNote;
-    }
-
-    async function onSweepRun() {
-        const key = $('#twpr-key').value.trim();
-        if (!key) { setStatus('Enter your API key first.', true); return; }
-        if (!state.ctx || !state.wars || !state.wars.length) { setStatus('Load wars first.', true); return; }
-        const wars = sweepSelection();
-        if (!wars.length) { setStatus('Pick at least one war to sweep.', true); return; }
-
-        const opts = {
-            leadDays: Number($('#twpr-sweep-lead').value) || 0,
-            tailHours: Number($('#twpr-sweep-tail').value) || 0,
-            useCache: !!($('#twpr-sweep-cache') && $('#twpr-sweep-cache').checked),
-        };
-
-        const btn = $('#twpr-sweep-run');
-        if (btn) btn.disabled = true;
-        try {
-            const perWar = await sweepWars(key, state.ctx, wars, opts, (i, n, war, msg) => {
-                setStatus(`Sweeping war ${i}/${n} — vs ${war.oppName}: ${msg}`);
-            });
-            state.sweep = buildSweep(perWar);
-            state.sweep.meta = { leadDays: opts.leadDays, tailHours: opts.tailHours,
-                                 useCache: opts.useCache, at: Date.now() };
-            state.sweepOd = null;
-            renderSweep();
-
-            // Only the flagged are checked, and only in wars that published
-            // hits — see sweepOverdoses. Readings are cached permanently, so
-            // this is nearly free after the first run.
-            if ($('#twpr-sweep-autood') && $('#twpr-sweep-autood').checked) {
-                state.sweepOd = await sweepOverdoses(key, perWar, (war, i, n, name) => {
-                    setStatus(`Checking overdoses — vs ${war.oppName}: ${i}/${n} (${name})`);
-                });
-                applyOdExcuses(state.sweep, state.sweepOd);
-                renderSweep();
-            }
-            const reused = perWar.filter(p => p.fromCache).length;
-            const saved = perWar.filter(p => p.cachedNow).length;
-            const odFound = state.sweepOd
-                ? Object.values(state.sweepOd).filter(o => o.ods > 0).length : 0;
-            const partials = perWar.filter(p => p.partial).length;
-            setStatus(`Swept ${fmt(wars.length)} war(s)${reused ? ` — ${reused} reused from cache` : ''}` +
-                      `${saved ? `, ${saved} newly cached (re-sweeping them is now free)` : ''}. ` +
-                      `${fmt(state.sweep.repeats.length)} repeat offender(s), ${fmt(state.sweep.flaggedAny.length)} flagged at least once.` +
-                      (state.sweepOd ? ` ${odFound} member(s) overdosed.` : '') +
-                      (partials ? ` ${partials} war(s) pulled partially and were NOT cached — re-run to fill in.` : ''), partials > 0);
-        } catch (e) {
-            setStatus(e.message || 'Sweep failed.', true);
-        } finally {
-            if (btn) btn.disabled = false;
-        }
-    }
-
-    /* ---------------- multi-war sweep: exports ---------------- */
-
-    /**
-     * Who overdosed, and in which war. Sorted worst first.
-     *
-     * "8 members overdosed" is not actionable; "Ashvile OD'd during Bravo
-     * Company" is. The war is the closest thing to a timestamp Torn will give
-     * us — the personalstats snapshot is daily, so the war window is the
-     * resolution, and claiming an exact minute would be inventing precision.
-     */
-    function sweepOdRollCall(s) {
-        if (!s || !s.odMembers || !s.odMembers.length) return [];
-        return s.odMembers.slice()
-            .sort((a, b) => (b.excused || 0) - (a.excused || 0))
-            .map(r => ({
-                name: r.name, id: r.id, excused: r.excused || 0,
-                wars: r.odWars.slice().sort((a, b) => (a.start || 0) - (b.start || 0)),
-            }));
-    }
-
-    /** Plain text, no markup — the same lines feed a CSV and a chat message. */
-    const stripTags = (h) => String(h).replace(/<[^>]+>/g, '');
-
-    /**
-     * Everything that shaped the numbers underneath.
-     *
-     * The waste model is in here deliberately: WastedXanax means nothing without
-     * knowing a Xanax was priced at 250 energy and a hit at 25, and a
-     * spreadsheet long outlives the panel that produced it.
-     */
-    function sweepSettingsLines() {
-        const s = state.sweep;
-        if (!s) return [];
-        const m = s.meta || {};
-        const rows = sweepVisible(s);
-        const warNames = s.wars.slice()
-            .sort((a, b) => (a.start || 0) - (b.start || 0))
-            .map(w => `${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?'} ${w.oppName}${w.hitsSrc === 'none' ? ' (LIVE — no hits published)' : ''}`);
-
-        const out = [
-            'Torn War Payout Report — multi-war drug sweep',
-            `Generated: ${new Date().toISOString().replace('T', ' ').slice(0, 16)} UTC`,
-            `Wars swept (${s.wars.length}): ${warNames.join(' | ')}`,
-        ];
-        if (m.leadDays != null) out.push(`Drug window: ${m.leadDays}d build-up + the war + ${m.tailHours}h tail`);
-        out.push("Hits: Torn's official war reports. A live war publishes none, so nobody can be flagged in one.");
-        out.push(`Waste model: 1 Xanax = ${ENERGY_PER_XANAX} energy, 1 hit = ${ENERGY_PER_HIT} energy, so break-even is ${HITS_PER_XANAX} hits per Xanax.`);
-        out.push('Waste is charged on Xanax SWALLOWED only — withdrawals to inventory are listed separately and never counted as waste.');
-        out.push(`Filter: ${stripTags(sweepFilterLabel(rows.length, s.list.length))}`);
-        out.push(state.sweepOd
-            ? 'Overdose check: run. A member with no reading is marked unknown, never clean.'
-            : 'Overdose check: NOT run — an empty OD column means unchecked, not clean.');
-        return out;
-    }
-
-    // Exports follow the on-screen filter. A CSV that quietly contains people
-    // the table was hiding is how a "these six wasted stock" message ends up
-    // with forty names in the attachment.
-    function buildSweepCsv() {
-        const s = state.sweep;
-        if (!s) return null;
-        const cols = sweepWarCols(s);
-        const visible = sweepVisible(s);
-        if (!visible.length) return null;
-        const head = ['Member', 'ID', 'WastedWars', 'WarsSeen', 'TotalXanaxOut', 'TotalHits',
-                      'AvgHitsPerWar', 'HitsPerXanax', 'XanaxUsed', 'XanaxWithdrawnNet',
-                      'WastedXanax', 'WastedEnergy', 'EfficiencyPct',
-                      'ExcusedXanax', 'OverdoseWars', 'OverdosedIn'];
-        // Same helper the workbook uses, so the two exports can never label the
-        // same war differently. The full names stay in the metadata block above.
-        const warLabels = warShortNames(cols);
-        cols.forEach((w, i) => {
-            head.push(warLabels[i] + ' XanaxSwallowed', warLabels[i] + ' Hits');
-        });
-        // Metadata first, one quoted cell per row, then a blank line. Excel and
-        // Sheets both read those as plain text rows and leave the table intact.
-        const lines = sweepSettingsLines().map(l => csvCell(l));
-        lines.push('');
-        lines.push(head.map(csvCell).join(','));
-        for (const r of visible) {
-            // Blank, never 0, where hits are unknown — a spreadsheet cell reading
-            // 0 is an assertion, and an empty one is an honest absence.
-            const row = [r.name, r.id || '', r.warsFlagged, r.warsSeen,
-                         r.totalDrawn,
-                         r.hitsKnown ? r.totalHits : '',
-                         r.avgHits == null ? '' : r.avgHits.toFixed(1),
-                         r.hitsPerXan == null ? '' : r.hitsPerXan.toFixed(2),
-                         r.totalUsed, r.unaccounted,
-                         r.wasted == null ? '' : r.wasted.toFixed(2),
-                         r.wasted == null ? '' : Math.round(r.wasted * ENERGY_PER_XANAX),
-                         r.efficiency == null ? '' : (r.efficiency * 100).toFixed(0),
-                         (r.excused || 0) >= 0.05 ? r.excused.toFixed(2) : '',
-                         r.odWars ? r.odWars.length : '',
-                         // Blank when unchecked — an empty cell is an absence,
-                         // where "none" would be a claim nobody verified.
-                         !state.sweepOd ? '' : (r.odWars || []).map(x =>
-                             x.opp + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(0, 10) : '')).join('; ')];
-            for (const w of cols) {
-                const p = r.per[w.warId];
-                row.push(p ? (p.used != null ? p.used : p.drawn) : '');
-                // Blank, not 0 — an unknown-hits war must not export as "landed nothing".
-                row.push(p ? (p.known ? p.hits : '') : '');
-            }
-            lines.push(row.map(csvCell).join(','));
-        }
-        return { text: lines.join('\r\n'), rows: visible.length };
-    }
-
-    // ASCII only inside the block: Discord's monospace font renders emoji at
-    // double width, which shears every column to their right out of alignment.
-    function buildSweepDiscord() {
-        const s = state.sweep;
-        if (!s) return null;
-        const rows = sweepVisible(s);
-        if (!rows.length) return null;
-
-        // Spelled out, not abbreviated. This gets pasted into faction chat
-        // where nobody has the legend in front of them.
-        const headers = ['Player', 'Wasted', 'Xanax', 'Hits', 'Hits/Xan'];
-        const body = rows.map(r => [
-            r.name,
-            r.wasted == null ? '?' : r.wasted < 0.05 ? '-' : r.wasted.toFixed(1),
-            // Swallowed — the key below says "charged on Xanax swallowed only",
-            // and this column printing drawn made the table contradict its own
-            // caption. A "+" marks members who also withdrew stock.
-            String(r.totalUsed) + (r.unaccounted > 0 ? '+' : ''),
-            r.hitsKnown ? String(r.totalHits) : '?',
-            r.hitsPerXan == null ? (r.hitsKnown ? '-' : '?') : r.hitsPerXan.toFixed(1),
-        ]);
-        const w = headers.map((_, i) => Math.max(...[headers, ...body].map(row => row[i].length)));
-        const line = (row) => row.map((c, i) =>
-            i === 0 ? c.padEnd(w[i]) : c.padStart(w[i])).join('  ').replace(/\s+$/, '');
-
-        const span = `${s.wars.length} war${s.wars.length === 1 ? '' : 's'}`;
-        const head = `**Multi-war drug sweep — ${span}**\n`
-            + `${fmt(s.totalUsed)} Xanax swallowed${s.totalUnaccounted ? ` (+${fmt(s.totalUnaccounted)} withdrawn as stock, not charged)` : ''}, ${fmt(s.totalHits)} war hits`
-            + (s.totalUsed ? ` (${(s.totalHits / s.totalUsed).toFixed(2)} hits per Xanax swallowed)` : '') + '.\n'
-            + (s.repeats.length
-                ? `:warning: ${s.repeats.length} member${s.repeats.length === 1 ? '' : 's'} took stock and landed nothing in 2+ wars.\n`
-                : (s.flaggedAny.length ? `${s.flaggedAny.length} flagged in a single war; no repeat offenders.\n` : 'Nobody was flagged.\n'))
-            + (s.unknownWars.length ? `_${s.unknownWars.length} war(s) had no hit data yet and cannot flag anyone._\n` : '')
-            // Say what the block IS. A filtered table pasted without this reads
-            // as the whole faction, and names an innocent majority by omission.
-            + `_Wasted = Xanax whose energy never became a hit (1 Xanax = ${ENERGY_PER_XANAX} E = ${HITS_PER_XANAX} hits), charged on Xanax swallowed only; a ${String.fromCharCode(96)}+${String.fromCharCode(96)} means they also withdrew stock (not charged). Hits/Xan: ${HITS_PER_XANAX} is break-even._\n`
-            + `_${stripTags(sweepFilterLabel(rows.length, s.list.length))}${state.sweepOd ? '' : ' Overdoses not checked.'}_\n`;
-
-        // Who overdosed, and where. This is the half the table cannot show:
-        // the column says "1", this says which war it was.
-        const roll = sweepOdRollCall(s);
-        const odBlock = roll.length
-            ? '\n**Overdosed during a war** — their Xanax that war is excused, not wasted:\n'
-              + roll.slice(0, 15).map(r =>
-                  '\u2022 ' + r.name + ' — ' + r.wars.map(x =>
-                      x.opp + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '')
-                      + (x.ods > 1 ? ' (x' + x.ods + ')' : '')).join(', ')
-                  + (r.excused >= 0.05 ? ' [' + r.excused.toFixed(1) + ' Xanax excused]' : '')).join('\n')
-              + (roll.length > 15 ? '\n\u2026 +' + (roll.length - 15) + ' more' : '') + '\n'
-            : (state.sweepOd ? '\n_Overdose check run: nobody overdosed during these wars._\n' : '');
-
-        // 2000 chars is a hard cap, so chunk on ROW boundaries and repeat the
-        // header — a table split mid-row is worse than two tables.
-        const LIMIT = 1900;
-        const chunks = [];
-        let cur = [], curLen = head.length + 8;
-        for (const r of body) {
-            const l = line(r);
-            if (curLen + l.length + 1 > LIMIT && cur.length) {
-                chunks.push(cur); cur = []; curLen = 8 + line(headers).length + w.reduce((a, b) => a + b, 0);
-            }
-            cur.push(l); curLen += l.length + 1;
-        }
-        if (cur.length) chunks.push(cur);
-
-        const rule = w.map(n => '-'.repeat(n)).join('  ');
-        const text = chunks.map((c, i) =>
-            (i === 0 ? head : '') + '```\n' + [line(headers), rule, ...c].join('\n') + '\n```'
-        ).join('\n\n');
-        return { text, rows: rows.length, messages: chunks.length };
-    }
-
-    /**
-     * Per-war totals, folded out of the member rows.
-     *
-     * "1,119 Xanax across five wars" hides WHICH war went wrong. One war can
-     * account for most of a faction's waste and the aggregate will never say so.
-     */
-    function sweepWarSummary(s) {
-        return sweepWarCols(s).map(w => {
-            let used = 0, hits = 0, wasted = 0, flagged = 0, took = 0, withdrew = 0;
-            for (const r of s.list) {
-                const p = r.per[w.warId];
-                if (!p) continue;
-                const u = p.used != null ? p.used : p.drawn;
-                used += u;
-                withdrew += (p.taken || 0);
-                if (u > 0) took++;
-                if (!p.known) continue;
-                hits += p.hits;
-                wasted += asXanax(wastedEnergy(u, p.hits));
-                if (p.flagged) flagged++;
-            }
-            return { ...w, used, hits, wasted, flagged, took, withdrew,
-                     hitsPerXan: used > 0 ? hits / used : null };
-        });
-    }
-
-    /** Four letters of an opponent's name, kept unique across the swept wars. */
-    function shortWarKeys(wars) {
-        const seen = {}, out = [];
-        for (const w of wars) {
-            const base = String(w.oppName || '?').replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'War';
-            let key = base, n = 2;
-            while (seen[key]) key = base.slice(0, 3) + (n++);
-            seen[key] = 1;
-            out.push(key);
-        }
-        return out;
-    }
-
-    /**
-     * Discord, with the per-war grid.
-     *
-     * ASCII only inside the block, as always: Discord renders emoji at double
-     * width in its monospace font, so a single warning triangle shears every
-     * column to its right out of alignment. A trailing "!" costs one cell and
-     * actually lines up.
-     */
-    function buildSweepDiscordFull() {
-        const s = state.sweep;
-        if (!s) return null;
-        const rows = sweepVisible(s);
-        if (!rows.length) return null;
-        const wars = sweepWarCols(s);
-        const keys = shortWarKeys(wars);
-        const TICK = String.fromCharCode(96);
-        const FENCE = TICK + TICK + TICK;
-
-        const cell = (r, w) => {
-            const p = r.per[w.warId];
-            if (!p) return '-';
-            // Swallowed, never "drawn" — a withdrawal is stock movement, and
-            // charging it made the faction's supplier look like its worst
-            // offender. A "+" marks that they also moved stock.
-            const u = p.used != null ? p.used : p.drawn;
-            const plus = (p.taken || 0) > 0 ? '+' : '';
-            if (!p.known) return u + '/?' + plus;
-            // "od" beats "!" — an overdose explains the zero, so the row must
-            // not still read as an accusation.
-            if (p.od) return u + '/' + p.hits + 'od';
-            return u + '/' + p.hits + (p.flagged ? '!' : plus);
-        };
-        const headers = ['Player', 'Wast', 'Excu', 'OD', 'Xan', 'Hits', 'H/X', ...keys];
-        const body = rows.map(r => [
-            r.name,
-            r.wasted == null ? '?' : r.wasted < 0.05 ? '-' : r.wasted.toFixed(1),
-            (r.excused || 0) >= 0.05 ? r.excused.toFixed(1) : '-',
-            !state.sweepOd ? '?' : (r.odWars && r.odWars.length) ? String(r.odWars.length) : '-',
-            String(r.totalUsed),
-            r.hitsKnown ? String(r.totalHits) : '?',
-            r.hitsPerXan == null ? '-' : r.hitsPerXan.toFixed(1),
-            ...wars.map(w => cell(r, w)),
-        ]);
-        const w = headers.map((_, i) => Math.max(...[headers, ...body].map(row => row[i].length)));
-        const line = (row) => row.map((c, i) => i === 0 ? c.padEnd(w[i]) : c.padStart(w[i])).join('  ').replace(/\s+$/, '');
-        const rule = w.map(n => '-'.repeat(n)).join('  ');
-
-        // Abbreviated columns are useless without this key — it is the only
-        // place the reader learns which war is which.
-        const legend = wars.map((x, i) =>
-            keys[i] + '=' + x.oppName
-            + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '')
-            + (x.hitsSrc === 'none' ? ' LIVE' : '')).join(' | ');
-
-        const head = '**Multi-war drug sweep — ' + s.wars.length + ' war' + (s.wars.length === 1 ? '' : 's') + '**\n'
-            + fmt(s.totalUsed) + ' Xanax swallowed, ' + fmt(s.totalHits) + ' war hits, **'
-            + s.totalWasted.toFixed(0) + ' Xanax wasted**'
-            + ((s.totalExcused || 0) >= 0.5
-                ? ' (a further ' + s.totalExcused.toFixed(0) + ' excused — those members overdosed)' : '')
-            + '.\n'
-            + (s.repeats.length
-                ? ':warning: ' + s.repeats.length + ' member' + (s.repeats.length === 1 ? '' : 's')
-                  + ' took stock and landed nothing in 2+ wars.\n' : '')
-            + '_Each war cell is Xanax swallowed/hits. ' + TICK + '+' + TICK + ' = also withdrew stock (not charged). '
-            + TICK + '!' + TICK + ' = swallowed Xanax, landed nothing. '
-            + TICK + 'od' + TICK + ' = overdosed, so that war is excused. '
-            + TICK + '-' + TICK + ' = not in that war. ' + TICK + '/?' + TICK + ' = war still live._\n'
-            + '_Wars: ' + legend + '_\n'
-            + '_Wasted = energy that never became a hit (1 Xanax = ' + ENERGY_PER_XANAX + ' E = '
-            + HITS_PER_XANAX + ' hits), charged on Xanax swallowed only. H/X: ' + HITS_PER_XANAX + ' is break-even._\n'
-            + '_' + stripTags(sweepFilterLabel(rows.length, s.list.length))
-            + (state.sweepOd ? '' : ' Overdoses not checked.') + '_\n';
-
-        // Who overdosed, and where. This is the half the table cannot show:
-        // the column says "1", this says which war it was.
-        const roll = sweepOdRollCall(s);
-        const odBlock = roll.length
-            ? '\n**Overdosed during a war** — their Xanax that war is excused, not wasted:\n'
-              + roll.slice(0, 15).map(r =>
-                  '\u2022 ' + r.name + ' — ' + r.wars.map(x =>
-                      x.opp + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '')
-                      + (x.ods > 1 ? ' (x' + x.ods + ')' : '')).join(', ')
-                  + (r.excused >= 0.05 ? ' [' + r.excused.toFixed(1) + ' Xanax excused]' : '')).join('\n')
-              + (roll.length > 15 ? '\n\u2026 +' + (roll.length - 15) + ' more' : '') + '\n'
-            : (state.sweepOd ? '\n_Overdose check run: nobody overdosed during these wars._\n' : '');
-
-        // 2000 chars is a hard cap, so chunk on ROW boundaries and repeat the
-        // header — a table split mid-row is worse than two tables.
-        const LIMIT = 1900;
-        const chunks = [];
-        let cur = [], curLen = head.length + line(headers).length + rule.length + 12;
-        for (const r of body) {
-            const l = line(r);
-            if (curLen + l.length + 1 > LIMIT && cur.length) {
-                chunks.push(cur); cur = []; curLen = line(headers).length + rule.length + 12;
-            }
-            cur.push(l); curLen += l.length + 1;
-        }
-        if (cur.length) chunks.push(cur);
-
-        const text = chunks.map((c, i) =>
-            (i === 0 ? head : '') + FENCE + '\n' + [line(headers), rule, ...c].join('\n') + '\n' + FENCE
-        ).join('\n\n') + odBlock;
-        return { text, rows: rows.length, messages: chunks.length };
-    }
-
-    /**
-     * A standalone, INTERACTIVE HTML report.
-     *
-     * Two deliberate departures from the other exports:
-     *
-     *   · It carries EVERY member, never the on-screen filter. A filtered file
-     *     is the one that misleads — the reader cannot tell what was left out.
-     *     Shipping the lot and letting them filter in the page makes the
-     *     omission impossible. The panel's current filter is applied as the
-     *     starting view, so it opens on what you were looking at.
-     *
-     *   · It contains script. Everything else here is inert markup, but a
-     *     filter that cannot filter is a screenshot. The rule that actually
-     *     matters is unchanged: NOTHING is fetched. No CDN, no webfont, no
-     *     analytics — the data is embedded, so it works offline, from an email
-     *     attachment, on a machine with no network, years from now.
-     */
-    function buildSweepHtml() {
-        const s = state.sweep;
-        if (!s || !s.list || !s.list.length) return null;
-        const wars = sweepWarCols(s);
-        const warSum = sweepWarSummary(s);
-        const hue = (i) => SWEEP_HUES[i % SWEEP_HUES.length];
-        const e = (t) => String(t == null ? '' : t)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-        // Embedded JSON must never be able to close the script tag that holds
-        // it — a member called </script> would otherwise end the block and
-        // dump the rest of the payload into the document as markup.
-        const json = (v) => JSON.stringify(v)
-            .replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
-            .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
-
-        const data = {
-            generated: new Date().toISOString(),
-            energyPerXanax: ENERGY_PER_XANAX,
-            energyPerHit: ENERGY_PER_HIT,
-            breakEven: HITS_PER_XANAX,
-            odChecked: !!state.sweepOd,
-            filter: {
-                mode: ($('#twpr-sweep-show') || {}).value || 'all',
-                thresh: Number(($('#twpr-sweep-thresh') || {}).value) || 0,
-                basis: ($('#twpr-sweep-basis') || {}).value || 'total',
-                onlyTook: !!($('#twpr-sweep-onlytook') || {}).checked,
-                hideOd: !!($('#twpr-sweep-hideod') || {}).checked,
-            },
-            settings: sweepSettingsLines(),
-            wars: wars.map((w, i) => ({
-                id: w.warId, opp: w.oppName, hue: hue(i),
-                date: w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '',
-                live: w.hitsSrc === 'none',
-            })),
-            warSummary: warSum.map(w => ({
-                id: w.warId, opp: w.oppName,
-                date: w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '',
-                live: w.hitsSrc === 'none',
-                took: w.took, used: w.used, hits: w.hits, wasted: w.wasted, flagged: w.flagged,
-                hitsPerXan: w.hitsPerXan,
-            })),
-            members: s.list.map(r => ({
-                id: r.id, name: r.name,
-                used: r.totalUsed, withdrew: r.unaccounted, hits: r.totalHits,
-                hitsKnown: r.hitsKnown, hitsPerXan: r.hitsPerXan,
-                avg: r.avgHits, wasted: r.wasted, excused: r.excused || 0,
-                warsSeen: r.warsSeen, warsKnown: r.warsKnown,
-                flagged: r.warsFlaggedNet != null ? r.warsFlaggedNet : r.warsFlagged,
-                excusedWars: r.warsExcused || 0,
-                repeat: !!r.repeat,
-                odWars: (r.odWars || []).map(x => ({
-                    opp: x.opp, ods: x.ods,
-                    date: x.start ? new Date(x.start * 1000).toISOString().slice(0, 10) : '',
-                })),
-                per: Object.fromEntries(Object.entries(r.per).map(([k, p]) => [k, {
-                    // u = swallowed (judged), t = withdrawn (reported only).
-                    u: p.used != null ? p.used : p.drawn, t: p.taken || 0,
-                    h: p.hits, k: p.known, f: !!p.flagged, od: p.od || 0,
-                }])),
-            })),
-        };
-
-        data.generated = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
-
-        const totals = {
-            used: s.totalUsed, hits: s.totalHits, wasted: s.totalWasted,
-            excused: s.totalExcused || 0, unaccounted: s.totalUnaccounted,
-            repeats: s.repeats.length, wars: s.wars.length,
-        };
-
-        const STYLE = [
-            '*{box-sizing:border-box}',
-            'body{margin:0;padding:22px;background:#12141f;color:#c7cbe0;',
-            'font:14px/1.55 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;font-variant-numeric:tabular-nums}',
-            'h1{font-size:21px;margin:0 0 4px;color:#fff}',
-            '.sub{color:#8b90a6;font-size:13px;margin-bottom:18px}',
-            '.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(152px,1fr));gap:10px;margin-bottom:18px}',
-            '.kpi{background:#191c2b;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:11px 14px}',
-            '.kpi .k{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#8b90a6}',
-            '.kpi .v{font-size:23px;font-weight:700;line-height:1.15;margin-top:2px}',
-            '.kpi .s{font-size:11px;color:#8b90a6}',
-            'h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#9fc7ff;margin:22px 0 9px}',
-            '.wrap{overflow-x:auto;border:1px solid rgba(255,255,255,.1);border-radius:10px;background:#191c2b}',
-            'table{width:100%;border-collapse:collapse;font-size:12.5px}',
-            'th{padding:9px 10px;text-align:right;font-size:10px;text-transform:uppercase;letter-spacing:.05em;',
-            'color:#8b90a6;background:rgba(255,255,255,.04);border-bottom:1px solid rgba(255,255,255,.1);',
-            'white-space:nowrap;position:sticky;top:0;cursor:pointer;user-select:none}',
-            'th:hover{color:#e9ecf5}th.sorted{color:#9fc7ff}',
-            'th:first-child,td:first-child{text-align:left}',
-            'td{padding:8px 10px;text-align:right;border-bottom:1px solid rgba(255,255,255,.05);white-space:nowrap}',
-            'tr:last-child td{border-bottom:none}',
-            'tr:nth-child(even) td{background:rgba(255,255,255,.022)}',
-            'td.flag{background:rgba(255,120,120,.15)}',
-            'td.excused{background:rgba(127,180,255,.13)}',
-            'td.none{color:#4e5468}',
-            '.sep{color:#5c6178;margin:0 2px}.mk{color:#ff8080;font-size:10px;margin-left:3px}',
-            '.od{color:#9fc7ff;font-size:9.5px;font-weight:700;margin-left:3px}',
-            '.tk{color:#7f8aa3;font-size:10px}',
-            '.nm{color:#fff;font-weight:600}.id{color:#6a7080;font-size:11px}',
-            '.note{font-size:12px;color:#8b90a6;line-height:1.7;margin:12px 0 0}',
-            '.bar{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;background:#191c2b;',
-            'border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:12px 14px;margin-bottom:14px}',
-            '.f{display:flex;flex-direction:column;gap:4px}',
-            '.f label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:#8b90a6}',
-            '.f select,.f input[type=text],.f input[type=number]{background:#12141f;color:#e9ecf5;',
-            'border:1px solid rgba(255,255,255,.16);border-radius:7px;padding:7px 9px;font:inherit;font-size:13px}',
-            '.f select option{background:#1b1f2e;color:#e9ecf5}',
-            '.chk{display:flex;align-items:center;gap:6px;font-size:12px;color:#c7cbe0;white-space:nowrap}',
-            '.count{margin-left:auto;font-size:12px;color:#8b90a6;align-self:center}',
-            '.pdf{background:#2b3a5c;color:#dce6ff;border:1px solid rgba(159,199,255,.45);',
-            'border-radius:8px;padding:9px 15px;font:inherit;font-size:13px;font-weight:600;',
-            'cursor:pointer;margin:0 0 18px}',
-            '.pdf:hover{background:#374a75;color:#fff}',
-            // Only ever shown on paper: a printed copy carries whatever filter
-            // was active, so it must say so where the HTML's "contains
-            // everyone" note would otherwise be read as covering the PDF too.
-            '.pline{display:none;font-size:11px;color:#333;border:1px solid #bbb;',
-            'border-radius:6px;padding:7px 9px;margin:0 0 12px;background:#f4f4f4}',
-            'details{margin-top:16px;background:#191c2b;border:1px solid rgba(255,255,255,.1);',
-            'border-radius:10px;padding:11px 14px}',
-            'summary{cursor:pointer;font-size:12px;color:#9fc7ff}',
-            'details ul{margin:9px 0 0;padding-left:18px;font-size:12px;color:#8b90a6;line-height:1.7}',
-            // Landscape by default — the per-war grid grows a column per war and
-            // portrait clips it. The print dialog can still override this.
-            '@page{size:A4 landscape;margin:9mm}',
-            '@media print{',
-            // Colour is not decoration in this report: red means landed nothing,
-            // blue means overdosed. Browsers drop backgrounds when printing
-            // unless told otherwise, which would silently erase the verdict.
-            'body{background:#fff;color:#1a1a1a;padding:0;font-size:11px;',
-            '-webkit-print-color-adjust:exact;print-color-adjust:exact}',
-            'h1{color:#000;font-size:17px}',
-            'h2{color:#1c4a86;margin:14px 0 6px;break-after:avoid;page-break-after:avoid}',
-            '.sub{color:#555;margin-bottom:10px}',
-            '.kpis{grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:12px;',
-            'break-inside:avoid;page-break-inside:avoid}',
-            '.kpi{background:#fff;border-color:#bbb;padding:7px 9px}',
-            '.kpi .v{font-size:16px}.kpi .k,.kpi .s{color:#555}',
-            // Horizontal scrolling is meaningless on paper; let the table size
-            // to the sheet instead of being cropped at the viewport width.
-            '.wrap{overflow:visible;background:#fff;border-color:#bbb}',
-            'table{font-size:9.5px}',
-            // Repeat the header on every sheet and never split a member's row.
-            'thead{display:table-header-group}',
-            'tr{break-inside:avoid;page-break-inside:avoid}',
-            'th{position:static;background:#eee;color:#222;padding:5px 6px;',
-            'border-bottom:1px solid #999;cursor:default}',
-            'td{padding:4px 6px;border-bottom:1px solid #e4e4e4}',
-            'tr:nth-child(even) td{background:#f7f7f7}',
-            'td.flag{background:#ffdcdc}td.excused{background:#dbe9ff}td.none{color:#999}',
-            '.nm{color:#000}.id{color:#777}.sep{color:#999}.tk{color:#666}',
-            '.note{color:#444;font-size:9px;line-height:1.5}',
-            '.bar,.pdf{display:none!important}',
-            '.pline{display:block!important}',
-            // Provenance belongs in anything sent to leadership, so the
-            // methodology is forced open — iOS Safari never fires beforeprint,
-            // so CSS has to do it rather than script.
-            'details{background:#fff;border-color:#bbb;break-inside:avoid}',
-            'details>ul{display:block!important;content-visibility:visible!important}',
-            'details ul{color:#444}summary{color:#1c4a86}',
-            '}',
-        ].join('');
-
-        // The in-page runtime. Same filter semantics as the panel, including
-        // the refusals: a member with no hit data can never be caught by a
-        // filter that accuses them of not fighting.
-        const SCRIPT = [
-            'var D=window.__SWEEP__,T=window.__TOTALS__;',
-            'var $=function(i){return document.getElementById(i)};',
-            'var esc=function(t){return String(t==null?"":t).replace(/[&<>"]/g,function(c){',
-            'return{"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c]})};',
-            'var fmt=function(n){return Number(n||0).toLocaleString("en-US")};',
-            'var sortKey="wasted",sortDir=-1;',
-            'function wasteCol(v){return v==null?"#4e5468":v<0.05?"#7fe3a0":v<3?"#ffd479":"#ff8080"}',
-            'function visible(){',
-            ' var mode=$("f-show").value,th=Number($("f-thresh").value)||0,basis=$("f-basis").value;',
-            ' var only=$("f-took").checked,hide=$("f-od").checked,q=$("f-q").value.trim().toLowerCase();',
-            ' return D.members.filter(function(r){',
-            '  if(!(r.used>0||r.hits>0||r.withdrew>0))return false;',
-            '  if(q&&r.name.toLowerCase().indexOf(q)<0&&String(r.id).indexOf(q)<0)return false;',
-            '  if(only&&!(r.used>0))return false;',
-            '  if(hide&&r.odWars.length)return false;',
-            '  if(mode==="took")return r.used>0;',
-            '  if(mode==="flagged")return r.flagged>0;',
-            '  if(mode==="repeat")return r.repeat;',
-            '  if(mode==="od")return r.odWars.length>0;',
-            // Unknown hits must never be filtered as if they were zero.
-            '  if(mode==="zero")return r.hitsKnown&&r.hits===0;',
-            '  if(mode==="under"){if(!r.hitsKnown)return false;',
-            '   var v=basis==="avg"?(r.avg==null?0:r.avg):r.hits;return v<th}',
-            '  if(mode==="waste"){if(r.wasted==null)return false;',
-            '   var w=basis==="avg"?(r.warsKnown?r.wasted/r.warsKnown:0):r.wasted;return w>th}',
-            '  return true})}',
-            'function label(n,t){',
-            ' var m=$("f-show").value,th=Number($("f-thresh").value)||0,b=$("f-basis").value;',
-            ' var w={all:"everyone with drug or hit activity",took:"members who took faction Xanax",',
-            '  zero:"members who landed ZERO hits in every war",',
-            '  under:"members under "+fmt(th)+(b==="avg"?" hits per war on average":" total hits"),',
-            '  waste:"members who wasted more than "+fmt(th)+" Xanax"+(b==="avg"?" per war":" in total"),',
-            '  flagged:"members who took Xanax and landed nothing in a war",',
-            '  repeat:"repeat offenders — two or more such wars",',
-            '  od:"members with a confirmed overdose"}[m];',
-            ' return "Showing <b>"+fmt(n)+"</b> of "+fmt(t)+" — "+w',
-            '  +($("f-took").checked&&m!=="took"?", and only those who took Xanax":"")',
-            '  +($("f-od").checked?", excluding confirmed overdoses":"")+"."}',
-            // Cells report Xanax SWALLOWED. A withdrawal is stock movement —
-            // the quartermaster hands it out — so it is shown as "+N" and never
-            // charged as waste.
-            'function cell(r,w){var p=r.per[w.id];',
-            ' if(!p)return \'<td class="none" title="Not in this war">\\u2013</td>\';',
-            ' var plus=p.t?\' <span class="tk" title="Also withdrew \'+fmt(p.t)',
-            '  +\' into their own inventory — not counted as waste">+\'+fmt(p.t)+\'</span>\':"";',
-            ' if(!p.k)return \'<td class="none" title="War still live — no hits published">\'+fmt(p.u)',
-            '  +\' <span class="sep">/ ?</span>\'+plus+\'</td>\';',
-            ' if(p.od)return \'<td class="excused" title="Overdosed during \'+esc(w.opp)',
-            '  +\' — these Xanax are excused, not wasted">\'+fmt(p.u)+\'<span class="sep">/</span>\'',
-            '  +fmt(p.h)+\'<span class="od">OD</span>\'+plus+\'</td>\';',
-            ' var waste=Math.max(0,p.u*D.energyPerXanax-p.h*D.energyPerHit)/D.energyPerXanax;',
-            ' return \'<td class="\'+(p.f?"flag":"")+\'" title="\'+fmt(p.u)+\' swallowed, \'+fmt(p.h)+\' hits\'',
-            '  +(waste>=0.05?" — "+waste.toFixed(1)+" wasted":"")+(p.t?" · "+fmt(p.t)+" withdrawn, not charged":"")+\'">\'',
-            '  +\'<b style="color:\'+(p.f?"#ff8080":"#ffd479")+\'">\'+fmt(p.u)+\'</b><span class="sep">/</span>\'',
-            '  +\'<span style="color:\'+(p.h?"#7fe3a0":"#ff8080")+\'">\'+fmt(p.h)+\'</span>\'',
-            '  +(p.f?\'<span class="mk">!</span>\':"")+plus+\'</td>\'}',
-            'function odCell(r){',
-            ' if(!D.odChecked)return \'<td class="none" title="Overdoses were not checked — this is not the same as clean">\\u00b7</td>\';',
-            ' if(!r.odWars.length)return \'<td style="color:#7fe3a0" title="Checked — no overdose">clean</td>\';',
-            ' var w=r.odWars.map(function(x){return x.opp+(x.date?" "+x.date.slice(5):"")',
-            '  +(x.ods>1?" \\u00d7"+x.ods:"")}).join(", ");',
-            ' return \'<td style="color:#ff8080;font-weight:700" title="Overdosed during \'+esc(w)+\'">\'+esc(w)+\'</td>\'}',
-            'function render(){',
-            ' var rows=visible().slice();',
-            ' rows.sort(function(a,b){var x=a[sortKey],y=b[sortKey];',
-            '  if(sortKey==="name")return String(x).localeCompare(String(y))*sortDir;',
-            '  if(x==null)return 1;if(y==null)return -1;return((x-y)||0)*sortDir});',
-            ' $("count").innerHTML=label(rows.length,D.members.length);',
-            // Written on every render, not on beforeprint: iOS Safari prints
-            // without ever firing that event, and a PDF that silently dropped
-            // rows while quoting "every member included" would be a lie.
-            ' var pl=$("pline");',
-            ' if(pl)pl.innerHTML=(rows.length===D.members.length',
-            '  ?"<b>Complete report.</b> All "+fmt(D.members.length)+" members are included. "',
-            '  :"<b>Filtered copy \u2014 not the full roster.</b> ")',
-            '  +label(rows.length,D.members.length)',
-            '  +" Generated "+D.generated+".";',
-            ' $("tbody").innerHTML=rows.map(function(r){return "<tr>"',
-            '  +\'<td><span class="nm">\'+esc(r.name)+\'</span> <span class="id">[\'+esc(r.id||"?")+\']</span></td>\'',
-            '  +\'<td style="color:\'+(r.flagged?(r.repeat?"#ff7a7a":"#ffb37a"):"#7fe3a0")+\'">\'',
-            '   +(r.flagged?r.flagged+" of "+r.warsSeen:"\\u2014")',
-            '   +(r.excusedWars?\' <span style="color:#9fc7ff;font-size:10px">+\'+r.excusedWars+" OD</span>":"")+"</td>"',
-            '  +\'<td style="color:\'+wasteCol(r.wasted)+\';font-weight:700">\'',
-            '   +(r.wasted==null?"?":r.wasted<0.05?"\\u2014":r.wasted.toFixed(1))+"</td>"',
-            '  +\'<td style="color:\'+(r.excused>=0.05?"#9fc7ff":"#4e5468")+\'">\'',
-            '   +(r.excused>=0.05?r.excused.toFixed(1):"\\u2014")+"</td>"',
-            '  +\'<td style="color:#ffd479">\'+fmt(r.used)+"</td>"',
-            '  +\'<td style="color:\'+(r.withdrew?"#9fc7ff":"#4e5468")+\'">\'+(r.withdrew?fmt(r.withdrew):"\\u2014")+"</td>"',
-            '  +\'<td style="color:#7fe3a0">\'+(r.hitsKnown?fmt(r.hits):"?")+"</td>"',
-            '  +\'<td style="color:\'+(r.hitsPerXan==null?"#4e5468":r.hitsPerXan>=D.breakEven?"#7fe3a0"',
-            '   :r.hitsPerXan>=D.breakEven/2?"#ffd479":"#ff8080")+\'">\'',
-            '   +(r.hitsPerXan==null?"\\u2014":r.hitsPerXan.toFixed(1))+"</td>"',
-            '  +odCell(r)',
-            '  +D.wars.map(function(w){return cell(r,w)}).join("")+"</tr>"}).join("")||',
-            '  \'<tr><td colspan="\'+(9+D.wars.length)+\'" style="text-align:center;color:#8b90a6;padding:26px">\'',
-            '  +"No member matches this filter.</td></tr>"}',
-            'function sortBy(k){if(sortKey===k)sortDir=-sortDir;else{sortKey=k;sortDir=k==="name"?1:-1}',
-            ' var th=document.querySelectorAll("#mtable th");',
-            ' for(var i=0;i<th.length;i++)th[i].className=th[i].dataset.k===k?"sorted":"";render()}',
-            'window.addEventListener("DOMContentLoaded",function(){',
-            ' var pb=$("btn-pdf");',
-            ' if(pb)pb.onclick=function(){window.print()};',
-            // Desktop belt-and-braces for the methodology block; the print CSS
-            // above is what actually carries mobile.
-            ' if(window.matchMedia)try{window.matchMedia("print").addListener(function(m){',
-            '  if(m.matches){var d=document.querySelector("details");if(d)d.open=true}})}catch(e){}',
-            ' window.onbeforeprint=function(){var d=document.querySelector("details");if(d)d.open=true};',
-            ' var f=D.filter;$("f-show").value=f.mode;$("f-thresh").value=f.thresh;',
-            ' $("f-basis").value=f.basis;$("f-took").checked=f.onlyTook;$("f-od").checked=f.hideOd;',
-            ' ["f-show","f-thresh","f-basis","f-took","f-od","f-q"].forEach(function(i){',
-            '  $(i).addEventListener("input",render);$(i).addEventListener("change",render)});',
-            ' var th=document.querySelectorAll("#mtable th");',
-            ' for(var i=0;i<th.length;i++)(function(t){if(t.dataset.k)',
-            '  t.addEventListener("click",function(){sortBy(t.dataset.k)})})(th[i]);',
-            ' render()});',
-        ].join('\n');
-
-        const kpi = (label, value, sub, colour) =>
-            '<div class="kpi"><div class="k">' + e(label) + '</div><div class="v" style="color:'
-            + (colour || '#e9ecf5') + '">' + value + '</div><div class="s">' + e(sub) + '</div></div>';
-
-        const warRows = warSum.map((w, i) =>
-            '<tr><td><span class="nm" style="color:' + hue(i) + '">' + e(w.oppName) + '</span>'
-            + (w.hitsSrc === 'none' ? ' <span class="id">LIVE</span>' : '') + '</td>'
-            + '<td>' + (w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?') + '</td>'
-            + '<td>' + fmt(w.took) + '</td>'
-            + '<td style="color:#ffd479">' + fmt(w.used) + '</td>'
-            + '<td style="color:' + (w.withdrew ? '#7f8aa3' : '#4e5468') + '">'
-            + (w.withdrew ? fmt(w.withdrew) : '—') + '</td>'
-            + '<td style="color:#7fe3a0">' + (w.hitsSrc === 'none' ? '?' : fmt(w.hits)) + '</td>'
-            + '<td>' + (w.hitsSrc === 'none' || w.hitsPerXan == null ? '—' : w.hitsPerXan.toFixed(1)) + '</td>'
-            + '<td style="color:' + (w.wasted > 0 ? '#ff8080' : '#7fe3a0') + ';font-weight:700">'
-            + (w.hitsSrc === 'none' ? '—' : w.wasted.toFixed(1)) + '</td>'
-            + '<td style="color:' + (w.flagged ? '#ff8080' : '#7fe3a0') + '">'
-            + (w.hitsSrc === 'none' ? '—' : fmt(w.flagged)) + '</td></tr>').join('');
-
-        const roll = sweepOdRollCall(s);
-        const odSection = roll.length
-            ? '<h2>Overdoses</h2><div class="wrap"><table><thead><tr><th>Member</th>'
-              + '<th>Overdosed during</th><th>Xanax excused</th></tr></thead><tbody>'
-              + roll.map(r => '<tr><td><span class="nm">' + e(r.name) + '</span> <span class="id">['
-                  + e(r.id) + ']</span></td><td>' + e(r.wars.map(x => x.opp + (x.start
-                      ? ' ' + new Date(x.start * 1000).toISOString().slice(0, 10) : '')
-                      + (x.ods > 1 ? ' (×' + x.ods + ')' : '')).join(', '))
-                  + '</td><td style="color:#9fc7ff">' + (r.excused >= 0.05 ? r.excused.toFixed(1) : '—')
-                  + '</td></tr>').join('') + '</tbody></table></div>'
-              + '<div class="note">An overdose hospitalises you for hours and ends your war. The Xanax '
-              + 'swallowed beforehand was not squandered — the member was prevented from spending that '
-              + 'energy — so it is excused rather than wasted. Torn records overdoses daily, so the war '
-              + 'is the finest resolution available; a precise time would be invented.</div>'
-            : (state.sweepOd
-                ? '<h2>Overdoses</h2><div class="note">Checked — nobody overdosed during these wars.</div>'
-                : '<h2>Overdoses</h2><div class="note">Not checked. The OD column shows a dot for every '
-                  + 'member, which means unchecked — not clean.</div>');
-
-        // Trimmed at a word boundary rather than mid-word, and kept unique when the
-        // same faction was fought twice.
-        const warHeadNames = warShortNames(wars, 14);
-        const warHeads = wars.map((w, i) =>
-            '<th data-k="" style="color:' + hue(i) + '">' + e(warHeadNames[i])
-            + '<br><span style="font-weight:400;color:#8b90a6">xan / hits</span></th>').join('');
-
-        return '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-+ '<meta name="viewport" content="width=device-width,initial-scale=1">'
-+ '<title>Faction drug sweep</title><style>' + STYLE + '</style></head><body>'
-+ '<h1>Faction drug sweep — ' + s.wars.length + ' war' + (s.wars.length === 1 ? '' : 's') + '</h1>'
-+ '<div class="sub">' + e(wars.map(w => w.oppName).join(' · ')) + '<br>Generated '
-+ new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC · every member included; filter below</div>'
-+ '<button class="pdf" id="btn-pdf" type="button">\u2193 Save as PDF / Print</button>'
-+ '<div class="pline" id="pline"></div>'
-+ '<div class="kpis">'
-+ kpi('Xanax swallowed', fmt(s.totalUsed), 'from the faction armoury', '#ffd479')
-+ kpi('Wasted', s.totalWasted.toFixed(0),
-     fmt(Math.round(s.totalWasted * ENERGY_PER_XANAX)) + ' energy that bought no hits',
-     s.totalWasted > 0 ? '#ff8080' : '#7fe3a0')
-+ kpi('Excused', (s.totalExcused || 0).toFixed(0), 'overdosed — not counted as waste',
-     (s.totalExcused || 0) > 0 ? '#9fc7ff' : '#8b90a6')
-+ kpi('War hits', fmt(s.totalHits), 'from official war reports', '#7fe3a0')
-+ kpi('Repeat offenders', fmt(s.repeats.length), 'landed nothing in 2+ wars',
-     s.repeats.length ? '#ff8080' : '#7fe3a0')
-+ kpi('Unaccounted', fmt(s.totalUnaccounted), 'withdrawn, never seen again',
-     s.totalUnaccounted ? '#9fc7ff' : '#8b90a6')
-+ '</div>'
-+ '<h2>By war</h2><div class="wrap"><table><thead><tr>'
-+ '<th>War</th><th>Date</th><th>Members who took</th><th>Xanax<br>swallowed</th>'
-+ '<th>Withdrawn<br>not charged</th><th>Hits</th>'
-+ '<th>Hits/Xan</th><th>Wasted</th><th>Landed nothing</th></tr></thead><tbody>'
-+ warRows + '</tbody></table></div>'
-+ '<div class="note">A live war publishes no hits, so its waste cannot be measured and nobody can be '
-+ 'flagged in it — those cells read “—”, which is not the same as zero.</div>'
-+ odSection
-+ '<h2>By member</h2>'
-+ '<div class="bar">'
-+ '<div class="f"><label>Show</label><select id="f-show">'
-+ '<option value="all">Everyone</option>'
-+ '<option value="took">Took faction Xanax</option>'
-+ '<option value="zero">Landed ZERO hits in every war</option>'
-+ '<option value="under">Hits below a threshold</option>'
-+ '<option value="waste">Wasted more than</option>'
-+ '<option value="flagged">Took Xanax, landed nothing (any war)</option>'
-+ '<option value="repeat">Repeat offenders (2+ wars)</option>'
-+ '<option value="od">Overdosed during a war</option>'
-+ '</select></div>'
-+ '<div class="f"><label>Threshold</label><input type="number" id="f-thresh" min="0" step="1" style="width:92px"></div>'
-+ '<div class="f"><label>Measured as</label><select id="f-basis">'
-+ '<option value="total">Total across wars</option><option value="avg">Average per war</option>'
-+ '</select></div>'
-+ '<div class="f"><label>Search</label><input type="text" id="f-q" placeholder="name or ID" style="width:150px"></div>'
-+ '<div class="f"><label>Narrow</label>'
-+ '<label class="chk"><input type="checkbox" id="f-took"> Only those who took Xanax</label>'
-+ '<label class="chk"><input type="checkbox" id="f-od"> Hide confirmed overdoses</label></div>'
-+ '<div class="count" id="count"></div>'
-+ '</div>'
-+ '<div class="wrap"><table id="mtable"><thead><tr>'
-+ '<th data-k="name">Member</th><th data-k="flagged">Wasted<br>wars</th>'
-+ '<th data-k="wasted" class="sorted">Wasted<br>Xanax</th><th data-k="excused">Excused<br>overdose</th>'
-+ '<th data-k="used">Used<br>swallowed</th><th data-k="withdrew">Withdrew<br>net</th>'
-+ '<th data-k="hits">Hits</th><th data-k="hitsPerXan">Hits/Xan<br>' + HITS_PER_XANAX + ' = break-even</th>'
-+ '<th data-k="">OD<br>during war</th>'
-+ warHeads + '</tr></thead><tbody id="tbody"></tbody></table></div>'
-+ '<div class="note"><b>Click any column heading to sort.</b> This file contains <b>every</b> member of the '
-+ 'sweep — the filter above only changes what is displayed, so nothing is hidden from whoever you send it to.'
-+ '<br><b>Wasted</b> is energy that left the armoury and never became a war hit: a Xanax is '
-+ ENERGY_PER_XANAX + ' energy and a hit costs ' + ENERGY_PER_HIT + ', so one Xanax is worth '
-+ HITS_PER_XANAX + ' hits. It is charged on Xanax <b>swallowed</b> only — anything withdrawn into a '
-+ "member's own inventory appears under <b>Withdrew</b> and is never counted as waste, because the log "
-+ 'cannot say what became of it.'
-+ '<br>A war cell reads <b>swallowed / hits</b>. A <b>+N</b> beside it is stock withdrawn into their own '
-+ 'inventory — the quartermaster does this to supply the faction, so it is shown but <b>never charged '
-+ 'as waste</b>.'
-+ '<br><b>Red cells</b> are wars where a member swallowed Xanax and landed nothing. '
-+ '<b>Blue cells</b> are wars they overdosed in — excused, not wasted.<br>'
-+ 'This counts <b>faction</b> Xanax only; personal stock is invisible to the API.</div>'
-+ '<details><summary>How this report was produced</summary><ul>'
-+ sweepSettingsLines().map(l => '<li>' + e(l) + '</li>').join('') + '</ul></details>'
-+ '<script>window.__SWEEP__=' + json(data) + ';window.__TOTALS__=' + json(totals) + ';\n'
-+ SCRIPT + '</scr' + 'ipt></body></html>';
-    }
-
-    function sweepExport() {
-        const el = $('#twpr-sweep-fmt');
-        const v = el ? el.value : 'html';
-        return ['html', 'csv', 'discord', 'discord-full'].includes(v) ? v : 'html';
-    }
-
-    /** One place that maps a chosen format to its builder and file type. */
-    function sweepExportBuild() {
-        const f = sweepExport();
-        if (f === 'html') {
-            const html = buildSweepHtml();
-            return { out: html ? { text: html, rows: sweepVisible(state.sweep).length } : null,
-                     ext: '.html', mime: 'text/html;charset=utf-8', kind: 'html' };
-        }
-        if (f === 'discord') return { out: buildSweepDiscord(), ext: '.txt', mime: 'text/plain;charset=utf-8', kind: 'discord' };
-        if (f === 'discord-full') return { out: buildSweepDiscordFull(), ext: '.txt', mime: 'text/plain;charset=utf-8', kind: 'discord' };
-        return { out: buildSweepCsv(), ext: '.csv', mime: 'text/csv;charset=utf-8', kind: 'csv' };
-    }
-
-    function onSweepCopy() {
-        if (!state.sweep) { setStatus('Run a sweep first.', true); return; }
-        const { out, kind } = sweepExportBuild();
-        if (!out || !out.text) { setStatus('Nothing to copy in this filter.', true); return; }
-        // Copying a whole HTML document to the clipboard helps nobody — that
-        // one is a file, and the button says so rather than silently pasting
-        // 20KB of markup into a chat box.
-        if (kind === 'html') { setStatus('HTML is a file — use ⬇ Download for that one.', true); return; }
-        copy(out.text, `Copied ${fmt(out.rows)} member rows` + (out.messages > 1 ? ` (${out.messages} messages).` : '.'));
-    }
-
-    function onSweepDownload() {
-        if (!state.sweep) { setStatus('Run a sweep first.', true); return; }
-        const { out, ext, mime, kind } = sweepExportBuild();
-        if (!out || !out.text) { setStatus('Nothing to export in this filter.', true); return; }
-        const name = `drug-sweep-${state.sweep.wars.length}-wars-${new Date().toISOString().slice(0, 10)}` + ext;
-        try {
-            // The BOM is for Excel, which otherwise mangles the em-dashes in a
-            // CSV. An HTML file declares its own charset and must NOT get one —
-            // a stray BOM shows up as a glyph before the doctype.
-            const blob = new Blob([(kind === 'csv' ? '﻿' : '') + out.text], { type: mime });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = name;
-            document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 4000);
-            setStatus(`Downloaded ${name} (${fmt(out.rows)} rows).`);
-        } catch (e) {
-            setStatus('Download blocked — use Copy instead.', true);
-        }
-    }
-
-    async function onDrugOD() {
-        const key = $('#twpr-key').value.trim();
-        if (!key) { setStatus('Enter your API key first.', true); return; }
-        if (!state.drugs) { setStatus('Pull drug data first.', true); return; }
-        if (!state.war) { setStatus('Pull a war report first.', true); return; }
-
-        // Only the population this question is about: drew from the armoury and
-        // landed nothing. Checking all 40 members would cost 120 API calls to
-        // answer a question nobody asked about the 30 who clearly fought.
-        const targets = state.drugs.list.filter(r => r.drawn > 0 && r.hits === 0 && r.id);
-        if (!targets.length) { setStatus('Nobody took drugs without landing a hit — nothing to check.'); return; }
-
-        const btn = $('#twpr-drug-od');
-        if (btn) btn.disabled = true;
-        try {
-            state.odResults = await checkOverdoses(key, targets, state.war, (i, n, name) => {
-                setStatus(`Checking overdoses… ${i}/${n} (${name})`);
-            });
-            renderDrugs();
-
-            const vals = Object.values(state.odResults);
-            const found = vals.filter(o => (o.mode === 'delta' || o.mode === 'baseline') && o.ods > 0).length;
-            const clear = vals.filter(o => (o.mode === 'delta' || o.mode === 'baseline') && o.ods === 0).length;
-            const unknown = vals.filter(o => o.mode === 'lifetime' || o.mode === 'error').length;
-
-            let msg;
-            if (found) msg = `${found} overdose${found === 1 ? '' : 's'} found — that explains the missing hits.`;
-            else if (clear && !unknown) msg = `No overdoses. All ${clear} checked members were clean across the war.`;
-            else msg = 'No overdose found.';
-            if (unknown) {
-                msg += ` ${unknown} member${unknown === 1 ? '' : 's'} couldn't be determined — Torn only gave a lifetime total, ` +
-                       `so today's counts were stored as a baseline. Run this again after the next war for a real before/after.`;
-            }
-            const st = state.odResults.__stats;
-            if (st && st.hits) {
-                msg += ` (${st.hits} reading${st.hits === 1 ? '' : 's'} served from cache, ${st.calls} fetched — ` +
-                       `a past day's overdose count never changes, so it is only ever read once.)`;
-            }
-            // Ride along in the war's cache entry so reopening it shows the OD
-            // column straight away instead of asking Torn the same question.
-            if (state.war) await cacheSave(state.war, null, null, false, null, null, state.odResults);
-            setStatus(msg, unknown > 0 && !found);
-        } catch (e) {
-            setStatus(e.message || 'Overdose check failed.', true);
-        } finally {
-            if (btn) btn.disabled = false;
-        }
-    }
-
-    const DRUG_COLS = [
-        ['Member',    r => r.name],
-        ['ID',        r => r.id],
-        ['XanaxPreWar', r => r.xanPre],
-        ['XanaxInWar',  r => r.xanWar],
-        ['XanaxAfter',  r => r.xanPost],
-        ['XanaxUsed',      r => r.xanax],
-        ['XanaxWithdrawn', r => r.xanTaken],
-        ['XanaxDeposited', r => r.xanDeposited],
-        ['XanaxTotalOut',  r => r.drawn],
-        ['OtherDrugs', r => r.otherDrugs],
-        ['Overdose', r => { const o = state.odResults && state.odResults[r.id]; if (!o) return ''; if (o.mode === 'delta') return o.ods > 0 ? 'OD x' + o.ods : 'none'; if (o.mode === 'baseline') return o.ods > 0 ? 'OD x' + o.ods + ' (wider window)' : 'none (wider window)'; if (o.mode === 'lifetime') return 'unknown (' + o.lifetime + ' lifetime)'; return 'check failed'; }],
-        ['TotalItems', r => r.total],
-        ['Hits',      r => r.hits],
-        ['HitsPerXanax', r => r.hitsPerXan == null ? '' : r.hitsPerXan.toFixed(2)],
-        ['Respect',   r => Number(r.respect || 0).toFixed(2)],
-        ['TookNoHits', r => r.freeloader ? 'YES' : ''],
-    ];
-
-    /*
-     * The on-screen table, column for column, in the order it is drawn — including
-     * the em-dash placeholders, so a pasted CSV reads like the panel it came from.
-     *
-     * `Total out` keeps the "+N in" deposit annotation the table shows, because
-     * dropping it would turn Westend's 431-out/300-in into a bare 431 and lose the
-     * one piece of context that stops it reading as the worst number in the file.
-     */
-    const DASH = '—';
-    const DRUG_SCREEN_COLS = [
-        ['Member',    r => `${r.name} [${r.id || '?'}]`],
-        ['Pre-war',   r => r.xanPre || DASH],
-        ['In war',    r => r.xanWar || DASH],
-        ['Used',      r => fmt(r.xanax)],
-        ['Withdrew',  r => r.xanTaken ? fmt(r.xanTaken) : DASH],
-        ['Total out', r => fmt(r.drawn) + (r.xanDeposited ? ` (+${fmt(r.xanDeposited)} in)` : '')],
-        ['Other',     r => r.otherDrugs ? fmt(r.otherDrugs) : DASH],
-        ['Hits',      r => fmt(r.hits)],
-        ['Hits/Xan',  r => r.hitsPerXan == null ? DASH : r.hitsPerXan.toFixed(2)],
-        ['Respect',   r => fmt(Number(r.respect || 0).toFixed(2))],
-        ['OD',        r => odText(r)],
-        ['Flag',      r => flagText(r)],
-    ];
-
-    /** RFC-4180 quoting: any cell may contain a comma, a quote or a newline. */
-    function csvCell(v) {
-        const s = String(v == null ? '' : v);
-        return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    }
-
-    function buildDrugCsv() {
-        const shown = !$('#twpr-drug-fmt') || $('#twpr-drug-fmt').value === 'shown';
-        const cols = shown ? DRUG_SCREEN_COLS : DRUG_COLS;
-        const rows = drugRows();
-        if (!rows.length) return null;
-        // Same reasoning as the sweep: a filtered file must say so, because once
-        // it is in a downloads folder nothing else can.
-        const d = state.drugs || {};
-        const war = state.war || {};
-        const modeLabel = {
-            all: 'everyone with drug or hit activity',
-            took: 'members who took Xanax',
-            freeload: 'members who took Xanax and landed zero hits',
-            nodrug: 'members who landed hits without taking faction Xanax',
-        }[drugFilter()] || 'everyone';
-        const lines = [
-            csvCell('Torn War Payout Report — drug report'),
-            csvCell(`War: vs ${war.oppName || 'enemy'} · fighting started ${dayStr(d.warStart)} UTC`),
-            csvCell(`Drug window: ${dayStr(d.pullFrom || d.firstTs)} → ${dayStr(d.pullTo || d.lastTs)} UTC (${d.leadDays || 0}d build-up + war + ${d.tailHours || 0}h tail)`),
-            csvCell(`Showing: ${rows.length} of ${(d.list || []).length} — ${modeLabel}`),
-            csvCell(`Columns: ${shown ? 'exactly as displayed on screen' : 'full raw data'}`),
-            csvCell(state.odResults
-                ? 'Overdose check: run. A blank OD cell means unchecked, never clean.'
-                : 'Overdose check: NOT run — the OD column is empty because nobody was checked.'),
-            csvCell('Armoury only — personal Xanax is invisible to the API, so 0 means "took none of yours".'),
-            '',
-            cols.map(c => csvCell(c[0])).join(','),
-        ];
-        for (const r of rows) lines.push(cols.map(c => csvCell(c[1](r))).join(','));
-        // CRLF, not LF. A lone \n survives the clipboard on Windows but collapses
-        // to one unreadable line the moment it's pasted into Notepad or Excel —
-        // which is exactly what happened to the first exported report.
-        return { text: lines.join('\r\n'), rows: rows.length, shown };
-    }
-
-    /*
-     * Discord has no tables, so this is a fixed-width block — and fixed-width is
-     * exactly why it is ASCII only. Emoji render double-width in Discord's
-     * monospace font, so a single 💊 shears every column to the right of it out
-     * of alignment. "OD x1" costs nothing and actually lines up.
-     */
-    function buildDrugDiscord() {
-        const rows = drugRows();
-        if (!rows.length) return null;
-        const d = state.drugs, war = state.war || {};
-
-        const note = (r) => {
-            const bits = [];
-            if (r.freeloader) bits.push('NO HITS');
-            if (r.stocker) bits.push('stocker');
-            const od = state.odResults && state.odResults[r.id];
-            if (od) {
-                if (od.mode === 'delta') bits.push(od.ods > 0 ? `OD x${od.ods}` : 'no OD');
-                else if (od.mode === 'baseline') bits.push(od.ods > 0 ? `OD x${od.ods}?` : 'no OD*');
-                else if (od.mode === 'lifetime') bits.push('OD unknown');
-                else bits.push('OD check failed');
-            }
-            return bits.join(' - ');
-        };
-
-        const headers = ['Player', 'Xan', 'Hits', 'H/X', 'Note'];
-        const body = rows.map(r => [
-            r.name,
-            String(r.drawn),
-            String(r.hits),
-            r.hitsPerXan == null ? '-' : r.hitsPerXan.toFixed(2),
-            note(r),
-        ]);
-        const all = [headers, ...body];
-        const w = headers.map((_, i) => Math.max(...all.map(row => row[i].length)));
-        const line = (row) => row.map((c, i) =>
-            (i === 0 || i === headers.length - 1) ? c.padEnd(w[i]) : c.padStart(w[i])).join('  ').replace(/\s+$/, '');
-        const rule = w.map(x => '-'.repeat(x)).join('  ');
-
-        const flagged = d.freeloaders ? d.freeloaders.length : 0;
-        const summary =
-            `**Drug report — war vs ${war.oppName || 'enemy'}**\n` +
-            `${fmt(d.totalDrawn || d.totalXan)} Xanax out of the armoury ` +
-            `(${fmt(d.totalXanPre || 0)} in the build-up, ${fmt(d.totalXanWar || 0)} during the war) · ` +
-            `${fmt(d.totalHits)} war hits · ${d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2)} hits per Xanax` +
-            (flagged ? `\n:warning: ${fmt(flagged)} member${flagged === 1 ? '' : 's'} took stock and landed nothing.` : '');
-
-        // Discord hard-caps a message at 2000 characters. Rather than silently
-        // producing something that won't send, split on ROW boundaries so every
-        // chunk is a complete, readable table.
-        const LIMIT = 1900;
-        const chunks = [];
-        let cur = [line(headers), rule];
-        const flush = () => { if (cur.length > 2) chunks.push('```\n' + cur.join('\n') + '\n```'); };
-        for (const row of body) {
-            const l = line(row);
-            if (cur.join('\n').length + l.length + 12 > LIMIT) { flush(); cur = [line(headers), rule]; }
-            cur.push(l);
-        }
-        flush();
-
-        const messages = chunks.length ? [summary + '\n' + chunks[0], ...chunks.slice(1)] : [summary];
-        return { text: messages.join('\n\n'), messages: messages.length, rows: rows.length };
-    }
-
-    function drugExportFormat() {
-        const el = $('#twpr-drug-fmt');
-        return el ? el.value : 'shown';
-    }
-
-    function onDrugCopy() {
-        if (!state.drugs) { setStatus('Pull drug data first.', true); return; }
-        if (drugExportFormat() === 'discord') {
-            const out = buildDrugDiscord();
-            if (!out) { setStatus('Nothing to copy in this filter.', true); return; }
-            copy(out.text, out.messages > 1
-                ? `Copied ${fmt(out.rows)} rows as ${out.messages} messages — paste them one at a time (Discord caps a message at 2000 characters).`
-                : `Copied ${fmt(out.rows)} rows — paste straight into Discord.`);
-            return;
-        }
-        const out = buildDrugCsv();
-        if (!out) { setStatus('Nothing to copy in this filter.', true); return; }
-        copy(out.text, `Copied ${fmt(out.rows)} rows (${out.shown ? 'as shown' : 'full data'}).`);
-    }
-
-    function onDrugCsvDownload() {
-        if (!state.drugs) { setStatus('Pull drug data first.', true); return; }
-        const discord = drugExportFormat() === 'discord';
-        const out = discord ? buildDrugDiscord() : buildDrugCsv();
-        if (!out) { setStatus('Nothing to export in this filter.', true); return; }
-        const war = state.war || {};
-        const when = war.start ? new Date(war.start * 1000).toISOString().slice(0, 10) : 'war';
-        const name = `drug-report-${when}-vs-${String(war.oppName || 'enemy').replace(/[^\w-]+/g, '_')}`
-                   + (discord ? '.txt' : '.csv');
-        try {
-            // A UTF-8 BOM, or Excel renders — as "â€"" and the emoji as mojibake.
-            const blob = new Blob(['﻿' + out.text],
-                { type: discord ? 'text/plain;charset=utf-8' : 'text/csv;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = name;
-            document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 4000);
-            setStatus(`Downloaded ${name} (${fmt(out.rows)} rows).`);
-        } catch (e) {
-            setStatus('Download blocked — use Copy instead.', true);
-        }
-    }
-
-    // Standalone HTML report — self-contained, no external assets, so it opens
-    // offline and can be dropped straight into Discord or a faction forum.
-    function onDrugHTML() {
-        if (!state.drugs) { setStatus('Pull drug data first.', true); return; }
-        const d = state.drugs, war = state.war || {};
-        const esc = (s) => String(s == null ? '' : s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-        const rows = drugRows();
-        const when = war.start ? new Date(war.start * 1000).toISOString().slice(0, 10) : '?';
-
-        const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Faction Drug Report — vs ${esc(war.oppName || 'enemy')}</title>
-<style>
- body{background:#12151f;color:#c8cde0;font:14px/1.55 system-ui,Segoe UI,Roboto,sans-serif;margin:0;padding:28px;}
- h1{font-size:21px;color:#fff;margin:0 0 4px;} .sub{color:#8b90a6;font-size:12.5px;margin-bottom:20px;}
- .kpis{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:18px;}
- .kpi{flex:1;min-width:130px;background:#1a1f2e;border:1px solid #2a3142;border-radius:9px;padding:11px 14px;}
- .kpi .k{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:#8b90a6;}
- .kpi .v{font-size:24px;font-weight:700;color:#fff;line-height:1.2;margin-top:2px;}
- .kpi .s{font-size:11px;color:#8b90a6;}
- .warn{background:rgba(255,154,154,.09);border:1px solid rgba(255,154,154,.3);color:#ffc9c9;
-   border-radius:9px;padding:11px 14px;margin-bottom:18px;font-size:12.5px;line-height:1.6;}
- table{width:100%;border-collapse:collapse;font-size:13px;background:#1a1f2e;border-radius:9px;overflow:hidden;}
- th{background:#232a3c;color:#a8afc6;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
-   text-align:right;padding:10px 12px;} th:first-child{text-align:left;}
- td{padding:9px 12px;text-align:right;border-top:1px solid #232a3c;} td:first-child{text-align:left;color:#f2f4fb;}
- tr:hover td{background:#1f2637;}
- .win{color:#7fe3a0;} .xan{color:#ffd479;} .flag{color:#ff9a9a;font-weight:600;} .dim{color:#8b90a6;}
- .note{color:#8b90a6;font-size:12px;margin-top:16px;line-height:1.65;}
-</style></head><body>
-<h1>💊 Faction Drug Report</h1>
-<div class="sub">War vs <b>${esc(war.oppName || 'enemy')}</b> · fighting started ${esc(dayStr(d.warStart))} UTC ·
-  drug window ${esc(dayStr(d.pullFrom || d.firstTs))} → ${esc(dayStr(d.pullTo || d.lastTs))}
-  (${fmt(d.leadDays || 0)}d build-up + war + ${fmt(d.tailHours || 0)}h tail) ·
-  generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC</div>
-<div class="kpis">
- <div class="kpi"><div class="k">Xanax taken</div><div class="v">${fmt(d.totalXan)}</div><div class="s">${fmt(d.takers)} members</div></div>
- <div class="kpi"><div class="k">Build-up</div><div class="v" style="color:#9fc7ff">${fmt(d.totalXanPre || 0)}</div><div class="s">before fighting</div></div>
- <div class="kpi"><div class="k">During war</div><div class="v" style="color:#ffd479">${fmt(d.totalXanWar || 0)}</div><div class="s">${d.totalXanPost ? fmt(d.totalXanPost) + ' after' : 'while live'}</div></div>
- <div class="kpi"><div class="k">Withdrawn</div><div class="v" style="color:#ff9a9a">${fmt(d.totalXanTaken || 0)}</div><div class="s">to inventory</div></div>
- <div class="kpi"><div class="k">Hits landed</div><div class="v">${fmt(d.totalHits)}</div><div class="s">war hits only</div></div>
- <div class="kpi"><div class="k">Hits per Xanax</div><div class="v">${d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2)}</div><div class="s">faction average</div></div>
- <div class="kpi"><div class="k">Took · no hits</div><div class="v" style="color:${d.freeloaders.length ? '#ff9a9a' : '#7fe3a0'}">${fmt(d.freeloaders.length)}</div><div class="s">members</div></div>
- <div class="kpi"><div class="k">Other drugs</div><div class="v">${fmt(d.totalOtherDrugs)}</div><div class="s">non-Xanax</div></div>
-</div>
-${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> member(s) drew Xanax and landed zero war hits:
- ${d.freeloaders.map(r => {
-     const o = state.odResults && state.odResults[r.id];
-     const tag = !o ? ''
-       : (o.mode === 'delta' && o.ods > 0) ? ' — 💊 OVERDOSED ×' + o.ods
-       : (o.mode === 'baseline' && o.ods > 0) ? ' — 💊 OD ×' + o.ods + '?'
-       : (o.mode === 'delta' || o.mode === 'baseline') ? ' — no OD'
-       : ' — OD unknown';
-     return esc(r.name) + ' (' + fmt(r.drawn) + ')' + tag;
-   }).join(', ')}.
- ${state.odResults ? 'Members marked OVERDOSED were hospitalised — that is the explanation, not slacking.' :
-   'Check for hospital time, travel, or chain use before drawing conclusions.'}</div>` : ''}
-<table><thead><tr><th>Member</th><th>Pre-war</th><th>In war</th><th>Used</th><th>Withdrew</th><th>Total out</th><th>Other drugs</th><th>Hits</th><th>Hits/Xan</th><th>Respect</th><th>OD</th><th>Flag</th></tr></thead>
-<tbody>${rows.map(r => `<tr>
- <td>${esc(r.name)} <span class="dim">[${esc(r.id)}]</span></td>
- <td class="dim">${r.xanPre ? fmt(r.xanPre) : '—'}</td>
- <td class="${r.xanWar ? 'xan' : 'dim'}">${r.xanWar ? fmt(r.xanWar) : '—'}</td>
- <td class="${r.xanax ? 'xan' : 'dim'}">${fmt(r.xanax)}</td>
- <td class="${r.xanTaken ? 'flag' : 'dim'}">${r.xanTaken ? fmt(r.xanTaken) : '—'}</td>
- <td><b>${fmt(r.drawn)}</b>${r.xanDeposited ? ` <span class="win">+${fmt(r.xanDeposited)} in</span>` : ''}</td>
- <td class="dim">${r.otherDrugs ? fmt(r.otherDrugs) : '—'}</td>
- <td class="win">${fmt(r.hits)}</td>
- <td>${r.hitsPerXan == null ? '<span class="dim">—</span>' : r.hitsPerXan.toFixed(2)}</td>
- <td class="dim">${fmt(Number(r.respect || 0).toFixed(2))}</td>
- <td>${(() => { const o = state.odResults && state.odResults[r.id];
-   if (!o) return '<span class="dim">–</span>';
-   if (o.mode === 'delta') return o.ods > 0 ? `<span class="xan">💊 OD ×${o.ods}</span>` : '<span class="win">no OD</span>';
-   if (o.mode === 'baseline') return o.ods > 0 ? `<span class="xan">💊 OD ×${o.ods}?</span>` : '<span class="win">no OD*</span>';
-   if (o.mode === 'lifetime') return `<span class="dim">? (${fmt(o.lifetime)} ever)</span>`;
-   return '<span class="flag">could not check</span>'; })()}</td>
- <td class="${r.freeloader ? 'flag' : 'dim'}">${r.freeloader ? '⚠ no hits' : r.stocker ? '📦 stocker' : (r.drawn ? 'ok' : '')}</td>
-</tr>`).join('')}</tbody></table>
-<div class="note"><b>Armoury only.</b> These are drugs taken <i>from the faction armoury</i>, parsed from the
- faction news log — Torn exposes no endpoint for personal drug use, so a member using their own Xanax
- does not appear here at all. A 0 means "took none of the faction's", not "took none".<br>
- Scanned ${fmt(d.entries)} armoury entries, of which ${fmt(d.uses)} were item uses.
- Generated by Torn War Payout Report v2.11.0.</div>
-</body></html>`;
-
-        try {
-            const blob = new Blob([html], { type: 'text/html' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `drug-report-${when}-vs-${String(war.oppName || 'enemy').replace(/[^\w-]+/g, '_')}.html`;
-            document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 4000);
-            setStatus('HTML report downloaded.');
-        } catch (e) {
-            setStatus('Download blocked — use "Copy table" instead.', true);
-        }
-    }
-
-    /* --------------------- loss raffle ------------------------ */
-    // Cryptographically strong uniform [0,1). Falls back to Math.random only
-    // if the crypto API is somehow unavailable.
-    function cryptoFloat() {
-        const c = (typeof crypto !== 'undefined' && crypto) || (typeof window !== 'undefined' && window.crypto);
-        if (c && c.getRandomValues) {
-            const buf = new Uint32Array(1);
-            c.getRandomValues(buf);
-            return buf[0] / 4294967296;
-        }
-        return Math.random();
-    }
-
-    // One ticket per loss, using the current "count losses as" setting.
-    /**
-     * What a raffle can count.
-     *
-     * Deliberately covers both ends of a war: things that happened TO a member
-     * (losses, enemy hits) for a consolation draw, and things they DID (hits,
-     * respect, defends) for a reward draw — plus a flat entry so a faction can
-     * run "everyone who turned up" without weighting performance at all.
-     */
-    const RAFFLE_SOURCES = [
-        { key: 'loss',    label: 'Losses',      def: 1, hint: 'per loss (uses the losses setting on the War report tab)',
-          get: (r) => scopedLoss(r) },
-        { key: 'wins',    label: 'War hits',    def: 0, hint: 'per successful hit on the enemy',
-          get: (r) => r.wins },
-        { key: 'respect', label: 'Respect',     def: 0, hint: 'per respect point — use a fraction like 0.1',
-          get: (r) => r.respect },
-        { key: 'defHeld', label: 'Defends',     def: 0, hint: 'per incoming attack they survived',
-          get: (r) => r.defHeld },
-        { key: 'assists', label: 'Assists',     def: 0, hint: 'per assist',
-          get: (r) => r.assists },
-        { key: 'enemyOn', label: 'Enemy hits taken', def: 0, hint: 'per time the enemy attacked them',
-          get: (r) => r.enemyOn + r.stealthOn },
-        { key: 'flat',    label: 'Just for taking part', def: 0, hint: 'tickets everyone gets, win or lose',
-          get: () => 1 },
-    ];
-
-    function raffleWeights() {
-        const out = {};
-        for (const src of RAFFLE_SOURCES) {
-            const el = $('#twpr-rw-' + src.key);
-            const v = el ? Number(el.value) : src.def;
-            out[src.key] = Number.isFinite(v) && v >= 0 ? v : 0;
-        }
-        return out;
-    }
-
-    /**
-     * Tickets per member under the current weights.
-     *
-     * Rounded DOWN, so a weight that produces 0.6 of a ticket produces none —
-     * a fractional ticket is not a thing anyone can hold, and rounding up would
-     * hand an entry to somebody who did nothing.
-     */
-    function raffleEntrants() {
-        if (!state.report) return [];
-        const w = raffleWeights();
-        const cap = Math.max(0, Number(($('#twpr-raffle-cap') || {}).value) || 0);
-        const min = Math.max(0, Number(($('#twpr-raffle-min') || {}).value) || 0);
-        const active = RAFFLE_SOURCES.filter(sc => w[sc.key] > 0);
-
-        return state.report.list.map(row => {
-            const parts = [];
-            let raw = 0;
-            for (const sc of active) {
-                const n = Number(sc.get(row)) || 0;
-                if (n <= 0) continue;
-                const t = n * w[sc.key];
-                raw += t;
-                parts.push(`${fmt(n)} ${sc.label.toLowerCase()} x${w[sc.key]} = ${Math.round(t * 10) / 10}`);
-            }
-            let tickets = Math.floor(raw);
-            const capped = cap > 0 && tickets > cap;
-            if (capped) tickets = cap;
-            return { name: row.name, id: row.id, tickets, raw, capped, parts };
-        })
-        .filter(e => e.tickets >= Math.max(1, min))
-        .sort((a, b) => b.tickets - a.tickets);
-    }
-
-    function pickWeighted(pool) {
-        const total = pool.reduce((s, e) => s + e.tickets, 0);
-        if (total <= 0) return null;
-        let r = cryptoFloat() * total;
-        for (const e of pool) { r -= e.tickets; if (r < 0) return e; }
-        return pool[pool.length - 1];
-    }
-
-    /** Build the weight inputs once; they drive every recalculation after. */
-    function buildRaffleWeights() {
-        const box = $('#twpr-raffle-weights');
-        if (!box || box.dataset.built) return;
-        box.dataset.built = '1';
-        box.innerHTML = RAFFLE_SOURCES.map(sc =>
-            `<div class="twpr-field" style="min-width:150px;">
-               <label title="${escHtml(sc.hint)}">${escHtml(sc.label)}</label>
-               <input class="twpr-input" id="twpr-rw-${sc.key}" type="number" min="0" step="0.1"
-                      value="${sc.def}" style="width:92px;">
-               <div class="twpr-hint">${escHtml(sc.hint)}</div>
-             </div>`).join('');
-    }
-
-    function applyRafflePreset(w) {
-        for (const sc of RAFFLE_SOURCES) {
-            const el = $('#twpr-rw-' + sc.key);
-            if (el) el.value = w[sc.key] != null ? w[sc.key] : 0;
-        }
-        renderRaffle();
-    }
-
-    function renderRaffle() {
-        buildRaffleWeights();
-        const sum = $('#twpr-raffle-sum');
-        if (!sum) return;
-        if (!state.report) {
-            sum.textContent = 'Pull a war report first';
-            const ob = $('#twpr-raffle-oddsbody');
-            if (ob) ob.innerHTML = '<div style="color:#8b90a6;padding:6px 2px;">The raffle draws from a war\'s per-member numbers, so it needs a report.</div>';
-            return;
-        }
-        const entrants = raffleEntrants();
-        const total = entrants.reduce((s, e) => s + e.tickets, 0);
-        const active = RAFFLE_SOURCES.filter(sc => raffleWeights()[sc.key] > 0);
-        sum.innerHTML = active.length
-            ? `<b>${fmt(entrants.length)}</b> members · <b>${fmt(total)}</b> tickets`
-            : '<span style="color:#ff9a9a">every source is set to 0 — nobody has a ticket</span>';
-
-        const odds = $('#twpr-raffle-oddsbody');
-        if (!odds) return;
-        if (!total) {
-            odds.innerHTML = active.length
-                ? '<div style="color:#8b90a6;padding:6px 2px;">Nobody clears the minimum ticket count.</div>'
-                : '<div style="color:#8b90a6;padding:6px 2px;">Give at least one source a weight above zero.</div>';
-            return;
-        }
-        const top = entrants[0].tickets;
-        odds.innerHTML = `<table class="twpr-oddstable">${entrants.map(e => `<tr>
-            <td>${escHtml(e.name)} <span style="color:#6a7080;">[${e.id}]</span>${e.capped ? ' <span style="color:#ffd479;font-size:10px;" title="Capped — raw total was ' + Math.floor(e.raw) + '">capped</span>' : ''}</td>
-            <td style="width:34%;"><span class="twpr-oddsbar"><i style="width:${(e.tickets / top) * 100}%"></i></span></td>
-            <td style="text-align:right;white-space:nowrap;" title="${escHtml(e.parts.join('  +  ') || 'no qualifying activity')}">
-              <b>${fmt(e.tickets)}</b> <span style="color:#8b90a6;">${((e.tickets / total) * 100).toFixed(1)}%</span></td>
-          </tr>`).join('')}</table>`;
-    }
-
-    function showRaffleWinners(winners, total) {
-        const el = $('#twpr-raffle-winner');
-        if (!el) return;
-        el.innerHTML = winners.map((w, i) => {
-            const odds = total ? ((w.tickets / total) * 100).toFixed(1) : '0';
-            return `<div class="twpr-winner">🏆 ${winners.length > 1 ? `#${i + 1} ` : ''}<b>${w.name}</b> [${w.id}] <span class="sub">${fmt(w.tickets)} tickets · ${odds}% odds</span></div>`;
-        }).join('');
-    }
-
-    function onRaffleDraw() {
-        const entrants = raffleEntrants();
-        if (!entrants.length) { setStatus('Nobody holds a ticket under these weights.', true); return; }
-        const total = entrants.reduce((s, e) => s + e.tickets, 0);
-        const n = Math.max(1, Math.min(Number($('#twpr-raffle-n').value || 1), entrants.length));
-
-        // Pre-compute unique winners (weighted, without replacement).
-        const pool = entrants.slice();
-        const winners = [];
-        for (let i = 0; i < n; i++) {
-            const w = pickWeighted(pool);
-            if (!w) break;
-            winners.push(w);
-            pool.splice(pool.indexOf(w), 1);
-        }
-
-        // Spin animation: cycle random names, decelerating, then reveal.
-        const el = $('#twpr-raffle-winner');
-        const btn = $('#twpr-raffle-draw');
-        if (btn) btn.disabled = true;
-        const start = Date.now();
-        (function step() {
-            const rnd = entrants[Math.floor(cryptoFloat() * entrants.length)];
-            el.innerHTML = `<div class="twpr-spin">${rnd.name}</div>`;
-            const elapsed = Date.now() - start;
-            if (elapsed < 2200) {
-                setTimeout(step, 50 + elapsed / 22);
-            } else {
-                showRaffleWinners(winners, total);
-                if (btn) btn.disabled = false;
-            }
-        })();
-    }
-
-    // Each name repeated by its ticket count — paste into wheelofnames.com.
-    function onCopyWheel() {
-        const entrants = raffleEntrants();
-        if (!entrants.length) { setStatus('No tickets to export.', true); return; }
-        const lines = [];
-        for (const e of entrants) for (let i = 0; i < e.tickets; i++) lines.push(e.name);
-        copy(lines.join('\n'), `Copied ${fmt(lines.length)} entries — paste into wheelofnames.com.`);
-    }
-
-    /** The odds table as CSV — the receipt for a draw. */
-    function onRaffleCsv() {
-        const entrants = raffleEntrants();
-        if (!entrants.length) { setStatus('No tickets to export.', true); return; }
-        const total = entrants.reduce((s, e) => s + e.tickets, 0);
-        const w = raffleWeights();
-        const used = RAFFLE_SOURCES.filter(sc => w[sc.key] > 0).map(sc => `${sc.label} x${w[sc.key]}`).join(' + ');
-        const lines = [`"Tickets from: ${used.replace(/"/g, '""')}"`, 'Member,ID,Tickets,Odds%'];
-        for (const e of entrants) {
-            lines.push([csvCell(e.name), e.id, e.tickets, ((e.tickets / total) * 100).toFixed(2)].join(','));
-        }
-        const war = state.war || {};
-        const name = `raffle-odds-${String(war.oppName || 'war').replace(/[^\w-]+/g, '_')}.csv`;
-        try {
-            const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = name;
-            document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 4000);
-            setStatus(`Downloaded ${name} — ${fmt(entrants.length)} entrants, ${fmt(total)} tickets.`);
-        } catch (e) { setStatus('Download blocked — use Copy instead.', true); }
-    }
-
-    function copy(text, okMsg) {
-        const done = () => setStatus(okMsg);
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
-        } else { fallbackCopy(text, done); }
-    }
-    function fallbackCopy(text, done) {
-        const ta = document.createElement('textarea');
-        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); done(); } catch (e) { setStatus('Copy failed — select manually.', true); }
-        document.body.removeChild(ta);
-    }
-
-    /* ----------------------- bootstrap ------------------------ */
-    let fabPos = null;
-    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-
-    async function loadFabPos() {
-        try { const raw = await gmGet(LS_FABPOS, ''); if (raw) fabPos = JSON.parse(raw); }
-        catch (e) { fabPos = null; }
-    }
-
-    function placeFab(fab) {
-        const size = fab.offsetWidth || 54;
-        let left, top;
-        if (fabPos && Number.isFinite(fabPos.left) && Number.isFinite(fabPos.top)) {
-            left = fabPos.left; top = fabPos.top;
-        } else {
-            // Default: right edge, ~40% down — clear of TornPDA's top + bottom bars.
-            left = window.innerWidth - size - 14;
-            top = Math.round(window.innerHeight * 0.40);
-        }
-        fab.style.left = clamp(left, 4, window.innerWidth - size - 4) + 'px';
-        fab.style.top = clamp(top, 4, window.innerHeight - size - 4) + 'px';
-    }
-
-    // Drag-or-tap: a small movement counts as a tap (opens panel); a larger
-    // drag repositions the button and saves it. Pointer Events cover both
-    // touch (TornPDA) and mouse (desktop) with one code path.
-    function attachDrag(fab) {
-        let active = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
-        const THRESH = 6;
-
-        const down = (e) => {
-            const p = e.touches ? e.touches[0] : e;
-            active = true; moved = false;
-            sx = p.clientX; sy = p.clientY;
-            const r = fab.getBoundingClientRect();
-            ox = r.left; oy = r.top;
-            if (fab.setPointerCapture && e.pointerId != null) {
-                try { fab.setPointerCapture(e.pointerId); } catch (_) {}
-            }
-        };
-        const move = (e) => {
-            if (!active) return;
-            const p = e.touches ? e.touches[0] : e;
-            const dx = p.clientX - sx, dy = p.clientY - sy;
-            if (Math.abs(dx) > THRESH || Math.abs(dy) > THRESH) moved = true;
-            if (moved) {
-                if (e.cancelable) e.preventDefault();
-                const size = fab.offsetWidth || 54;
-                fab.style.left = clamp(ox + dx, 4, window.innerWidth - size - 4) + 'px';
-                fab.style.top = clamp(oy + dy, 4, window.innerHeight - size - 4) + 'px';
-            }
-        };
-        const up = () => {
-            if (!active) return;
-            active = false;
-            if (moved) {
-                fabPos = { left: parseInt(fab.style.left, 10), top: parseInt(fab.style.top, 10) };
-                gmSet(LS_FABPOS, JSON.stringify(fabPos));
-            } else {
-                openPanel();
-            }
-        };
-
-        if (window.PointerEvent) {
-            fab.addEventListener('pointerdown', down);
-            fab.addEventListener('pointermove', move);
-            fab.addEventListener('pointerup', up);
-            fab.addEventListener('pointercancel', () => { active = false; });
-        } else {
-            fab.addEventListener('touchstart', down, { passive: false });
-            fab.addEventListener('touchmove', move, { passive: false });
-            fab.addEventListener('touchend', up);
-            fab.addEventListener('mousedown', down);
-            window.addEventListener('mousemove', move);
-            window.addEventListener('mouseup', up);
-        }
-    }
-
-    function addFab() {
-        if (document.getElementById('twpr-fab')) return;
-        injectCSS();
-        const fab = document.createElement('button');
-        fab.id = 'twpr-fab';
-        fab.type = 'button';
-        fab.title = 'War Payout Report (tap to open · drag to move)';
-        fab.textContent = '⚔️';
-        document.body.appendChild(fab);
-        placeFab(fab);
-        attachDrag(fab);
-    }
-
-    function init() {
-        if (!document.body) { setTimeout(init, 300); return; }
-        loadFabPos().then(() => {
-            addFab();
-            // Torn's SPA re-renders the body on navigation and can strip the
-            // button out — re-add it whenever it goes missing.
-            setInterval(() => { if (!document.getElementById('twpr-fab')) addFab(); }, 1500);
-            window.addEventListener('resize', () => {
-                const f = document.getElementById('twpr-fab');
-                if (f) placeFab(f);
-            });
-        });
-    }
-    return {
-      openPanel, injectCSS, addFab, init, getFactionContext, listWars, pullAttacks, buildReport,
-      // engine surface for the suite's native War tab
-      fetchEnemyHits, cacheLoad, cacheSave, cacheClearAll, cacheIndexGet, humanAge,
-      pullArmoryNews, buildDrugReport, deriveDrugFlags, refreshDrugReport, fetchWarMemberStats,
-      sweepWars, buildSweep, sweepOverdoses, applyOdExcuses, wastedEnergy, checkOverdoses,
-      loadColors, saveColors, resetColors,
-    };
-  })();
-  // ─── Embedded: Frostbite Faction Usage Command (Leader) v3.0.0 — isolated module, launched from Consumables ───
-  const FBUSAGE = (function () {
-    'use strict';
-
-    const APP_ID = 'frostbite-usage-command';
-    const UI_KEY = 'frostbiteUsage.ui.v1';
-    const SETTINGS_KEY = 'frostbiteUsage.settings.v1';
-    const PS_CACHE_KEY = 'frostbiteUsage.psCache.v1';
-    const API_BASE = 'https://api.torn.com';
-
-    /*
-     * type 'counter' — a lifetime cumulative total. Period value = how much it went up.
-     * type 'level'   — a point-in-time value. Period value = signed change, and it
-     *                  makes no sense to sum it across the faction.
-     * apiKey null    — not obtainable for other players; self-reports only.
-     */
-    const STAT_FIELDS = [
-        { key: 'xantaken',          label: 'Xanax',     icon: '💊', apiKey: 'xantaken',          type: 'counter' },
-        { key: 'alcoholused',       label: 'Alcohol',   icon: '🍾', apiKey: 'alcoholused',       type: 'counter' },
-        { key: 'drugsused',         label: 'Drugs',     icon: '💉', apiKey: 'drugsused',         type: 'counter' },
-        { key: 'refills',           label: 'E-Refills', icon: '⚡', apiKey: 'refills',           type: 'counter' },
-        { key: 'nerverefills',      label: 'N-Refills', icon: '🧠', apiKey: 'nerverefills',      type: 'counter' },
-        { key: 'statenhancersused', label: 'Enhancers', icon: '☆',  apiKey: 'statenhancersused', type: 'counter' },
-        { key: 'networth',          label: 'Networth',  icon: '$',  apiKey: 'networth',          type: 'level', currency: true },
-        { key: 'energy',            label: 'Energy',    icon: '🔋', apiKey: null,                type: 'level', lifetimeOnly: true }
-    ];
-
-    const API_FIELDS = STAT_FIELDS.filter(f => f.apiKey);
-
-    /*
-     * `prefix` must match the column prefixes the backend writes into UsagePeriods.
-     *
-     * Labelled "1 Day" rather than "Today" on purpose. Torn serves other players'
-     * personal stats as a once-daily snapshot, so a delta between two reads covers
-     * the Torn day that just closed, not the one in progress. Calling it "Today"
-     * would promise a live number the API cannot give.
-     */
-    const PERIODS = [
-        { key: 'lifetime', label: 'Lifetime', days: null, prefix: null },
-        { key: 'daily',    label: '1 Day',    days: 1,    prefix: 'd' },
-        { key: 'weekly',   label: '7 Days',   days: 7,    prefix: 'w' },
-        { key: 'monthly',  label: '30 Days',  days: 30,   prefix: 'm' }
-    ];
-
-    // Torn allows 100 calls/min per USER — shared across every key you own and every
-    // other script running under your account (TornTools, FF Scouter, anything else).
-    // We hold to 30/min so this can never be the reason your other tooling starts
-    // erroring. awaitCallSlot() is the actual guarantee; the delay paces the normal
-    // case. The window persists to localStorage so a page reload cannot reset it.
-    const MAX_CALLS_PER_MIN = 30;
-    const API_DELAY_MS = 2000;
-    const CALL_LOG_KEY = 'frostbiteUsage.callLog.v1';
-    const PS_CACHE_TTL = 3 * 60 * 60 * 1000;
-    const FAIL_COOLDOWN = 10 * 60 * 1000;
-    const AUTO_INTERVAL_MS = 5 * 60 * 1000;
-
-    const defaultSettings = {
-        sheetUrl: '', readSecret: '', tornApiKey: '',
-        tornEnabled: true, fetchAll: false, autoRefresh: false
-    };
-
-    const state = {
-        open: false,
-        settingsOpen: false,
-        loading: false,
-        busy: false,
-        cancelRequested: false,
-        message: 'Open Settings and add your sheet URL, read secret and Torn API key.',
-        period: 'lifetime',
-        perDay: false,
-        filter: '',
-        sort: { key: 'name', dir: 'asc' },
-        rows: [],
-        periodsById: {},
-        meta: { historyDays: 0, today: todayUtc(), lastSync: '', lastSyncSource: '', unattended: false },
-        launcherPosition: { left: null, top: null },
-        windowPosition: { left: null, top: null },
-        settings: { ...defaultSettings }
-    };
-
-    let autoTimer = null;
-    let suppressLauncherClick = false;
-
-
-    function init() {
-        if (document.getElementById(APP_ID)) return;
-        restoreState();
-        injectStyles();
-        buildApp();
-        bindEvents();
-        renderAll();
-        if (state.settings.autoRefresh) startAutoRefresh();
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Persistence
-     * ---------------------------------------------------------------- */
-
-    function restoreState() {
-        try {
-            const saved = JSON.parse(GM_getValue(UI_KEY, '{}') || '{}');
-            if (typeof saved.open === 'boolean') state.open = saved.open;
-            if (typeof saved.period === 'string' && PERIODS.some(p => p.key === saved.period)) {
-                state.period = saved.period;
-            }
-            if (typeof saved.perDay === 'boolean') state.perDay = saved.perDay;
-            if (saved.sort && saved.sort.key) state.sort = saved.sort;
-            applySavedCoords(saved.launcherPosition, state.launcherPosition);
-            applySavedCoords(saved.windowPosition, state.windowPosition);
-        } catch (_) { /* defaults are fine */ }
-
-        try {
-            state.settings = { ...defaultSettings, ...JSON.parse(GM_getValue(SETTINGS_KEY, '{}') || '{}') };
-        } catch (_) {
-            state.settings = { ...defaultSettings };
-        }
-    }
-
-    function applySavedCoords(source, target) {
-        if (source && Number.isFinite(source.left) && Number.isFinite(source.top)) {
-            target.left = source.left;
-            target.top = source.top;
-        }
-    }
-
-    function saveState() {
-        GM_setValue(UI_KEY, JSON.stringify({
-            open: state.open,
-            period: state.period,
-            perDay: state.perDay,
-            sort: state.sort,
-            launcherPosition: state.launcherPosition,
-            windowPosition: state.windowPosition
-        }));
-    }
-
-    function saveSettings() {
-        GM_setValue(SETTINGS_KEY, JSON.stringify(state.settings));
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Dates
-     * ---------------------------------------------------------------- */
-
-    // Only used as a placeholder before the first load — every real date and all
-    // period maths comes from the sheet, so leaders in different timezones can never
-    // disagree about where a Torn day starts.
-    function todayUtc() { return new Date().toISOString().slice(0, 10); }
-
-    /* ---------------------------------------------------------------- *
-     * Network
-     * ---------------------------------------------------------------- */
-
-    // Resolved on demand rather than into a module-scope const: a const would sit in
-    // the temporal dead zone if anything above it ever throws during load, turning an
-    // unrelated error into a confusing "cannot access gmXhr" on every later request.
-    function getGmXhr() {
-        if (typeof GM_xmlhttpRequest !== 'undefined') return GM_xmlhttpRequest;
-        if (typeof GM !== 'undefined' && GM.xmlHttpRequest) return GM.xmlHttpRequest;
-        return null;
-    }
-
-    function gmFetchJSON(url, options = {}) {
-        const gmXhr = getGmXhr();
-        const started = Date.now();
-        if (!gmXhr) {
-            _ocmDiagRecord('Usage API', 'error', Date.now() - started, 'GM transport unavailable');
-            return Promise.reject(new Error('GM_xmlhttpRequest unavailable — check the userscript manager permissions.'));
-        }
-        return new Promise((resolve, reject) => {
-            gmXhr({
-            method: options.method || 'GET',
-            url,
-            data: options.body,
-            headers: options.headers || {},
-            timeout: options.timeout || 20000,
-            onload: (res) => {
-                    try {
-                        const data = JSON.parse(res.responseText);
-                        _ocmDiagRecord('Usage API', 'ok', Date.now() - started, 'response received');
-                        resolve(data);
-                    }
-                    catch (_) {
-                        _ocmDiagRecord('Usage API', 'error', Date.now() - started, 'invalid JSON');
-                        reject(new Error(`Bad JSON from the sheet: ${res.responseText.slice(0, 120)}`));
-                    }
-                },
-            onerror: () => { _ocmDiagRecord('Usage API', 'error', Date.now() - started, 'network error'); reject(new Error('Network error contacting the sheet backend.')); },
-            ontimeout: () => { _ocmDiagRecord('Usage API', 'timeout', Date.now() - started, 'request timed out'); reject(new Error('Sheet request timed out.')); }
-            });
-        });
-    }
-
-    function loadCallLog() {
-        try { return JSON.parse(GM_getValue(CALL_LOG_KEY, '[]') || '[]'); }
-        catch (_) { return []; }
-    }
-
-    /**
-     * Block until one more call fits inside MAX_CALLS_PER_MIN over the trailing 60
-     * seconds. Persisted rather than in-memory so reloading the page mid-sweep, or
-     * having Torn open in two tabs, cannot quietly double the rate.
-     */
-    async function awaitCallSlot() {
-        for (;;) {
-            const now = Date.now();
-            const times = loadCallLog().filter(t => now - t < 60000);
-
-            if (times.length < MAX_CALLS_PER_MIN) {
-                times.push(now);
-                GM_setValue(CALL_LOG_KEY, JSON.stringify(times));
-                return;
-            }
-
-            const wait = Math.min(Math.max((times[0] + 60000) - now + 50, 100), 15000);
-            setMessage(`Rate limit guard: waiting ${Math.ceil(wait / 1000)}s (${times.length}/${MAX_CALLS_PER_MIN} calls in the last minute)…`);
-            await sleep(wait);
-        }
-    }
-
-    /** Calls made in the trailing minute — for display. */
-    function recentCallCount() {
-        const now = Date.now();
-        return loadCallLog().filter(t => now - t < 60000).length;
-    }
-
-    async function apiGet(path) {
-        await awaitCallSlot();
-        const started = Date.now();
-        const url = `${API_BASE}${path}${path.includes('?') ? '&' : '?'}key=${encodeURIComponent(state.settings.tornApiKey)}&comment=FrostbiteUsage`;
-        try {
-            const res = await fetch(url, { cache: 'no-store' });
-            if (!res.ok) {
-                _ocmDiagRecord('Usage API', 'error', Date.now() - started, `HTTP ${res.status}`);
-                throw new Error(`Torn API returned HTTP ${res.status}.`);
-            }
-            const json = await res.json();
-            if (json.error) {
-                _ocmDiagRecord('Usage API', 'error', Date.now() - started, 'API error');
-                throw new Error(`Torn API error ${json.error.code}: ${json.error.error}`);
-            }
-            _ocmDiagRecord('Usage API', 'ok', Date.now() - started, 'response received');
-            return json;
-        } catch (e) {
-            if (!String(e?.message || '').startsWith('Torn API')) {
-                _ocmDiagRecord('Usage API', 'error', Date.now() - started, 'network error');
-            }
-            throw e;
-        }
-    }
-
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-    /* ---------------------------------------------------------------- *
-     * Load pipeline
-     * ---------------------------------------------------------------- */
-
-    function startAutoRefresh() {
-        stopAutoRefresh();
-        autoTimer = setInterval(refresh, AUTO_INTERVAL_MS);
-        refresh();
-    }
-
-    function stopAutoRefresh() {
-        if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
-    }
-
-    async function refresh() {
-        if (state.busy) { setMessage('A fetch is already running.'); return; }
-        const s = state.settings;
-        if (!s.sheetUrl || !s.readSecret) { setMessage('Set the sheet URL and read secret in Settings.'); return false; }
-
-        state.loading = true;
-        state.busy = true;
-        state.cancelRequested = false;
-        renderChrome();
-        setMessage('Loading from the sheet…');
-
-        try {
-            const data = await gmFetchJSON(`${s.sheetUrl}?secret=${encodeURIComponent(s.readSecret)}`);
-            if (!data.ok) { setMessage(`Sheet error: ${data.error}`); return false; }
-            absorb(data);
-            renderAll();
-
-            // With the sheet syncing itself hourly there is nothing for the browser
-            // to do — sweeping from here would just burn the same rate limit twice.
-            if (s.tornEnabled && s.tornApiKey && !state.meta.unattended) {
-                await mergeTornApi();
-            }
-
-            renderAll();
-            setMessage(summaryLine());
-            return true;
-        } catch (e) {
-            setMessage(`Load failed: ${e.message}`);
-            return false;
-        } finally {
-            state.loading = false;
-            state.busy = false;
-            renderChrome();
-        }
-    }
-
-    /** Take whatever the sheet returned — from a read or a sync — as the truth. */
-    function absorb(data) {
-        if (Array.isArray(data.rows)) state.rows = data.rows;
-        if (Array.isArray(data.periods)) indexPeriods(data.periods);
-        if (data.meta) state.meta = { ...state.meta, ...data.meta };
-    }
-
-    function indexPeriods(periods) {
-        const byId = {};
-        periods.forEach(p => { byId[String(p.id)] = p; });
-        state.periodsById = byId;
-    }
-
-    function summaryLine() {
-        const m = state.meta;
-        const history = m.historyDays > 1 ? `${m.historyDays} days of history` : 'building history';
-        const mode = m.unattended ? 'sheet auto-syncs hourly' : 'browser-driven';
-        const last = m.lastSync ? new Date(m.lastSync).toLocaleString() : 'never';
-        return `${state.rows.length} members • ${history} • ${mode} • last sync ${last}`;
-    }
-
-    /**
-     * Pull the roster, then read each member's public personal stats. `personalstats`
-     * is a public-access selection — any key can read any player's stats, the same
-     * numbers on the Personal Stats tab of their profile. No spies, no cooperation.
-     */
-    async function mergeTornApi() {
-        const cache = loadPsCache();
-        const now = Date.now();
-
-        if (cache.lastFailAt && (now - cache.lastFailAt < FAIL_COOLDOWN)) {
-            const waitMin = Math.ceil((FAIL_COOLDOWN - (now - cache.lastFailAt)) / 60000);
-            setMessage(`Torn API cooling down after a failure (retry in ~${waitMin} min). Sheet data only.`);
-            return;
-        }
-
-        setMessage('Fetching faction roster…');
-        // Always the faction this key's owner belongs to — no id to configure.
-        let members;
-        try {
-            const faction = await apiGet('/faction/?selections=basic');
-            members = faction.members || {};
-        } catch (e) {
-            markFail();
-            setMessage(`Roster fetch failed: ${e.message}`);
-            return;
-        }
-
-        const knownById = {};
-        state.rows.forEach(r => { knownById[String(r.id)] = r; });
-
-        const todo = Object.keys(members).filter(id => {
-            if (state.settings.fetchAll) return true;
-            const known = knownById[id];
-            return !known || API_FIELDS.some(f => isBlank(known[f.key]));
-        });
-
-        if (!todo.length) { setMessage('Sheet is already current for every member.'); return; }
-
-        const swept = [];
-        let done = 0;
-        let fromCache = 0;
-
-        for (const id of todo) {
-            if (state.cancelRequested) break;
-
-            const cached = cache[id];
-            let ps;
-
-            if (cached && (Date.now() - cached.at < PS_CACHE_TTL)) {
-                ps = cached.ps;
-                fromCache++;
-            } else {
-                setMessage(`Fetching ${done + 1}/${todo.length} — ${members[id].name} (${recentCallCount()}/${MAX_CALLS_PER_MIN} calls this minute)…`);
-                try {
-                    const res = await apiGet(`/user/${encodeURIComponent(id)}?selections=personalstats`);
-                    ps = res.personalstats || {};
-                    cache[id] = { ps, at: Date.now() };
-                    savePsCache(cache);
-                } catch (e) {
-                    if (/error 5:/i.test(e.message)) {
-                        markFail();
-                        setMessage(`Rate limited by Torn after ${done} members. Backing off ${FAIL_COOLDOWN / 60000} min.`);
-                        break;
-                    }
-                    console.warn('[Frostbite] personalstats failed for', id, e.message);
-                    done++;
-                    await sleep(API_DELAY_MS);
-                    continue;
-                }
-                await sleep(API_DELAY_MS);
-            }
-
-            const stats = {};
-            API_FIELDS.forEach(f => {
-                const v = ps[f.apiKey];
-                if (v !== undefined && v !== null && v !== '') stats[f.key] = v;
-            });
-
-            swept.push({ id, name: members[id].name, position: members[id].position || '', stats });
-            done++;
-        }
-
-        if (state.cancelRequested) setMessage(`Cancelled after ${done} of ${todo.length}.`);
-
-        cache.lastFailAt = null;
-        savePsCache(cache);
-
-        // Whatever we managed to read gets written back, even a partial sweep — the
-        // sheet merges rather than replaces, so half a roster is never destructive.
-        if (swept.length) await syncToSheet(swept, `Swept ${done} members (${fromCache} cached).`);
-    }
-
-    /**
-     * Hand observed values to the sheet and take its answer as the new truth.
-     *
-     * The client deliberately does not decide what is newer or better — it posts
-     * what it saw and the backend merges: lifetime counters only ever move up, so a
-     * stale or partial read can never lower someone's recorded total, and blanks
-     * never overwrite a value that already exists. The response carries the merged
-     * rows and freshly recomputed period columns, so one round trip leaves the
-     * dashboard showing exactly what is in the spreadsheet.
-     */
-    async function syncToSheet(members, prefix) {
-        const s = state.settings;
-        if (!s.sheetUrl || !s.readSecret) { setMessage('Set the sheet URL and read secret first.'); return; }
-        if (!members || !members.length) { setMessage('Nothing to sync yet — load data first.'); return; }
-
-        setMessage(`${prefix ? prefix + ' ' : ''}Writing to the sheet…`);
-
-        try {
-            const res = await gmFetchJSON(s.sheetUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                body: JSON.stringify({
-                    secret: s.readSecret,
-                    action: 'sync',
-                    source: 'dashboard',
-                    members
-                })
-            });
-
-            if (!res.ok) { setMessage(`Sync failed: ${res.error}`); return; }
-
-            absorb(res);
-            const parts = [`Synced ${res.merged} members for ${res.day}`, `${res.raised} stat${res.raised === 1 ? '' : 's'} increased`];
-            if (res.drained) parts.push(`${res.drained} queued self-report${res.drained === 1 ? '' : 's'} folded in`);
-            if (res.ignoredLower) parts.push(`${res.ignoredLower} lower value${res.ignoredLower === 1 ? '' : 's'} ignored`);
-            setMessage(`${parts.join(' • ')}.`);
-        } catch (e) {
-            setMessage(`Sync failed: ${e.message}`);
-        }
-    }
-
-    /** Manual "push what the browser currently shows" — used by the Sync button. */
-    function syncCurrentRows() {
-        const members = state.rows
-            .filter(r => r.id && STAT_FIELDS.some(f => !isBlank(r[f.key])))
-            .map(r => ({
-                id: String(r.id),
-                name: r.name,
-                position: r.position || '',
-                stats: Object.fromEntries(
-                    STAT_FIELDS.filter(f => !isBlank(r[f.key])).map(f => [f.key, r[f.key]])
-                )
-            }));
-        return syncToSheet(members, '');
-    }
-
-    function loadPsCache() {
-        try { return JSON.parse(OCBulkStore.getRaw(PS_CACHE_KEY, '{}') || '{}'); }
-        catch (_) { return {}; }
-    }
-    function savePsCache(obj) { OCBulkStore.setRaw(PS_CACHE_KEY, JSON.stringify(obj)); }
-    function markFail() {
-        const c = loadPsCache();
-        c.lastFailAt = Date.now();
-        savePsCache(c);
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Period maths
-     * ---------------------------------------------------------------- */
-
-    function currentPeriod() {
-        return PERIODS.find(p => p.key === state.period) || PERIODS[0];
-    }
-
-    /**
-     * The value to show for one member/field under the active period.
-     * Returns { value, partial, windowDays } or null when it cannot be computed.
-     *
-     * Lifetime comes from the FactionUsage row; every period figure is read straight
-     * out of the sheet's UsagePeriods tab. Deliberately not recomputed here — the
-     * dashboard and the spreadsheet must never be able to disagree about a number.
-     */
-    function periodValue(row, field) {
-        const period = currentPeriod();
-
-        if (!period.days) {
-            return isBlank(row[field.key]) ? null : { value: Number(row[field.key]) };
-        }
-        if (field.lifetimeOnly) return null;
-
-        const periods = state.periodsById[String(row.id)];
-        if (!periods) return null;
-
-        const value = periods[`${period.prefix}_${field.key}`];
-        if (isBlank(value)) return null;
-
-        const rawWindow = Number(periods[`${period.prefix}_window`]);
-        const windowDays = Number.isFinite(rawWindow) && rawWindow > 0 ? rawWindow : period.days;
-
-        return {
-            value: Number(value),
-            partial: windowDays < period.days,
-            windowDays,
-            anchor: periods.anchor || ''
-        };
-    }
-
-    /**
-     * Rate per day over the window that was actually measured.
-     *
-     * Dividing by the real span rather than the nominal one matters: a 5-day window
-     * labelled "7 Days" would otherwise understate someone's rate by nearly a third.
-     * Only meaningful for counters — networth is a balance, not something accrued.
-     */
-    function displayValue(result, field) {
-        if (!state.perDay || !currentPeriod().days || field.type !== 'counter') {
-            return { value: result.value, rate: false };
-        }
-        return { value: result.value / (result.windowDays || 1), rate: true };
-    }
-
-    function visibleFields() {
-        const period = currentPeriod();
-        return STAT_FIELDS.filter(f => !(period.days && f.lifetimeOnly));
-    }
-
-    function visibleRows() {
-        const needle = state.filter.trim().toLowerCase();
-        let list = state.rows.filter(r => {
-            if (!needle) return true;
-            return String(r.name).toLowerCase().includes(needle) ||
-                   String(r.id).includes(needle) ||
-                   String(r.position || '').toLowerCase().includes(needle);
-        });
-
-        const { key, dir } = state.sort;
-        const mult = dir === 'asc' ? 1 : -1;
-        const field = STAT_FIELDS.find(f => f.key === key);
-
-        list = [...list].sort((a, b) => {
-            if (key === 'name' || key === 'position') {
-                return mult * String(a[key] || '').localeCompare(String(b[key] || ''));
-            }
-            if (!field) return 0;
-            const av = periodValue(a, field);
-            const bv = periodValue(b, field);
-            // Members with no value for this column always sink to the bottom.
-            if (!av && !bv) return 0;
-            if (!av) return 1;
-            if (!bv) return -1;
-            return mult * (av.value - bv.value);
-        });
-
-        return list;
-    }
-
-    function columnTotals(list) {
-        const totals = {};
-        visibleFields().forEach(f => {
-            if (f.type !== 'counter') return;
-            let sum = 0;
-            let any = false;
-            list.forEach(r => {
-                const v = periodValue(r, f);
-                if (v && Number.isFinite(v.value)) { sum += v.value; any = true; }
-            });
-            totals[f.key] = any ? sum : null;
-        });
-        return totals;
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Styles
-     * ---------------------------------------------------------------- */
-
-    function injectStyles() {
-        const style = document.createElement('style');
-        style.id = `${APP_ID}-styles`;
-        style.textContent = `
-            #${APP_ID}, #${APP_ID} * { box-sizing: border-box; }
-
-            #${APP_ID} {
-                --fi-panel: rgba(8, 18, 27, 0.98);
-                --fi-border: #29475c;
-                --fi-border-soft: rgba(71, 117, 148, 0.3);
-                --fi-blue: #55b7ff;
-                --fi-blue-bright: #8ad5ff;
-                --fi-text: #edf4fb;
-                --fi-muted: #99aab8;
-                --fi-green: #51d96a;
-                --fi-red: #ff6c77;
-                --fi-amber: #e8c276;
-
-                position: static;
-                z-index: 999999;
-                color: var(--fi-text);
-                font-family: Arial, Helvetica, sans-serif;
-                font-size: 11px;
-                line-height: 1.25;
-                user-select: none;
-            }
-
-            #${APP_ID} button, #${APP_ID} input, #${APP_ID} select { font: inherit; }
-
-            .fu-launcher, .fu-shell {
-                position: fixed;
-                top: 92px;
-                right: 14px;
-                z-index: 999999;
-            }
-
-            .fu-launcher {
-                display: grid;
-                place-items: center;
-                width: 40px;
-                height: 40px;
-                padding: 0;
-                border: 1px solid #2e5874;
-                border-radius: 9px;
-                background:
-                    radial-gradient(circle, rgba(73, 185, 255, 0.18), transparent 55%),
-                    linear-gradient(180deg, #0a1823, #07121b);
-                color: var(--fi-blue-bright);
-                box-shadow: 0 7px 18px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(116, 199, 255, 0.04);
-                cursor: move;
-                touch-action: none;
-                font-size: 21px;
-                line-height: 1;
-            }
-
-            .fu-launcher:hover {
-                border-color: var(--fi-blue);
-                background:
-                    radial-gradient(circle, rgba(73, 185, 255, 0.27), transparent 58%),
-                    linear-gradient(180deg, #102433, #091722);
-            }
-
-            .fu-shell {
-                display: flex;
-                flex-direction: column;
-                width: 780px;
-                max-width: calc(100vw - 20px);
-                max-height: calc(100vh - 24px);
-                overflow: hidden;
-                border: 1px solid var(--fi-border);
-                border-radius: 9px;
-                background:
-                    radial-gradient(circle at 20% 0%, rgba(42, 147, 218, 0.08), transparent 27%),
-                    linear-gradient(180deg, #071018 0%, #08121a 100%);
-                box-shadow: 0 14px 34px rgba(0, 0, 0, 0.52), inset 0 0 0 2px rgba(92, 164, 209, 0.05);
-            }
-
-            .fu-shell[hidden], .fu-launcher[hidden] { display: none !important; }
-
-            .fu-header {
-                display: grid;
-                grid-template-columns: 30px minmax(0, 1fr) auto 26px 26px;
-                gap: 7px;
-                align-items: center;
-                min-height: 36px;
-                padding: 4px 7px;
-                border-bottom: 1px solid var(--fi-border-soft);
-                cursor: move;
-                touch-action: none;
-            }
-
-            .fu-brand-mark {
-                display: grid;
-                place-items: center;
-                width: 28px;
-                height: 28px;
-                border: 1px solid var(--fi-border);
-                border-radius: 7px;
-                background:
-                    radial-gradient(circle, rgba(72, 178, 255, 0.19), transparent 52%),
-                    linear-gradient(145deg, #071019, #0a1d2b);
-                color: var(--fi-blue-bright);
-                font-size: 16px;
-                text-shadow: 0 0 8px rgba(75, 184, 255, 0.48);
-            }
-
-            .fu-title {
-                color: #f0f7ff;
-                font-size: 13px;
-                font-weight: 700;
-                letter-spacing: 0.4px;
-                line-height: 1;
-                text-transform: uppercase;
-                white-space: nowrap;
-            }
-
-            .fu-subtitle {
-                margin-top: 1px;
-                color: var(--fi-blue);
-                font-size: 6px;
-                font-weight: 700;
-                letter-spacing: 0.85px;
-                line-height: 1.2;
-                text-transform: uppercase;
-            }
-
-            .fu-history-chip {
-                padding: 3px 7px;
-                border: 1px solid var(--fi-border);
-                border-radius: 20px;
-                color: var(--fi-muted);
-                font-size: 7px;
-                font-weight: 700;
-                letter-spacing: 0.5px;
-                text-transform: uppercase;
-                white-space: nowrap;
-            }
-
-            .fu-icon-button {
-                width: 26px;
-                height: 26px;
-                padding: 0;
-                border: 1px solid var(--fi-border);
-                border-radius: 6px;
-                background: #09131c;
-                color: var(--fi-blue-bright);
-                cursor: pointer;
-                font-size: 14px;
-                line-height: 1;
-            }
-
-            .fu-icon-button:hover { border-color: var(--fi-blue); background: #102331; }
-            .fu-close { color: var(--fi-text); font-size: 17px; }
-
-            .fu-scroll {
-                display: flex;
-                flex-direction: column;
-                min-height: 0;
-                overflow-y: auto;
-            }
-
-            .fu-section {
-                margin: 5px 6px 0;
-                padding: 6px;
-                border: 1px solid var(--fi-border);
-                border-radius: 6px;
-                background: var(--fi-panel);
-            }
-
-            .fu-section[hidden] { display: none !important; }
-
-            .fu-section-title {
-                display: flex;
-                align-items: center;
-                gap: 4px;
-                margin: 0 0 5px;
-                color: var(--fi-blue);
-                font-size: 10px;
-                font-weight: 800;
-                letter-spacing: 0.55px;
-                text-transform: uppercase;
-            }
-
-            .fu-snow { color: var(--fi-blue-bright); font-size: 11px; }
-
-            .fu-field-grid {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 5px;
-            }
-
-            .fu-field-label {
-                display: block;
-                margin-bottom: 3px;
-                color: var(--fi-muted);
-                font-size: 8px;
-                text-transform: uppercase;
-                letter-spacing: 0.4px;
-            }
-
-            .fu-input {
-                width: 100%;
-                min-width: 0;
-                height: 29px;
-                padding: 0 8px;
-                border: 1px solid #27465c;
-                border-radius: 5px;
-                outline: none;
-                background: #050d13;
-                color: var(--fi-text);
-                font-size: 10px;
-            }
-
-            .fu-input::placeholder { color: #6f7e89; }
-            .fu-input:focus { border-color: var(--fi-blue); box-shadow: 0 0 0 2px rgba(70, 174, 245, 0.08); }
-
-            .fu-toggles {
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 4px;
-                margin-top: 6px;
-            }
-
-            .fu-toggle {
-                display: flex;
-                align-items: center;
-                gap: 6px;
-                color: var(--fi-muted);
-                font-size: 9px;
-                cursor: pointer;
-            }
-
-            .fu-toggle input { width: auto; height: auto; margin: 0; accent-color: #2d7fc3; }
-
-            .fu-actions {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 5px;
-                margin-top: 6px;
-            }
-
-            .fu-action {
-                height: 27px;
-                padding: 0 9px;
-                border: 1px solid #2d7fc3;
-                border-radius: 5px;
-                background: linear-gradient(180deg, #174c7c, #10355a);
-                color: #fff;
-                cursor: pointer;
-                font-size: 8px;
-                font-weight: 700;
-                letter-spacing: 0.4px;
-                text-transform: uppercase;
-            }
-
-            .fu-action:hover { filter: brightness(1.14); }
-            .fu-action:disabled { cursor: wait; opacity: 0.55; filter: none; }
-            .fu-action.fu-secondary { border-color: var(--fi-border); background: #09131c; color: var(--fi-text); }
-            .fu-action.fu-danger { border-color: #6d2b32; background: #1a0d10; color: #ffb3b8; }
-            .fu-action[hidden] { display: none !important; }
-
-            .fu-note {
-                margin-top: 5px;
-                color: var(--fi-muted);
-                font-size: 7px;
-                line-height: 1.35;
-            }
-
-            .fu-control-bar {
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) auto;
-                gap: 6px;
-                align-items: center;
-            }
-
-            .fu-periods {
-                display: inline-flex;
-                overflow: hidden;
-                border: 1px solid var(--fi-border);
-                border-radius: 6px;
-            }
-
-            .fu-period {
-                padding: 0 11px;
-                height: 27px;
-                border: 0;
-                border-right: 1px solid var(--fi-border-soft);
-                background: #09131c;
-                color: var(--fi-muted);
-                cursor: pointer;
-                font-size: 9px;
-                font-weight: 700;
-                letter-spacing: 0.4px;
-                text-transform: uppercase;
-            }
-
-            .fu-period:last-child { border-right: 0; }
-            .fu-period:hover { color: var(--fi-text); background: #102331; }
-
-            .fu-period[aria-pressed="true"] {
-                background: linear-gradient(180deg, #174c7c, #10355a);
-                color: #fff;
-                text-shadow: 0 0 6px rgba(120, 200, 255, 0.5);
-            }
-
-            .fu-message {
-                min-height: 11px;
-                margin-top: 5px;
-                color: var(--fi-muted);
-                font-size: 8px;
-                line-height: 1.3;
-            }
-
-            .fu-table-wrap {
-                margin: 5px 6px;
-                border: 1px solid var(--fi-border-soft);
-                border-radius: 6px;
-                background: rgba(4, 11, 17, 0.52);
-                overflow: auto;
-                max-height: 52vh;
-            }
-
-            .fu-table { width: 100%; border-collapse: collapse; }
-
-            .fu-table th {
-                position: sticky;
-                top: 0;
-                z-index: 1;
-                padding: 5px 6px;
-                border-bottom: 1px solid var(--fi-border);
-                background: #0a1620;
-                color: var(--fi-blue);
-                cursor: pointer;
-                font-size: 8px;
-                font-weight: 800;
-                letter-spacing: 0.4px;
-                text-align: right;
-                text-transform: uppercase;
-                white-space: nowrap;
-            }
-
-            .fu-table th:first-child, .fu-table th:nth-child(2) { text-align: left; }
-            .fu-table th:hover { color: var(--fi-blue-bright); background: #102331; }
-            .fu-table th .fu-sort { color: var(--fi-muted); font-size: 7px; }
-
-            .fu-table td {
-                padding: 3px 6px;
-                border-bottom: 1px solid var(--fi-border-soft);
-                font-size: 9px;
-                font-variant-numeric: tabular-nums;
-                text-align: right;
-                white-space: nowrap;
-            }
-
-            .fu-table td:first-child, .fu-table td:nth-child(2) { text-align: left; }
-            .fu-table tbody tr:hover td { background: rgba(30, 79, 116, 0.18); }
-
-            .fu-name { color: #f4f7fb; font-weight: 700; }
-            .fu-position { color: var(--fi-muted); font-size: 8px; }
-            .fu-value { color: #f7f9fc; font-weight: 700; }
-            .fu-value.fu-empty { color: #55646f; font-weight: 500; }
-            .fu-value.fu-zero { color: #7d8a94; font-weight: 600; }
-            .fu-value.fu-partial { color: var(--fi-amber); }
-            .fu-value.fu-up { color: var(--fi-green); }
-            .fu-value.fu-down { color: var(--fi-red); }
-
-            .fu-table tfoot td {
-                position: sticky;
-                bottom: 0;
-                border-top: 1px solid var(--fi-border);
-                border-bottom: 0;
-                background: #0a1620;
-                color: var(--fi-blue-bright);
-                font-size: 9px;
-                font-weight: 800;
-            }
-
-            .fu-empty-state {
-                padding: 16px 10px;
-                color: var(--fi-muted);
-                font-size: 9px;
-                text-align: center;
-            }
-
-            .fu-footer {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 5px;
-                min-height: 24px;
-                padding: 5px 7px;
-                border-top: 1px solid var(--fi-border-soft);
-                color: var(--fi-blue);
-                font-size: 6px;
-                letter-spacing: 0.65px;
-                text-align: center;
-                text-transform: uppercase;
-                white-space: nowrap;
-            }
-
-            .fu-footer-snow { color: var(--fi-blue-bright); font-size: 9px; }
-
-            @media (max-width: 820px) {
-                .fu-shell { width: calc(100vw - 12px); }
-                .fu-field-grid, .fu-toggles { grid-template-columns: minmax(0, 1fr); }
-                .fu-control-bar { grid-template-columns: minmax(0, 1fr); }
-            }
-        `;
-        document.head.appendChild(style);
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Markup
-     * ---------------------------------------------------------------- */
-
-    function buildApp() {
-        const root = document.createElement('div');
-        root.id = APP_ID;
-        root.innerHTML = `
-            <button class="fu-launcher" type="button" title="Open Faction Usage Command" aria-label="Open Faction Usage Command">❄</button>
-
-            <aside class="fu-shell" aria-label="Frostbite Faction Usage Command" hidden>
-                <header class="fu-header">
-                    <div class="fu-brand-mark" aria-hidden="true">❄</div>
-                    <div>
-                        <div class="fu-title">Usage Command</div>
-                        <div class="fu-subtitle">Knowledge • Awareness • Advantage</div>
-                    </div>
-                    <div class="fu-history-chip">No history</div>
-                    <button class="fu-icon-button fu-settings-button" type="button" title="Settings" aria-label="Settings">⚙</button>
-                    <button class="fu-icon-button fu-close" type="button" title="Close" aria-label="Close">×</button>
-                </header>
-
-                <div class="fu-scroll">
-                    <section class="fu-section fu-settings" hidden>
-                        <div class="fu-section-title"><span class="fu-snow">❄</span>Settings</div>
-
-                        <div class="fu-field-grid">
-                            <div>
-                                <label class="fu-field-label" for="fu-sheet-url">Sheet Web App URL</label>
-                                <input id="fu-sheet-url" class="fu-input fu-sheet-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://script.google.com/...">
-                            </div>
-                            <div>
-                                <label class="fu-field-label" for="fu-read-secret">Leader Read Secret</label>
-                                <input id="fu-read-secret" class="fu-input fu-read-secret" type="password" autocomplete="off" spellcheck="false" placeholder="Keep this private">
-                            </div>
-                            <div>
-                                <label class="fu-field-label" for="fu-torn-key">Torn API Key</label>
-                                <input id="fu-torn-key" class="fu-input fu-torn-key" type="password" maxlength="32" autocomplete="off" spellcheck="false" placeholder="Your own key">
-                            </div>
-                            <div>
-                                <label class="fu-field-label">Faction</label>
-                                <input class="fu-input fu-faction-readout" type="text" tabindex="-1" readonly value="From your API key">
-                            </div>
-                        </div>
-
-                        <div class="fu-toggles">
-                            <label class="fu-toggle"><input type="checkbox" class="fu-torn-enabled"> Sweep Torn from this browser</label>
-                            <label class="fu-toggle"><input type="checkbox" class="fu-fetch-all"> Re-fetch every member (slower)</label>
-                            <label class="fu-toggle"><input type="checkbox" class="fu-auto-refresh"> Auto-refresh every 5 minutes</label>
-                        </div>
-
-                        <div class="fu-actions">
-                            <button class="fu-action fu-save" type="button">Save</button>
-                            <button class="fu-action fu-secondary fu-probe" type="button">Probe Fields</button>
-                            <button class="fu-action fu-secondary fu-sync-now" type="button">Push To Sheet</button>
-                            <button class="fu-action fu-danger fu-clear-cache" type="button">Clear Stat Cache</button>
-                        </div>
-
-                        <div class="fu-note fu-mode-note"></div>
-
-                        <div class="fu-note">
-                            Stats come from Torn's public personal stats — the same numbers on any profile's
-                            Personal Stats tab. No spies, no TornStats, nothing members have to install.
-                            The sheet is the record: it merges rather than overwrites, so lifetime totals only
-                            ever move up and a partial sweep can never lower someone's numbers. Period columns
-                            are day-over-day differences, so they fill in once history builds. Days roll over
-                            at Torn City Time.
-                        </div>
-                    </section>
-
-                    <section class="fu-section">
-                        <div class="fu-section-title"><span class="fu-snow">❄</span>Faction Usage</div>
-
-                        <div class="fu-control-bar">
-                            <div class="fu-periods" role="group" aria-label="Reporting period">
-                                ${PERIODS.map(p => `
-                                    <button class="fu-period" type="button" data-period="${p.key}" aria-pressed="false">${escapeHtml(p.label)}</button>
-                                `).join('')}
-                            </div>
-                            <div class="fu-actions" style="margin-top:0;">
-                                <button class="fu-action fu-secondary fu-perday" type="button" aria-pressed="false" title="Show usage per day instead of the window total">Per Day</button>
-                                <input class="fu-input fu-filter" type="text" placeholder="Filter name / ID / rank" style="width:170px;height:27px;">
-                                <button class="fu-action fu-refresh" type="button">Refresh</button>
-                                <button class="fu-action fu-secondary fu-export" type="button">CSV</button>
-                                <button class="fu-action fu-danger fu-cancel" type="button" hidden>Cancel</button>
-                            </div>
-                        </div>
-
-                        <div class="fu-message" role="status"></div>
-                    </section>
-
-                    <div class="fu-table-wrap"></div>
-
-                    <footer class="fu-footer">
-                        <span class="fu-footer-snow">❄</span>
-                        <span>© 2026 Frostbite Faction • All Rights Reserved • Loyalty. Strength. Family.</span>
-                    </footer>
-                </div>
-            </aside>
-        `;
-        document.body.appendChild(root);
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Events
-     * ---------------------------------------------------------------- */
-
-    function bindEvents() {
-        const root = document.getElementById(APP_ID);
-        const launcher = root.querySelector('.fu-launcher');
-        const shell = root.querySelector('.fu-shell');
-        const header = root.querySelector('.fu-header');
-        const settingsPanel = root.querySelector('.fu-settings');
-
-        makeDraggable(launcher, launcher, 'launcherPosition');
-        makeDraggable(shell, header, 'windowPosition');
-
-        launcher.addEventListener('click', () => {
-            if (suppressLauncherClick) { suppressLauncherClick = false; return; }
-            state.open = true;
-            saveState();
-            renderVisibility();
-            if (!state.rows.length && state.settings.sheetUrl) refresh();
-        });
-
-        root.querySelector('.fu-settings-button').addEventListener('pointerdown', e => e.stopPropagation());
-        root.querySelector('.fu-settings-button').addEventListener('click', e => {
-            e.stopPropagation();
-            state.settingsOpen = !state.settingsOpen;
-            settingsPanel.hidden = !state.settingsOpen;
-            if (state.settingsOpen) fillSettingsInputs();
-            requestAnimationFrame(keepAllOnScreen);
-        });
-
-        root.querySelector('.fu-close').addEventListener('pointerdown', e => e.stopPropagation());
-        root.querySelector('.fu-close').addEventListener('click', e => {
-            e.stopPropagation();
-            state.open = false;
-            saveState();
-            renderVisibility();
-        });
-
-        root.querySelector('.fu-save').addEventListener('click', () => {
-            state.settings.sheetUrl = root.querySelector('.fu-sheet-url').value.trim();
-            state.settings.readSecret = root.querySelector('.fu-read-secret').value.trim();
-            state.settings.tornApiKey = root.querySelector('.fu-torn-key').value.trim();
-            saveSettings();
-            setMessage('Settings saved to this browser only.');
-        });
-
-        bindToggle(root, '.fu-torn-enabled', 'tornEnabled');
-        bindToggle(root, '.fu-fetch-all', 'fetchAll');
-        bindToggle(root, '.fu-auto-refresh', 'autoRefresh', value => {
-            if (value) { startAutoRefresh(); setMessage('Auto-refresh on.'); }
-            else { stopAutoRefresh(); setMessage('Auto-refresh off.'); }
-        });
-
-        root.querySelector('.fu-probe').addEventListener('click', probeFields);
-        root.querySelector('.fu-sync-now').addEventListener('click', syncCurrentRows);
-        root.querySelector('.fu-clear-cache').addEventListener('click', () => {
-            void OCBulkStore.delete(PS_CACHE_KEY);
-            setMessage('Stat cache cleared — the next refresh re-pulls everyone.');
-        });
-
-        root.querySelector('.fu-refresh').addEventListener('click', refresh);
-        root.querySelector('.fu-export').addEventListener('click', exportCSV);
-        root.querySelector('.fu-cancel').addEventListener('click', () => {
-            state.cancelRequested = true;
-            setMessage('Cancelling after the current request…');
-        });
-
-        root.querySelectorAll('.fu-period').forEach(button => {
-            button.addEventListener('click', () => {
-                state.period = button.dataset.period;
-                // Sorting by a column that this period hides would silently do nothing.
-                const stillVisible = visibleFields().some(f => f.key === state.sort.key);
-                if (!stillVisible && state.sort.key !== 'name' && state.sort.key !== 'position') {
-                    state.sort = { key: 'name', dir: 'asc' };
-                }
-                saveState();
-                renderAll();
-            });
-        });
-
-        root.querySelector('.fu-perday').addEventListener('click', () => {
-            state.perDay = !state.perDay;
-            saveState();
-            renderAll();
-        });
-
-        const filter = root.querySelector('.fu-filter');
-        filter.addEventListener('input', () => {
-            state.filter = filter.value;
-            renderTable();
-        });
-
-        shell.addEventListener('click', e => e.stopPropagation());
-        window.addEventListener('resize', keepAllOnScreen);
-    }
-
-    function bindToggle(root, selector, settingKey, after) {
-        const el = root.querySelector(selector);
-        el.addEventListener('change', () => {
-            state.settings[settingKey] = el.checked;
-            saveSettings();
-            if (after) after(el.checked);
-        });
-    }
-
-    function makeDraggable(target, handle, positionKey) {
-        handle.addEventListener('pointerdown', event => {
-            if (event.button !== 0) return;
-            if (event.target.closest('button, input, select, .fu-table-wrap')) {
-                if (!event.target.classList.contains('fu-launcher')) return;
-            }
-
-            const rect = target.getBoundingClientRect();
-            const startX = event.clientX;
-            const startY = event.clientY;
-            const startLeft = rect.left;
-            const startTop = rect.top;
-            let moved = false;
-
-            target.style.right = 'auto';
-            target.style.left = `${startLeft}px`;
-            target.style.top = `${startTop}px`;
-            handle.setPointerCapture(event.pointerId);
-
-            const onMove = moveEvent => {
-                const dx = moveEvent.clientX - startX;
-                const dy = moveEvent.clientY - startY;
-                if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
-
-                const maxLeft = Math.max(0, window.innerWidth - target.offsetWidth);
-                const maxTop = Math.max(0, window.innerHeight - target.offsetHeight);
-                target.style.left = `${Math.min(maxLeft, Math.max(0, startLeft + dx))}px`;
-                target.style.top = `${Math.min(maxTop, Math.max(0, startTop + dy))}px`;
-            };
-
-            const onEnd = endEvent => {
-                handle.removeEventListener('pointermove', onMove);
-                handle.removeEventListener('pointerup', onEnd);
-                handle.removeEventListener('pointercancel', onEnd);
-                if (handle.hasPointerCapture(endEvent.pointerId)) handle.releasePointerCapture(endEvent.pointerId);
-
-                const finalRect = target.getBoundingClientRect();
-                state[positionKey].left = Math.round(finalRect.left);
-                state[positionKey].top = Math.round(finalRect.top);
-                saveState();
-
-                if (target.classList.contains('fu-launcher') && moved) suppressLauncherClick = true;
-            };
-
-            handle.addEventListener('pointermove', onMove);
-            handle.addEventListener('pointerup', onEnd);
-            handle.addEventListener('pointercancel', onEnd);
-        });
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Probe / export
-     * ---------------------------------------------------------------- */
-
-    /**
-     * Torn keeps some stats private for other players and the docs do not spell out
-     * which. Rather than trust a field list, query a real faction member and report
-     * exactly what came back.
-     */
-    async function probeFields() {
-        if (!state.settings.tornApiKey) { setMessage('Enter your Torn API key first.'); return; }
-        setMessage('Probing which fields are public…');
-        try {
-            const faction = await apiGet('/faction/?selections=basic');
-            const me = await apiGet('/user/?selections=basic');
-            const otherId = Object.keys(faction.members || {}).find(id => String(id) !== String(me.player_id));
-            if (!otherId) { setMessage('No other faction member found to probe against.'); return; }
-
-            const res = await apiGet(`/user/${otherId}?selections=personalstats`);
-            const ps = res.personalstats || {};
-            const present = API_FIELDS.filter(f => ps[f.apiKey] !== undefined).map(f => f.label);
-            const missing = API_FIELDS.filter(f => ps[f.apiKey] === undefined).map(f => f.label);
-
-            console.log('[Frostbite] Probe target:', faction.members[otherId].name, otherId);
-            console.log('[Frostbite] All personalstats keys returned:', Object.keys(ps).sort());
-            console.log('[Frostbite] Tracked field values:',
-                Object.fromEntries(API_FIELDS.map(f => [f.label, ps[f.apiKey]])));
-
-            setMessage(`Probe OK via ${faction.members[otherId].name}. Public: ${present.join(', ') || 'none'}. ` +
-                       `Not returned: ${missing.join(', ') || 'none'}. Full key list is in the console.`);
-        } catch (e) {
-            setMessage(`Probe failed: ${e.message}`);
-        }
-    }
-
-    function exportCSV() {
-        const list = visibleRows();
-        if (!list.length) { setMessage('Nothing to export.'); return; }
-
-        const period = currentPeriod();
-        const fields = visibleFields();
-        const headers = ['id', 'name', 'position', ...fields.map(f => f.key), 'source', 'updated'];
-
-        const body = list.map(r => [
-            r.id, r.name, r.position || '',
-            ...fields.map(f => {
-                const v = periodValue(r, f);
-                return v ? v.value : '';
-            }),
-            r.source || '', r.updated || ''
-        ]);
-
-        const csv = [headers, ...body]
-            .map(line => line.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
-            .join('\n');
-
-        const blob = new Blob([csv], { type: 'text/csv' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `frostbite-usage-${period.key}-${state.meta.today}.csv`;
-        a.click();
-        URL.revokeObjectURL(a.href);
-        setMessage(`Exported ${list.length} rows (${period.label}).`);
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Render
-     * ---------------------------------------------------------------- */
-
-    function renderAll() {
-        renderVisibility();
-        applySavedPositions();
-        fillSettingsInputs();
-        renderChrome();
-        renderMessage();
-        renderTable();
-    }
-
-    function renderVisibility() {
-        const root = document.getElementById(APP_ID);
-        root.querySelector('.fu-shell').hidden = !state.open;
-        root.querySelector('.fu-launcher').hidden = state.open;
-    }
-
-    function renderChrome() {
-        const root = document.getElementById(APP_ID);
-
-        root.querySelectorAll('.fu-period').forEach(b => {
-            b.setAttribute('aria-pressed', String(b.dataset.period === state.period));
-        });
-
-        const chip = root.querySelector('.fu-history-chip');
-        const days = state.meta.historyDays || 0;
-        chip.textContent = days > 1 ? `${days} days history`
-            : (days === 1 ? 'Day 1 of history' : 'No history');
-        chip.title = state.meta.oldestDay ? `History starts ${state.meta.oldestDay} (UTC)` : '';
-
-        const modeNote = root.querySelector('.fu-mode-note');
-        if (modeNote) {
-            modeNote.textContent = state.meta.unattended
-                ? 'The sheet is syncing itself hourly, so this browser only reads. Browser sweeping is skipped to avoid spending the same rate limit twice.'
-                : 'No unattended sync detected — data only updates while this dashboard is open. Set TORN_API_KEY and run setupHourlySync in the Apps Script editor to have the sheet track 24/7.';
-        }
-
-        const perDay = root.querySelector('.fu-perday');
-        if (perDay) {
-            // Only means anything over a window — hidden on Lifetime rather than
-            // left visible and inert.
-            perDay.hidden = !currentPeriod().days;
-            perDay.setAttribute('aria-pressed', String(state.perDay));
-            perDay.classList.toggle('fu-secondary', !state.perDay);
-        }
-
-        root.querySelector('.fu-refresh').disabled = state.busy;
-        root.querySelector('.fu-cancel').hidden = !state.busy;
-        root.querySelector('.fu-settings').hidden = !state.settingsOpen;
-    }
-
-    function fillSettingsInputs() {
-        const root = document.getElementById(APP_ID);
-        const map = {
-            '.fu-sheet-url': 'sheetUrl',
-            '.fu-read-secret': 'readSecret',
-            '.fu-torn-key': 'tornApiKey'
-        };
-        Object.entries(map).forEach(([selector, key]) => {
-            const el = root.querySelector(selector);
-            if (el && document.activeElement !== el) el.value = state.settings[key] || '';
-        });
-
-        const toggles = {
-            '.fu-torn-enabled': 'tornEnabled',
-            '.fu-fetch-all': 'fetchAll',
-            '.fu-auto-refresh': 'autoRefresh'
-        };
-        Object.entries(toggles).forEach(([selector, key]) => {
-            const el = root.querySelector(selector);
-            if (el) el.checked = !!state.settings[key];
-        });
-    }
-
-    function setMessage(msg) {
-        state.message = msg;
-        renderMessage();
-    }
-
-    function renderMessage() {
-        const el = document.querySelector(`#${APP_ID} .fu-message`);
-        if (el) el.textContent = state.message;
-    }
-
-    function renderTable() {
-        const wrap = document.querySelector(`#${APP_ID} .fu-table-wrap`);
-        if (!wrap) return;
-
-        const period = currentPeriod();
-        const fields = visibleFields();
-        const list = visibleRows();
-
-        if (!list.length) {
-            wrap.innerHTML = `<div class="fu-empty-state">${
-                state.rows.length ? 'No members match that filter.' : 'No data loaded yet — hit Refresh.'
-            }</div>`;
-            return;
-        }
-
-        const totals = columnTotals(list);
-        const sortMark = key => state.sort.key === key
-            ? `<span class="fu-sort">${state.sort.dir === 'asc' ? '▲' : '▼'}</span>`
-            : '';
-
-        wrap.innerHTML = `
-            <table class="fu-table">
-                <thead>
-                    <tr>
-                        <th data-sort="name">Member ${sortMark('name')}</th>
-                        <th data-sort="position">Rank ${sortMark('position')}</th>
-                        ${fields.map(f => `
-                            <th data-sort="${f.key}" title="${escapeHtml(f.label)}">
-                                ${escapeHtml(f.icon)} ${escapeHtml(f.label)} ${sortMark(f.key)}
-                            </th>
-                        `).join('')}
-                    </tr>
-                </thead>
-                <tbody>
-                    ${list.map(r => `
-                        <tr>
-                            <td><span class="fu-name">${escapeHtml(r.name)}</span></td>
-                            <td><span class="fu-position">${escapeHtml(r.position || '—')}</span></td>
-                            ${fields.map(f => renderCell(r, f, period)).join('')}
-                        </tr>
-                    `).join('')}
-                </tbody>
-                <tfoot>
-                    <tr>
-                        <td>Faction total</td>
-                        <td>${list.length} shown</td>
-                        ${fields.map(f => `
-                            <td>${renderTotal(totals[f.key], f, list)}</td>
-                        `).join('')}
-                    </tr>
-                </tfoot>
-            </table>
-        `;
-
-        wrap.querySelectorAll('th[data-sort]').forEach(th => {
-            th.addEventListener('click', () => {
-                const key = th.dataset.sort;
-                if (state.sort.key === key) {
-                    state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
-                } else {
-                    // Names read best A–Z; numbers read best biggest-first.
-                    state.sort = { key, dir: (key === 'name' || key === 'position') ? 'asc' : 'desc' };
-                }
-                saveState();
-                renderTable();
-            });
-        });
-    }
-
-    /**
-     * In per-day mode the footer shows the faction's average rate rather than a sum
-     * of rates, which would be a meaningless number. Averaged across members who
-     * actually have a figure, so members with no data don't drag it toward zero.
-     */
-    function renderTotal(total, field, list) {
-        if (total === null || total === undefined) return '—';
-        if (!state.perDay || !currentPeriod().days || field.type !== 'counter') {
-            return escapeHtml(formatNumber(total, field.currency));
-        }
-
-        const rates = list
-            .map(r => periodValue(r, field))
-            .filter(Boolean)
-            .map(v => v.value / (v.windowDays || 1));
-
-        if (!rates.length) return '—';
-        const mean = rates.reduce((a, b) => a + b, 0) / rates.length;
-        return `${mean.toFixed(1)} avg`;
-    }
-
-    function renderCell(row, field, period) {
-        const result = periodValue(row, field);
-
-        if (!result) {
-            const reason = period.days && !field.lifetimeOnly
-                ? 'No snapshot old enough yet'
-                : (field.lifetimeOnly && period.days ? 'Not tracked over time' : 'No data');
-            return `<td><span class="fu-value fu-empty" title="${escapeHtml(reason)}">—</span></td>`;
-        }
-
-        const classes = ['fu-value'];
-        const shown = displayValue(result, field);
-        let text;
-
-        if (!period.days) {
-            text = formatNumber(result.value, field.currency);
-            if (result.value === 0) classes.push('fu-zero');
-        } else if (field.type === 'level') {
-            const sign = result.value > 0 ? '+' : (result.value < 0 ? '−' : '');
-            text = `${sign}${formatNumber(Math.abs(result.value), field.currency)}`;
-            if (result.value > 0) classes.push('fu-up');
-            else if (result.value < 0) classes.push('fu-down');
-            else classes.push('fu-zero');
-        } else if (shown.rate) {
-            // One decimal: "0.9/day" and "1.4/day" are meaningfully different, but
-            // any more precision is false confidence on a handful of days of data.
-            text = shown.value.toFixed(1);
-            if (shown.value === 0) classes.push('fu-zero');
-        } else {
-            text = formatNumber(result.value, field.currency);
-            if (result.value === 0) classes.push('fu-zero');
-        }
-
-        const notes = [];
-        if (period.days) {
-            notes.push(`${formatNumber(result.value, field.currency)} over ${result.windowDays} day${result.windowDays === 1 ? '' : 's'}`);
-            if (result.anchor) notes.push(`measured to ${result.anchor}`);
-        }
-        if (result.partial) {
-            classes.push('fu-partial');
-            notes.push(`shorter than the ${period.label} window — not enough history yet`);
-        }
-
-        const title = notes.join(' • ');
-        return `<td><span class="${classes.join(' ')}"${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(text)}</span></td>`;
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Positioning
-     * ---------------------------------------------------------------- */
-
-    function applySavedPositions() {
-        const root = document.getElementById(APP_ID);
-        applySavedPosition(root.querySelector('.fu-launcher'), state.launcherPosition);
-        applySavedPosition(root.querySelector('.fu-shell'), state.windowPosition);
-    }
-
-    function applySavedPosition(element, position) {
-        if (Number.isFinite(position.left) && Number.isFinite(position.top)) {
-            element.style.right = 'auto';
-            element.style.left = `${position.left}px`;
-            element.style.top = `${position.top}px`;
-        }
-        requestAnimationFrame(() => keepElementOnScreen(element, position));
-    }
-
-    function keepAllOnScreen() {
-        const root = document.getElementById(APP_ID);
-        if (!root) return;
-        keepElementOnScreen(root.querySelector('.fu-launcher'), state.launcherPosition);
-        keepElementOnScreen(root.querySelector('.fu-shell'), state.windowPosition);
-        saveState();
-    }
-
-    function keepElementOnScreen(element, position) {
-        if (!element || element.hidden) return;
-        const rect = element.getBoundingClientRect();
-        const nextLeft = Math.min(Math.max(0, window.innerWidth - rect.width), Math.max(0, rect.left));
-        const nextTop = Math.min(Math.max(0, window.innerHeight - rect.height), Math.max(0, rect.top));
-
-        element.style.right = 'auto';
-        element.style.left = `${nextLeft}px`;
-        element.style.top = `${nextTop}px`;
-        position.left = Math.round(nextLeft);
-        position.top = Math.round(nextTop);
-    }
-
-    /* ---------------------------------------------------------------- *
-     * Helpers
-     * ---------------------------------------------------------------- */
-
-    function isBlank(v) { return v === undefined || v === null || v === ''; }
-
-    function formatNumber(value, currency) {
-        const num = Number(value);
-        if (!Number.isFinite(num)) return String(value);
-        const text = Math.round(num).toLocaleString('en-US');
-        return currency ? `$${text}` : text;
-    }
-
-    function escapeHtml(value) {
-        return String(value).replace(/[&<>"']/g, c => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
-        }[c]));
-    }
-    return {
-      init, STAT_FIELDS, PERIODS, periodValue, refresh,
-      getState: () => state,
-      setPeriod: (k) => { state.period = k; },
-      hasConfig: () => !!(state.settings && state.settings.sheetUrl && state.settings.readSecret),
-      getSettings: () => ({ ...state.settings }),
-      applySettings: (partial) => { Object.assign(state.settings, partial); try { saveSettings(); } catch (_) {} },
-      openSettings: () => {
-        const root = document.getElementById(APP_ID);
-        if (!root) return;
-        root.classList.add('ocm-fb-settings');
-        state.open = true; state.settingsOpen = true;
-        try { renderAll(); } catch (_) {}
-        const close = root.querySelector('.fu-close');
-        if (close) close.addEventListener('click', () => root.classList.remove('ocm-fb-settings'), { once: true });
+// SCRIPT HUB ADAPTER START
+// Public appearance data only. These functions are bundled into userscripts.
+function normalizeScriptUiTheme(raw) {
+  const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
+  const own=(object,key)=>Object.prototype.hasOwnProperty.call(object,key)?object[key]:undefined;
+  raw=record(raw);if(own(raw,'version')!==undefined&&own(raw,'version')!==1)raw={};
+  const choice=(key,allowed,fallback)=>allowed.includes(own(raw,key))?own(raw,key):fallback;
+  const bounded=(key,min,max,fallback)=>typeof own(raw,key)==='number'&&Number.isFinite(own(raw,key))?Math.max(min,Math.min(max,own(raw,key))):fallback;
+  const colors={light:{},dark:{}};
+  const roles=['background','surface','raised','text','muted','border','accent','success','warning','error','focus','selection','chart1','chart2','chart3','chart4','chart5','chart6'];
+  for(const mode of ['light','dark']){
+    const input=record(own(record(own(raw,'colors')),mode));
+    for(const role of roles){const value=own(input,role);if(typeof value==='string'&&/^#(?:[a-f\d]{3}|[a-f\d]{6})$/i.test(value))colors[mode][role]=(value.length===4?'#'+[...value.slice(1)].map(c=>c+c).join(''):value).toLowerCase();}
+  }
+  return {version:1,layout:choice('layout',['frostbite','workbench','torn','stock'],'frostbite'),palette:choice('palette',['frostbite','workbench','torn','stock'],'frostbite'),
+    mode:choice('mode',['system','dark','light'],'system'),density:choice('density',['comfortable','compact'],'comfortable'),
+    radius:bounded('radius',0,18,null),fontScale:bounded('fontScale',.85,1.35,1),colors};
+}
+
+function resolveScriptUiTheme(raw, dark=false) {
+  const theme=normalizeScriptUiTheme(raw),mode=theme.mode==='system'?(dark?'dark':'light'):theme.mode;
+  // Each palette owns color roles only; layout defaults never select a palette.
+  const bases={
+    frostbite:{light:['#edf4fa','#ffffff','#e4edf6','#172b40','#4b6075','#bdcedd','#2563a8'],dark:['#0b1421','#111f31','#1a2c42','#e7f0fa','#a4b8cc','#3e546d','#69b5ff']},
+    workbench:{light:['#e9e9f0','#ffffff','#f3f2f8','#302c40','#666078','#d3cede','#7051a2'],dark:['#202028','#2a2933','#34323f','#edeaf5','#b7b0c7','#4a4559','#c4a6f5']},
+    torn:{light:['#e9e9e9','#ffffff','#dddddd','#222222','#555555','#bbbbbb','#416c38'],dark:['#181818','#242424','#333333','#eeeeee','#bbbbbb','#555555','#91be71']},
+    stock:{light:['#edf4f3','#ffffff','#ddeceb','#182d2d','#486363','#9bb8b6','#1a696a'],dark:['#101212','#191c1c','#203030','#e5ebeb','#a3b2b2','#3c5555','#68c3c5']}
+  };
+  const [background,surface,raised,text,muted,border,accent]=bases[theme.palette][mode];
+  const states=mode==='dark'?{success:'#83d99a',warning:'#f4ca68',error:'#ff9696',focus:'#b3d8ff',selection:'#2e4866'}:{success:'#23743c',warning:'#865600',error:'#b42328',focus:'#175fc4',selection:'#c5ddf5'};
+  const chart=mode==='dark'?['#78b6ff','#e8b86a','#b29bff','#6ad0bf','#ed99bb','#b1ce78']:['#2866ae','#946000','#7547b5','#187c70','#ad426f','#657c24'];
+  if(theme.palette==='stock'){states.focus=accent;states.selection=mode==='dark'?'#223b3b':'#c8e5e2';}
+  const colors={background,surface,raised,text,muted,border,accent,...states,...Object.fromEntries(chart.map((value,i)=>['chart'+(i+1),value])),...theme.colors[mode]};
+  const luminance=hex=>{const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};
+  const ratio=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
+  colors.onAccent=ratio('#ffffff',colors.accent)>=ratio('#000000',colors.accent)?'#ffffff':'#000000';
+  const acrossSurfaces=role=>Math.min(...['background','surface','raised'].map(key=>ratio(colors[role],colors[key])));
+  const contrast={text:acrossSurfaces('text'),muted:acrossSurfaces('muted'),onAccent:ratio(colors.onAccent,colors.accent),flags:[]};
+  for(const role of ['text','muted','onAccent'])if(contrast[role]<4.5)contrast.flags.push(role);
+  if(ratio(colors.focus,colors.surface)<3)contrast.flags.push('focus');
+  return {...theme,mode,colors,contrast};
+}
+
+function applyScriptUiTheme(node, raw, dark=false) {
+  const resolved=resolveScriptUiTheme(raw,dark);
+  for(const [role,value]of Object.entries(resolved.colors))node.style.setProperty('--tsui-'+role.replace(/[A-Z]/g,char=>'-'+char.toLowerCase()),value);
+  const defaults={frostbite:12,workbench:6,torn:3,stock:6};
+  node.style.setProperty('--tsui-radius',(resolved.radius===null?defaults[resolved.layout]:resolved.radius)+'px');
+  node.style.setProperty('--tsui-font-scale',String(resolved.fontScale));
+  node.style.setProperty('--tsui-space',resolved.density==='compact'?'6px':'10px');
+  node.style.setProperty('--tsui-control-height',resolved.density==='compact'?'32px':'38px');
+  node.setAttribute('data-tsui-layout',resolved.layout);node.setAttribute('data-tsui-density',resolved.density);node.setAttribute('data-tsui-mode',resolved.mode);
+  return resolved;
+}
+
+function scriptUiThemeCss() {
+  return `.tsui-surface{box-sizing:border-box;color:var(--tsui-text);background:var(--tsui-background);border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);font-size:calc(14px * var(--tsui-font-scale,1));color-scheme:light;accent-color:var(--tsui-accent)}
+.tsui-surface[data-tsui-mode="dark"]{color-scheme:dark}
+.tsui-surface *{box-sizing:border-box}.tsui-surface ::selection{background:var(--tsui-selection);color:var(--tsui-text)}
+.tsui-surface :is(button,input,select,textarea){font:inherit;color:var(--tsui-text);background:var(--tsui-surface);border:1px solid var(--tsui-border);border-radius:calc(var(--tsui-radius) / 2);min-height:var(--tsui-control-height);padding:var(--tsui-space)}
+.tsui-surface button{cursor:pointer}.tsui-surface :disabled{cursor:default;opacity:.6}.tsui-surface :focus-visible{outline:2px solid var(--tsui-focus);outline-offset:2px}
+.tsui-surface .tsui-primary{color:var(--tsui-on-accent);background:var(--tsui-accent)}.tsui-surface .tsui-muted{color:var(--tsui-muted)}
+@media(pointer:coarse),(max-width:600px){.tsui-surface :is(button,input,select,textarea){min-height:44px}.tsui-surface :is(input,select,textarea){font-size:max(16px,1em)}}
+@media(prefers-reduced-motion:reduce){.tsui-surface,.tsui-surface *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}`;
+}
+const SCRIPT_UI_THEME_KEY='torn-script-hub:ui-theme:v1';
+const SCRIPT_UI_THEME_EVENT=SCRIPT_UI_THEME_KEY+':changed';
+
+function createScriptUiThemeClient({doc,win,scriptId,read=()=>null,write=()=>{},onChange=()=>{}}) {
+  if(typeof scriptId!=='string'||!scriptId.length||scriptId.length>80)throw new TypeError('A bounded scriptId is required.');
+  // The builder concatenates the contract first; Node loads the same contract.
+  const normalize=typeof normalizeScriptUiTheme==='function'?normalizeScriptUiTheme:require('./script-hub-theme.cjs').normalizeScriptUiTheme;
+  let started=false,suspended=false,pdaActive=true,pending=true,override=null,globalTheme=normalize(),effective=normalize();
+  let generation=0,overrideRevision=0,pdaRevision=0,readTask=null,lastSignature='',lastDark=null,writeQueue=Promise.resolve(),cancelPdaQuery=null;
+  const removers=[],subscribers=new Set();
+  let media=null;try{media=win.matchMedia?.('(prefers-color-scheme: dark)');}catch(_){}
+  const active=()=>started&&!suspended&&pdaActive&&doc.visibilityState!=='hidden';
+  const clone=theme=>normalize(theme);
+  const parse=value=>{if(typeof value!=='string'||value.length>8192)return null;try{const parsed=JSON.parse(value);return parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&(!Object.prototype.hasOwnProperty.call(parsed,'version')||parsed.version===1)?normalize(parsed):null;}catch(_){return null;}};
+  function loadGlobal(){
+    try{
+      const current=parse(win.localStorage?.getItem(SCRIPT_UI_THEME_KEY));if(current)return current;
+      const text=win.localStorage?.getItem('torn-script-hub:v2:preferences');
+      if(typeof text==='string'&&text.length<=32768){const old=JSON.parse(text);if(old&&typeof old==='object'&&!Array.isArray(old)&&['torn','dark','light'].includes(old.theme))return normalize({layout:'torn',palette:'torn',mode:old.theme==='light'?'light':'dark',density:old.compact===true?'compact':'comfortable',colors:{light:{accent:old.accent},dark:{accent:old.accent}}});}
+      return normalize();
+    }catch(_){return normalize();}
+  }
+  function emit(force=false){
+    if(!active()){pending=true;return;}
+    effective=clone(override||globalTheme);const signature=JSON.stringify(effective),dark=media?.matches===true;
+    if(force||signature!==lastSignature||(effective.mode==='system'&&dark!==lastDark)){
+      lastSignature=signature;lastDark=dark;onChange(clone(effective));
+      for(const listener of subscribers){try{listener(clone(effective));}catch(_){}}
+    }
+    pending=false;
+  }
+  function listen(target,name,callback){target.addEventListener(name,callback);removers.push(()=>target.removeEventListener(name,callback));}
+  async function refresh(){
+    pending=true;if(!active())return get();
+    if(readTask)return readTask;
+    const ownGeneration=generation,revision=overrideRevision;
+    readTask=(async()=>{
+      let value;try{value=await read();}catch(_){value=undefined;}
+      if(!started||generation!==ownGeneration)return get();
+      if(overrideRevision===revision&&value!==undefined)override=value===null?null:normalize(value);
+      globalTheme=loadGlobal();emit();return get();
+    })();
+    try{return await readTask;}finally{if(generation===ownGeneration)readTask=null;}
+  }
+  function get(){return clone(override||globalTheme);}
+  function publicChange(event){
+    const value=parse(event.detail);if(!value)return;
+    // Events never carry settings or credentials; only the appearance allowlist survives.
+    globalTheme=value;pending=true;if(active())emit();
+  }
+  function storageChange(event){if(event.key!==SCRIPT_UI_THEME_KEY&&event.key!==null)return;pending=true;if(active()){globalTheme=loadGlobal();emit();}}
+  function visibility(){if(active()&&pending)void refresh();}
+  function tabState(event){
+    const state=event.detail;if(!state||typeof state.isActiveTab!=='boolean'||typeof state.isWebViewVisible!=='boolean')return;
+    pdaRevision++;pdaActive=state.isActiveTab&&state.isWebViewVisible;
+    const awaitingQuery=!!cancelPdaQuery;cancelPdaQuery?.();
+    if(active()&&pending&&!awaitingQuery)void refresh();
+  }
+  function pagehide(event){if(event.persisted){suspended=true;pending=true;}else stop();}
+  function pageshow(event){if(event.persisted){suspended=false;pending=true;if(active())void refresh();}}
+  function mediaChange(){if(active())emit();else pending=true;}
+  async function start(){
+    if(started)return refresh();started=true;suspended=false;pending=true;lastSignature='';lastDark=null;
+    const ownGeneration=++generation;
+    listen(doc,SCRIPT_UI_THEME_EVENT,publicChange);listen(win,SCRIPT_UI_THEME_EVENT,publicChange);listen(win,'storage',storageChange);
+    listen(doc,'visibilitychange',visibility);listen(win,'tornpda:tabState',tabState);listen(win,'pagehide',pagehide);listen(win,'pageshow',pageshow);
+    if(media?.addEventListener)listen(media,'change',mediaChange);
+    else if(media?.addListener){media.addListener(mediaChange);removers.push(()=>media.removeListener(mediaChange));}
+    if(typeof win.PDA_getTabState==='function'){
+      const revision=pdaRevision;pdaActive=false;
+      const state=await new Promise(resolve=>{
+        const schedule=win.setTimeout?.bind(win)||setTimeout,clear=win.clearTimeout?.bind(win)||clearTimeout;
+        let settled=false,timer=null;
+        const finish=value=>{if(settled)return;settled=true;if(timer!==null)clear(timer);if(cancelPdaQuery===finish)cancelPdaQuery=null;resolve(value);};
+        cancelPdaQuery=finish;timer=schedule(()=>finish(undefined),750);
+        Promise.resolve().then(()=>started&&generation===ownGeneration?win.PDA_getTabState():undefined).then(finish,()=>finish(undefined));
+      });
+      if(started&&generation===ownGeneration&&revision===pdaRevision)pdaActive=!(state?.isActiveTab===false||state?.isWebViewVisible===false);
+    }
+    if(started&&generation===ownGeneration)return refresh();return get();
+  }
+  function stop(){started=false;suspended=false;generation++;readTask=null;cancelPdaQuery?.();for(const remove of removers.splice(0))remove();}
+  function setOverride(value){
+    const normalized=value===null?null:normalize(value);overrideRevision++;
+    const run=async()=>{await write(normalized===null?null:clone(normalized));override=normalized;globalTheme=loadGlobal();emit();return get();};
+    const task=writeQueue.then(run);writeQueue=task.catch(()=>{});return task;
+  }
+  function subscribe(listener){if(typeof listener!=='function')throw new TypeError('Theme listener must be a function');subscribers.add(listener);return()=>subscribers.delete(listener);}
+  return {start,stop,get,setOverride,refresh,subscribe};
+}
+// DOM attributes coordinate independently bundled windows; no callbacks or data cross worlds.
+function scriptUiFloatingOwner(doc,node) {
+  let owner=null;
+  for(let current=node;current&&current!==doc.body&&current!==doc.documentElement;current=current.parentElement){
+    if(doc.defaultView.getComputedStyle(current).position==='fixed')owner=current;
+  }
+  return owner;
+}
+function scriptUiFloatingWindows(doc) {
+  const nodes=new Set(doc.querySelectorAll('[data-tsui-kit="1"][data-tsui-surface="floating"],#tsh-dialog,[data-tsui-stack-window="1"]'));
+  for(const root of doc.querySelectorAll('.tsui-legacy-surface')){const owner=scriptUiFloatingOwner(doc,root);if(owner)nodes.add(owner);}
+  return Array.from(nodes)
+    .filter(node=>!node.hidden&&node.isConnected&&node.getClientRects().length)
+    .sort((a,b)=>{
+      const rank=node=>{const value=Number(node.getAttribute('data-tsui-stack'));return Number.isSafeInteger(value)&&value>=0&&value<1000000?value:0;};
+      return rank(a)-rank(b);
+    });
+}
+function focusScriptUiWindow(doc,node) {
+  const windows=scriptUiFloatingWindows(doc),index=windows.indexOf(node);
+  if(index!==-1){windows.splice(index,1);windows.push(node);}
+  windows.forEach((entry,i)=>{entry.setAttribute('data-tsui-stack',String(i));entry.style.zIndex=String(2147481000+i*2);});
+  return windows.length;
+}
+// Original, bundled vector artwork. Colors inherit theme roles; no remote assets or user data.
+function appendScriptUiHeaderArt(doc,header) {
+  const mark=doc.createElement('span');mark.className='tsui-theme-mark';mark.setAttribute('aria-hidden','true');
+  mark.innerHTML='<svg class="tsui-frost-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M16 3v26M5 9l22 14M5 23L27 9M12 6l4 4 4-4M12 26l4-4 4 4M5 14l5-1-1-5M23 24l-1-5 5-1M5 18l5 1-1 5M23 8l-1 5 5 1"/><path d="m16 11 4 2v6l-4 2-4-2v-6z"/></svg><svg class="tsui-workbench-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="4" y="5" width="24" height="22" rx="3"/><path d="M4 11h24M12 11v16M8 8h1m3 0h1m3 0h1M16 16l3 3-3 3m6 0h3"/></svg><svg class="tsui-torn-mark" viewBox="0 0 32 32" fill="currentColor"><path d="M3 26h26v3H3zm2-9h5v8H5zm7-10h8v18h-8zm10 6h5v12h-5zM14 3h4v3h-4z"/><path d="M14 10h1v2h-1zm3 0h1v2h-1zm-3 5h1v2h-1zm3 0h1v2h-1z" fill="var(--tsui-raised)"/></svg>';
+  const scene=doc.createElement('span');scene.className='tsui-theme-scene';scene.setAttribute('aria-hidden','true');
+  scene.innerHTML='<svg viewBox="0 0 300 72" preserveAspectRatio="xMaxYMid slice" fill="none" stroke="currentColor"><path d="m0 72 52-38 30 18 49-45 41 35 27-18 46 34 55-42v56z" fill="currentColor" opacity=".09" stroke="none"/><path d="m0 72 52-38 30 18 49-45 41 35 27-18 46 34 55-42M97 39l34-32 5 35 22 15m-70-2 43-48 41 35m-120-8 7 30m140-40 11 39" opacity=".45"/><path d="M260 6v18m-8-14 16 10m-16 0 16-10M224 8v8m-4-6 8 4m-8 0 8-4" opacity=".7"/></svg>';
+  header.prepend(mark);header.append(scene);
+}
+function scriptUiIdentityCss(scope) {
+  return `${scope} .tsui-theme-mark{display:none;flex:none;width:30px;height:30px;color:var(--tsui-accent);pointer-events:none}
+${scope} .tsui-theme-mark svg{display:none;width:100%;height:100%}
+${scope}[data-tsui-layout] .tsui-theme-mark{display:block}
+${scope}[data-tsui-layout=frostbite] .tsui-frost-mark,${scope}[data-tsui-layout=workbench] .tsui-workbench-mark,${scope}[data-tsui-layout=torn] .tsui-torn-mark{display:block}
+${scope} .tsui-theme-scene{display:none;position:absolute;inset:0 0 0 auto;width:min(44%,300px);overflow:hidden;color:var(--tsui-accent);opacity:.45;pointer-events:none;z-index:-1}
+${scope} .tsui-theme-scene svg{width:100%;height:100%}
+${scope}[data-tsui-layout=frostbite] .tsui-theme-scene{display:block}
+${scope}[data-tsui-layout=frostbite] .tsui-header,${scope}[data-tsui-layout=frostbite] .tsh-header{isolation:isolate}
+${scope}[data-tsui-layout=torn] .tsui-theme-mark{width:22px;height:22px}
+@media(max-width:600px){${scope} .tsui-theme-mark{width:24px;height:24px}${scope} .tsui-theme-scene{opacity:.28;width:38%}}`;
+}
+'use strict';
+
+/** Shared, framework-free native script surfaces. No network or storage is owned here.
+ * createTornScriptUI({doc,win,id,title,surface,mount,applyTheme,theme,themeClient,
+ *   ownsThemeClient:false,sections:[{id,label,node,footer,headerAction,render(host,ui)}],settings,inspector,
+ *   onVisibilityChange(active),onSelect(id),onClose(),onDestroy(),autoDestroyOnDetach:true,
+ *   readLayout(),writeLayout({version:1,desktop,mobile})}).
+ * Layout adapters are optional, may be async, and receive only a bounded geometry
+ * profile (x/y/width/height/locked/collapsed/selected). Mount never waits for IO;
+ * interaction wins over a pending read. Writes coalesce to one pending snapshot.
+ * Render callbacks run once; their optional returned cleanup runs on destroy.
+ * A section node and the public content/settings/inspector slots are escape hatches
+ * for native script UI. Scripts own drafts, refreshes, jobs, persistence and secrets.
+ * themeClient supports get/start/stop; use setTheme in its onChange callback.
+ * notice(text,{kind}), status(text), task({id,label,onCancel,onPause,onResume}),
+ * table({columns:[{key,label}],rows,limit}) are bounded text-only helpers.
+ * Tasks never cancel implicitly; visibility is reported for script-owned policies.
+ */
+function createTornScriptUI(options = {}) {
+  const doc = options.doc;
+  const win = options.win || (doc && doc.defaultView);
+  if (!doc || typeof doc.createElement !== 'function' || !win) throw new TypeError('UI kit requires a document and window');
+  if (typeof options.applyTheme !== 'function') throw new TypeError('UI kit requires applyTheme');
+  // Isolated userscript worlds share DOM, but cannot safely share JS objects.
+  // Only version, visibility and stack order cross this coordination boundary.
+  let style = doc.querySelector('style[data-tsui-style="1"]');
+  if (!style) {
+    style = doc.createElement('style'); style.setAttribute('data-tsui-style', '1');
+    (doc.head || doc.documentElement).append(style);
+  }
+  // Independently updated scripts can arrive in either order. Upgrade older
+  // shared CSS once, while leaving a future revision owned by a newer bundle.
+  const styleRevision=Number(style.getAttribute('data-tsui-style-revision'));
+  if(!Number.isSafeInteger(styleRevision)||styleRevision<3){style.textContent=scriptUiKitCss();style.setAttribute('data-tsui-style-revision','3');}
+  let launcherTray = doc.querySelector('[data-tsui-launchers="1"]');
+  if (!launcherTray) {
+    launcherTray = doc.createElement('div'); launcherTray.className = 'tsui-launchers';
+    launcherTray.setAttribute('data-tsui-launchers', '1');
+    (doc.body || doc.documentElement).append(launcherTray);
+  }
+  const cleanups = [];
+  const tasks = new Map();
+  const sections = new Map();
+  const floating = options.surface !== 'embedded';
+  // PDA capabilities are independent of viewport size; desktop touch stays desktop.
+  function pdaOpening() { return floating && (typeof PDA_storage !== 'undefined' && !!PDA_storage || typeof win.PDA_getTabState === 'function' || typeof win.PDA_httpGet === 'function'); }
+  let destroyed = false, shown = true, collapsed = false, minimized = false, maximized = false, locked = false;
+  let pdaActive = typeof win.PDA_getTabState !== 'function', pageActive = true, pdaRevision = 0, lastActive, gesture = null, selected = null, returnFocus = null;
+  let pdaTimer = null;
+  function clearPdaTimer() { if (pdaTimer !== null) { win.clearTimeout(pdaTimer); pdaTimer = null; } }
+  let currentTheme = {}, explicitDark;
+  let themeQueued = false, nextTask = 0;
+  const firstTheme=options.theme||(options.themeClient?.get?options.themeClient.get():{});
+  const initial = { x: 24, y: 40, width: firstTheme?.layout==='stock'?340:760, height: firstTheme?.layout==='stock'?760:540 };
+  let rect = { ...initial }, previousRect = null;
+  let booting = true, visibilityQueued = false, writingLayout = false, persistQueued = false, pendingLayout = null;
+  let layoutLoading = floating && typeof options.readLayout === 'function';
+  const editedGeometry = new Set(), editedSelection = new Set();
+  let currentProfile = profileName();
+  let profiles = { desktop: normalizeProfile(), mobile: normalizeProfile() };
+  function profileName() { const view = viewport(); return view.width <= 600 || view.height <= 500 ? 'mobile' : 'desktop'; }
+  function normalizeProfile(value) {
+    const raw = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const normalized = { ...initial, locked: raw.locked === true, collapsed: raw.collapsed === true, selected: typeof raw.selected === 'string' ? raw.selected.slice(0, 100) : null };
+    for (const key of ['x', 'y', 'width', 'height']) {
+      if (typeof raw[key] === 'number' && Number.isFinite(raw[key]) && raw[key] >= 0 && raw[key] <= (key === 'x' || key === 'y' ? 100000 : 4096)) normalized[key] = raw[key];
+    }
+    return normalized;
+  }
+  function snapshotProfile() { return normalizeProfile({ ...(maximized && previousRect ? previousRect : rect), locked, collapsed, selected }); }
+  function rememberLayout(geometryChanged = true) {
+    if (booting || destroyed || !floating) return;
+    if (layoutLoading) (geometryChanged ? editedGeometry : editedSelection).add(currentProfile);
+    profiles[currentProfile] = snapshotProfile();
+    if (typeof options.writeLayout !== 'function') return;
+    pendingLayout = { version: 1, desktop: { ...profiles.desktop }, mobile: { ...profiles.mobile } };
+    queuePersist();
+  }
+  function queuePersist() {
+    if (layoutLoading || persistQueued || writingLayout || !pendingLayout || destroyed || doc.visibilityState === 'hidden' || !pdaActive || !pageActive) return;
+    persistQueued = true;
+    Promise.resolve().then(async () => {
+      persistQueued = false; if (layoutLoading || destroyed || !pendingLayout || doc.visibilityState === 'hidden' || !pdaActive || !pageActive) return;
+      const value = pendingLayout; pendingLayout = null; writingLayout = true;
+      try { await options.writeLayout(value); } catch (_) { if (!destroyed) notice('Window layout could not be saved.', { kind: 'error' }); }
+      finally { writingLayout = false; queuePersist(); }
+    });
+  }
+  function applyProfile(value) {
+    const normalized = normalizeProfile(value);
+    rect = { x: normalized.x, y: normalized.y, width: normalized.width, height: normalized.height };
+    locked = normalized.locked; collapsed = maximized ? false : normalized.collapsed;
+    if (maximized) previousRect = { ...rect };
+    if (normalized.selected && sections.has(normalized.selected)) {
+      const wasBooting = booting; booting = true; select(normalized.selected); booting = wasBooting;
+    }
+    update();
+  }
+  function viewportChanged() {
+    const nextProfile = profileName();
+    if (nextProfile !== currentProfile) {
+      profiles[currentProfile] = snapshotProfile(); currentProfile = nextProfile;
+      applyProfile(profiles[currentProfile]);
+    } else fit();
+  }
+  function node(tag, className, text) {
+    const value = doc.createElement(tag);
+    if (className) value.className = className;
+    if (text !== undefined) value.textContent = String(text).slice(0, 4000);
+    return value;
+  }
+  function listen(target, type, callback, opts) {
+    target.addEventListener(type, callback, opts);
+    cleanups.push(() => target.removeEventListener(type, callback, opts));
+  }
+  function button(text, label, callback, parent) {
+    const value = node('button', '', text); value.type = 'button';
+    value.setAttribute('aria-label', label);
+    listen(value, 'click', callback); if (parent) parent.append(value);
+    return value;
+  }
+  const root = node('section', 'tsui-root');
+  root.setAttribute('data-tsui-kit', '1');
+  root.dataset.tsuiId = String(options.id || 'script-ui').slice(0, 100);
+  root.dataset.tsuiSurface = floating ? 'floating' : 'embedded';
+  root.setAttribute('aria-label', String(options.title || 'Script tool').slice(0, 200));
+  root.tabIndex = -1;
+  const dragStrip=node('div','tsui-drag-strip','⠿ drag');dragStrip.tabIndex=0;dragStrip.setAttribute('role','button');dragStrip.setAttribute('aria-label','Move '+(options.title||'Script tool'));
+  const header = node('header', 'tsui-header');
+  const title = node('div', 'tsui-title', options.title || 'Script tool');
+  title.tabIndex = 0;
+  title.setAttribute('aria-label', 'Move ' + (options.title || 'Script tool'));
+  title.title = 'Drag to move. Focus and use arrow keys to move; Shift + arrows resize. Escape cancels a drag.';
+  const controls = node('div', 'tsui-controls');
+  const headerActions=node('div','tsui-header-actions');controls.append(headerActions);
+  header.append(title, controls);
+  if(typeof appendScriptUiHeaderArt==='function')appendScriptUiHeaderArt(doc,header);
+  const body = node('div', 'tsui-body');
+  const nav = node('nav', 'tsui-nav'); nav.setAttribute('aria-label', 'Tool pages');
+  const content = node('div', 'tsui-content');
+  const settings = node('aside', 'tsui-settings'); settings.setAttribute('aria-label', 'Tool settings');
+  const inspector = node('aside', 'tsui-inspector'); inspector.setAttribute('aria-label', 'Details');
+  if (options.settings) settings.append(options.settings);
+  if (options.inspector) inspector.append(options.inspector);
+  body.append(nav, content, settings, inspector);
+  const footer = node('footer', 'tsui-footer');
+  const statusNode = node('div', 'tsui-status'); statusNode.setAttribute('role', 'status');
+  const notices = node('div', 'tsui-notices'); notices.setAttribute('aria-live', 'polite');
+  const taskList = node('div', 'tsui-tasks');
+  footer.append(statusNode, notices, taskList);
+  const sectionFooters=node('div','tsui-section-footers');
+  const resize = node('div', 'tsui-resize'); resize.setAttribute('aria-hidden', 'true');
+  root.append(dragStrip,header, body,sectionFooters, footer, resize);
+  const launcher = button(options.title || 'Script tool', 'Restore ' + (options.title || 'Script tool'), () => { restore(); focus(); });
+  launcher.className = 'tsui-launcher'; launcher.hidden = true;
+  const mount = options.mount || doc.body || doc.documentElement;
+  mount.append(root);
+  // A DOM-owned tray gives independently bundled launchers native flex sizing,
+  // wrapping and scrolling. Each host still owns its private handlers and tokens.
+  const launcherHost = node('div', 'tsui-launcher-host'); launcherHost.setAttribute('data-tsui-launcher-host', '1');
+  launcherHost.hidden = true; launcherHost.append(launcher); launcherTray.append(launcherHost);
+
+  function active() { return !destroyed && shown && !minimized && !collapsed && pageActive && doc.visibilityState !== 'hidden' && pdaActive; }
+  function visibility() {
+    // Consumers may still be moving their content into the returned shell.
+    // Initial notifications must run after construction and caller assignment.
+    if(booting){
+      if(!visibilityQueued){visibilityQueued=true;Promise.resolve().then(()=>{visibilityQueued=false;if(!destroyed)visibility();});}
+      return;
+    }
+    queuePersist();
+    const value = active();
+    if (value === lastActive) return;
+    lastActive = value;
+    if (!value) endGesture(true);
+    if (typeof options.onVisibilityChange === 'function') options.onVisibilityChange(value);
+  }
+  function viewport() {
+    return { width: Math.max(1, Math.min(win.innerWidth || 1024, win.visualViewport ? win.visualViewport.width : Infinity)), height: Math.max(1, Math.min(win.innerHeight || 768, win.visualViewport ? win.visualViewport.height : Infinity)) };
+  }
+  function fit() {
+    if (destroyed || !floating) return;
+    const view = viewport(), inset = Math.min(8, view.width / 8, view.height / 8);
+    const maxWidth = Math.max(1, view.width - inset * 2), maxHeight = Math.max(1, view.height - inset * 2);
+    if (maximized) rect = { x: inset, y: inset, width: maxWidth, height: maxHeight };
+    else {
+      rect.width = Math.min(maxWidth, Math.max(Math.min(320, maxWidth), rect.width));
+      rect.height = Math.min(maxHeight, Math.max(Math.min(180, maxHeight), rect.height));
+      rect.x = Math.max(inset, Math.min(view.width - rect.width - inset, rect.x));
+      rect.y = Math.max(inset, Math.min(view.height - (collapsed ? Math.min(92, rect.height) : rect.height) - inset, rect.y));
+    }
+    Object.assign(root.style, { left: rect.x + 'px', top: rect.y + 'px', width: rect.width + 'px', height: collapsed ? 'auto' : rect.height + 'px' });
+  }
+  function focus() {
+    if (destroyed) return;
+    if(typeof focusScriptUiWindow==='function'){
+      const count=focusScriptUiWindow(doc,root);launcherTray.style.zIndex=String(2147481001+count*2);stackLaunchers();return;
+    }
+    const windows = floatingRoots();
+    const index = windows.indexOf(root);
+    if (index !== -1) { windows.splice(index, 1); windows.push(root); }
+    windows.forEach((entry, i) => { entry.setAttribute('data-tsui-stack', String(i)); entry.style.zIndex = String(100000 + i * 2); });
+    launcherTray.style.zIndex = String(100001 + windows.length * 2);
+    stackLaunchers();
+  }
+  function floatingRoots() {
+    if(typeof scriptUiFloatingWindows==='function')return scriptUiFloatingWindows(doc);
+    return Array.from(doc.querySelectorAll('[data-tsui-kit="1"][data-tsui-surface="floating"]'))
+      .filter(entry => !entry.hidden && entry.isConnected && entry.getClientRects().length)
+      .sort((left, right) => {
+        const rank = entry => { const value = Number(entry.getAttribute('data-tsui-stack')); return Number.isSafeInteger(value) && value >= 0 && value < 1000000 ? value : 0; };
+        return rank(left) - rank(right);
+      });
+  }
+  function stackLaunchers() {
+    launcherTray.hidden = !Array.from(launcherTray.children).some(entry => !entry.hidden);
+  }
+  function update() {
+    if (destroyed) return;
+    root.hidden = !shown || minimized; launcherHost.hidden = launcher.hidden = !shown || !minimized;
+    body.hidden = collapsed; footer.hidden = collapsed;sectionFooters.hidden=collapsed;
+    if(!shown||minimized||collapsed)closeWindowOptions();
+    root.dataset.tsuiCollapsed = String(collapsed); root.dataset.tsuiLocked = String(locked);root.dataset.tsuiMaximized=String(maximized);root.dataset.tsuiPda=String(pdaOpening());
+    collapseButton.textContent = collapsed ? 'Expand' : 'Collapse'; collapseButton.setAttribute('aria-expanded', String(!collapsed));
+    lockButton.textContent = locked ? 'Unlock' : 'Lock'; lockButton.setAttribute('aria-pressed', String(locked));
+    resize.hidden = !floating || locked || maximized || collapsed;
+    fit(); visibility(); stackLaunchers();
+  }
+  function show() { if (destroyed) return; shown = true; if (pdaOpening()) maximize(false); else update(); focus(); }
+  function hide() { if (destroyed) return; shown = false; update(); }
+  function close() { if (destroyed || !shown) return; hide(); if (typeof options.onClose === 'function') options.onClose(); }
+  function collapse(value = !collapsed) { if (destroyed || collapsed === !!value) return; collapsed = !!value; update(); rememberLayout(); }
+  function minimize() { if (destroyed) return; returnFocus = doc.activeElement; minimized = true; update(); launcher.focus(); }
+  function maximize(remember = true) { if (destroyed || !floating) return; if (!maximized) previousRect = { ...rect }; maximized = true; minimized = collapsed = false; update(); if (remember) rememberLayout(); }
+  function restore() {
+    if (destroyed) return;
+    const reopening = minimized || !shown;
+    if (maximized && previousRect) rect = { ...previousRect };
+    maximized = minimized = collapsed = false; shown = true; update();
+    if (reopening && pdaOpening()) maximize(false);
+    if (returnFocus && root.contains(returnFocus)) returnFocus.focus(); else title.focus();
+    returnFocus = null;
+    rememberLayout();
+  }
+  function setLocked(value) { if (destroyed || locked === !!value) return; locked = !!value; endGesture(true); update(); rememberLayout(); }
+  function reset() { if (destroyed) return; rect = { ...initial }; maximized = minimized = collapsed = locked = false; shown = true; update(); rememberLayout(); }
+  function endGesture(cancel) {
+    if (!gesture) return;
+    const old = gesture; gesture = null;
+    if (cancel) { rect = old.start; fit(); }
+    try { if (old.target.hasPointerCapture(old.pointerId)) old.target.releasePointerCapture(old.pointerId); } catch (_) {}
+    root.classList.remove('tsui-gesturing');
+    if (!cancel) rememberLayout();
+  }
+  function beginGesture(event, kind) {
+    if (!floating || locked || maximized || event.button !== 0 || gesture || !active() || viewport().width <= 600 || event.pointerType === 'touch') return;
+    if (layoutLoading) editedGeometry.add(currentProfile);
+    focus(); gesture = { kind, pointerId: event.pointerId, target: event.currentTarget, start: { ...rect }, x: event.clientX, y: event.clientY };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_) {}
+    root.classList.add('tsui-gesturing'); event.preventDefault();
+  }
+  const collapseButton = button('Collapse', 'Collapse or expand', () => collapse(), controls);
+  const optionsToggle=button('⋯','Window options',()=>{const open=optionsToggle.getAttribute('aria-expanded')!=='true';optionsToggle.setAttribute('aria-expanded',String(open));windowOptions.dataset.open=String(open);if(open)windowOptions.querySelector('button')?.focus();},controls);
+  optionsToggle.className='tsui-window-options-toggle';optionsToggle.setAttribute('aria-expanded','false');
+  const windowOptions=node('div','tsui-window-options');windowOptions.setAttribute('role','group');windowOptions.setAttribute('aria-label','Window controls');controls.append(windowOptions);
+  function closeWindowOptions(){optionsToggle.setAttribute('aria-expanded','false');windowOptions.dataset.open='false';}
+  const lockButton = button('Lock', 'Lock or unlock position', () => setLocked(!locked), windowOptions);
+  button('Reset', 'Reset window position', reset, windowOptions);
+  if (floating) {
+    button('Minimize', 'Minimize window', minimize, windowOptions);
+    button('Maximize', 'Maximize or restore window', () => maximized ? restore() : maximize(), windowOptions);
+  } else { lockButton.hidden = true; controls.querySelector('[aria-label="Reset window position"]').hidden = true; }
+  button('×', 'Close window', close, controls);
+  listen(doc,'pointerdown',event=>{if(!controls.contains(event.target))closeWindowOptions();});
+  listen(title, 'pointerdown', event => beginGesture(event, 'move'));
+  listen(dragStrip,'pointerdown',event=>beginGesture(event,'move'));
+  listen(resize, 'pointerdown', event => beginGesture(event, 'resize'));
+  listen(win, 'pointermove', event => {
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
+    rect = { ...gesture.start };
+    if (gesture.kind === 'move') { rect.x += dx; rect.y += dy; } else { rect.width += dx; rect.height += dy; }
+    fit();
+  });
+  listen(win, 'pointerup', event => { if (gesture && event.pointerId === gesture.pointerId) endGesture(false); });
+  listen(win, 'pointercancel', () => endGesture(true));
+  listen(win, 'blur', () => endGesture(true));
+  listen(title, 'lostpointercapture', () => endGesture(true));
+  listen(dragStrip,'lostpointercapture',()=>endGesture(true));
+  listen(resize, 'lostpointercapture', () => endGesture(true));
+  function moveKey(event) {
+    if (!floating || locked || maximized || !/^Arrow(Left|Right|Up|Down)$/.test(event.key)) return;
+    const delta = /Left|Up/.test(event.key) ? -10 : 10;
+    const horizontal = /Left|Right/.test(event.key);
+    rect[event.shiftKey ? horizontal ? 'width' : 'height' : horizontal ? 'x' : 'y'] += delta;
+    fit(); rememberLayout(); event.preventDefault();
+  }
+  listen(title,'keydown',moveKey);listen(dragStrip,'keydown',moveKey);
+  listen(root, 'pointerdown', focus);
+  listen(root, 'focusin', focus);
+  listen(doc, 'keydown', event => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    const top = floatingRoots().at(-1);
+    if (top !== root) return;
+    if(optionsToggle.getAttribute('aria-expanded')==='true'){closeWindowOptions();optionsToggle.focus();}
+    else if (gesture) endGesture(true);
+    else if (maximized) restore();
+    else collapse();
+    event.preventDefault();
+  });
+  listen(win, 'resize', viewportChanged);
+  if (win.visualViewport) listen(win.visualViewport, 'resize', viewportChanged);
+  listen(doc, 'visibilitychange', visibility);
+  listen(win, 'pagehide', event => { if (!event.persisted) destroy(); else { pageActive = false; visibility(); } });
+  listen(win, 'pageshow', () => { pageActive = true; visibility(); });
+  listen(win, 'tornpda:tabState', event => {
+    const detail = event.detail;
+    if (!detail || typeof detail.isActiveTab !== 'boolean' || typeof detail.isWebViewVisible !== 'boolean') return;
+    clearPdaTimer(); pdaRevision++; pdaActive = detail.isActiveTab && detail.isWebViewVisible; visibility();
+  });
+  if (typeof win.PDA_getTabState === 'function') {
+    const revision = pdaRevision;
+    function settleInitialPda(detail) {
+      if (destroyed || revision !== pdaRevision) return;
+      clearPdaTimer(); pdaRevision++;
+      // Older or sleeping PDA bridges can return nothing or never settle.
+      // Fall back to ordinary document visibility after a bounded wait.
+      pdaActive = !detail || typeof detail.isActiveTab !== 'boolean' || typeof detail.isWebViewVisible !== 'boolean'
+        ? true : detail.isActiveTab && detail.isWebViewVisible;
+      visibility();
+    }
+    pdaTimer = win.setTimeout(() => settleInitialPda(null), 750);
+    Promise.resolve().then(() => win.PDA_getTabState()).then(settleInitialPda, () => settleInitialPda(null));
+  }
+  function setTheme(theme, dark) {
+    if (destroyed) return;
+    closeWindowOptions();
+    currentTheme = theme || {}; explicitDark = dark;
+    const effectiveDark = typeof dark === 'boolean' ? dark : !!(win.matchMedia && win.matchMedia('(prefers-color-scheme: dark)').matches);
+    options.applyTheme(root, currentTheme, effectiveDark);
+    options.applyTheme(launcherHost, currentTheme, effectiveDark);
+    fit();
+  }
+  if (typeof win.matchMedia === 'function') {
+    const media = win.matchMedia('(prefers-color-scheme: dark)');
+    if (media.addEventListener) listen(media, 'change', () => setTheme(currentTheme, explicitDark));
+  }
+  const client = options.themeClient;
+  function queueTheme() {
+    if (themeQueued || destroyed) return;
+    themeQueued = true;
+    // Read after every event listener has run, including a later client listener.
+    Promise.resolve().then(() => { themeQueued = false; if (!destroyed && client.get) setTheme(client.get()); });
+  }
+  if (client && typeof client.subscribe === 'function') cleanups.push(client.subscribe(theme => setTheme(theme)));
+  else if (client) {
+    listen(doc, 'torn-script-hub:ui-theme:v1:changed', queueTheme);
+    listen(win, 'torn-script-hub:ui-theme:v1:changed', queueTheme);
+  }
+  function select(id) {
+    if (destroyed || !sections.has(id)) return false;
+    const changed = selected !== id;
+    selected = id;
+    for (const [key, section] of sections) {
+      section.host.hidden = key !== id; section.button.setAttribute('aria-current', key === id ? 'page' : 'false');
+      if(section.footer)section.footer.hidden=key!==id;
+      if(section.headerButton)section.headerButton.setAttribute('aria-pressed',String(key===id));
+    }
+    if (changed && !booting) rememberLayout(false);
+    if (changed && typeof options.onSelect === 'function') options.onSelect(id);
+    return true;
+  }
+  function notice(text, config = {}) {
+    if (destroyed) return null;
+    const item = node('div', 'tsui-notice');
+    item.dataset.kind = ['success', 'warning', 'error'].includes(config.kind) ? config.kind : 'info';
+    item.append(node('span', '', text));
+    const dismiss = node('button', '', 'Dismiss'); dismiss.type = 'button'; dismiss.setAttribute('aria-label', 'Dismiss notice');
+    dismiss.addEventListener('click', () => item.remove(), { once: true }); item.append(dismiss);
+    notices.append(item);
+    while (notices.children.length > 5) notices.firstElementChild.remove();
+    return item;
+  }
+  function status(text) { if (!destroyed) statusNode.textContent = String(text || '').slice(0, 500); }
+  function task(config = {}) {
+    if (destroyed) return null;
+    const id = String(config.id || 'task-' + nextTask++).slice(0, 100);
+    if (tasks.has(id)) return tasks.get(id);
+    if (tasks.size >= 8) { notice('Finish an existing task before adding another.', { kind: 'warning' }); return null; }
+    const host = node('div', 'tsui-task');
+    const label = node('span', '', config.label || 'Task');
+    const progress = node('progress'); progress.max = 100; progress.removeAttribute('value');
+    progress.setAttribute('aria-label', String(config.label || 'Task').slice(0, 100));
+    host.append(label, progress);
+    let ended = false, paused = false;
+    const taskCleanups = [];
+    // Task controls own their listeners, so finishing work releases callback closures.
+    function taskButton(text, accessible, callback) {
+      const value = node('button', '', text); value.type = 'button'; value.setAttribute('aria-label', accessible);
+      value.addEventListener('click', callback); taskCleanups.push(() => value.removeEventListener('click', callback)); host.append(value); return value;
+    }
+    function finish() { if (ended) return; ended = true; taskCleanups.splice(0).forEach(fn => fn()); host.remove(); tasks.delete(id); }
+    if (typeof config.onCancel === 'function') taskButton('Cancel', 'Cancel ' + (config.label || 'Task'), () => { finish(); config.onCancel(); });
+    if (typeof config.onPause === 'function' && typeof config.onResume === 'function') {
+      const pause = taskButton('Pause', 'Pause or resume ' + (config.label || 'Task'), () => { paused = !paused; pause.textContent = paused ? 'Resume' : 'Pause'; if (paused) config.onPause(); else config.onResume(); });
+    }
+    const controller = { update(value = {}) { if (ended || destroyed) return; if (value.label !== undefined) label.textContent = String(value.label).slice(0, 200); if (typeof value.progress === 'number' && Number.isFinite(value.progress)) progress.value = Math.max(0, Math.min(100, value.progress)); }, finish };
+    tasks.set(id, controller); taskList.append(host); return controller;
+  }
+  function table(config = {}) {
+    const wrap = node('div', 'tsui-table-scroll'); wrap.tabIndex = 0; wrap.setAttribute('role', 'region'); wrap.setAttribute('aria-label', String(config.label || 'Data table').slice(0, 100));
+    const tableNode = node('table'), head = node('thead'), row = node('tr'), tbody = node('tbody');
+    const columns = Array.isArray(config.columns) ? config.columns.slice(0, 20) : [];
+    for (const column of columns) { const th = node('th', '', column.label || column.key); th.scope = 'col'; row.append(th); }
+    head.append(row);
+    const limit = Number.isInteger(config.limit) ? Math.max(0, Math.min(500, config.limit)) : 100;
+    for (const item of (Array.isArray(config.rows) ? config.rows : []).slice(0, limit)) {
+      const tr = node('tr'); for (const column of columns) tr.append(node('td', '', item && item[column.key] != null ? item[column.key] : '')); tbody.append(tr);
+    }
+    tableNode.append(head, tbody); wrap.append(tableNode); return wrap;
+  }
+  function destroy() {
+    if (destroyed) return;
+    endGesture(true); clearPdaTimer(); destroyed = true; pendingLayout = null; visibility();
+    for (const value of tasks.values()) value.finish(); tasks.clear();
+    cleanups.splice(0).reverse().forEach(fn => fn());
+    if (client && options.ownsThemeClient && typeof client.stop === 'function') client.stop();
+    root.remove(); launcherHost.remove();
+    if (!doc.querySelector('[data-tsui-kit="1"]')) style.remove();
+    if (!launcherTray.children.length) launcherTray.remove(); else stackLaunchers();
+    if (typeof options.onDestroy === 'function') options.onDestroy();
+  }
+  const api = { root, content, settings, inspector, nav, launcherHost, setTheme, select, show, hide, close, collapse, minimize, maximize, restore, setLocked, reset, focus, notice, status, task, table, destroy,
+    getState: () => ({ shown, collapsed, minimized, maximized, locked, destroyed, active: active(), selected, rect: { ...rect } }) };
+  for (const section of (Array.isArray(options.sections) ? options.sections : []).slice(0, 30)) {
+    const id = String(section.id || ''); if (!id || sections.has(id)) continue;
+    const host = node('div', 'tsui-page');
+    const navButton = button(section.label || id, section.label || id, () => select(id), nav);
+    if (section.node) host.append(section.node);
+    let footerHost=null,headerButton=null;
+    if(section.footer){footerHost=node('div','tsui-section-footer');footerHost.append(section.footer);sectionFooters.append(footerHost);}
+    if(typeof section.headerAction==='string'){navButton.dataset.tsuiHeaderAction='true';headerButton=button(section.headerAction.slice(0,4),section.label||id,()=>select(id),headerActions);headerButton.setAttribute('aria-pressed','false');}
+    content.append(host); sections.set(id, { host, button: navButton,footer:footerHost,headerButton });
+    if (typeof section.render === 'function') { const cleanup = section.render(host, api); if (typeof cleanup === 'function') cleanups.push(cleanup); }
+  }
+  if (sections.size) select(sections.keys().next().value);
+  if (client && typeof client.start === 'function' && options.ownsThemeClient) client.start();
+  setTheme(options.theme || (client && client.get ? client.get() : {}), options.dark);
+  if (options.autoDestroyOnDetach !== false && typeof win.MutationObserver === 'function') {
+    const observer = new win.MutationObserver(() => { if (!root.isConnected) destroy(); });
+    observer.observe(doc.documentElement, { childList: true, subtree: true }); cleanups.push(() => observer.disconnect());
+  }
+  if (pdaOpening()) maximize(false); else update();
+  focus();
+  booting = false;
+  if (floating && typeof options.readLayout === 'function') {
+    let timer;
+    const deadline = new Promise((_, reject) => { timer = win.setTimeout(() => reject(new Error('Layout read timed out')), 1500); });
+    cleanups.push(() => win.clearTimeout(timer));
+    Promise.race([Promise.resolve().then(() => options.readLayout()), deadline]).then(value => {
+      if (destroyed || !value || typeof value !== 'object' || value.version !== 1) return;
+      const restored = { desktop: normalizeProfile(value.desktop), mobile: normalizeProfile(value.mobile) };
+      profiles[currentProfile] = snapshotProfile();
+      for (const name of ['desktop', 'mobile']) {
+        if (editedGeometry.has(name)) restored[name] = profiles[name];
+        else if (editedSelection.has(name)) restored[name].selected = profiles[name].selected;
       }
+      profiles = restored; applyProfile(profiles[currentProfile]);
+      if (pendingLayout) pendingLayout = { version: 1, desktop: { ...profiles.desktop }, mobile: { ...profiles.mobile } };
+    }).catch(() => { if (!destroyed) notice('Saved window layout could not be loaded.', { kind: 'warning' }); })
+      .finally(() => { win.clearTimeout(timer); layoutLoading = false; editedGeometry.clear(); editedSelection.clear(); queuePersist(); });
+  }
+  return api;
+}
+
+function scriptUiKitCss() {
+  return (typeof scriptUiIdentityCss==='function'?scriptUiIdentityCss('.tsui-root'):'')+`
+.tsui-root,.tsui-launcher-host{font:calc(14px * var(--tsui-font-scale,1))/1.45 system-ui,sans-serif;color:var(--tsui-text,#e5eaf2);color-scheme:light;box-sizing:border-box}.tsui-root[data-tsui-mode=dark],.tsui-launcher-host[data-tsui-mode=dark]{color-scheme:dark}
+.tsui-root *,.tsui-launcher-host *{box-sizing:border-box}.tsui-root[hidden],.tsui-root [hidden],.tsui-launchers[hidden],.tsui-launcher-host[hidden],.tsui-launcher-host [hidden]{display:none!important}
+.tsui-root{background:var(--tsui-background,#171d28);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,12px);overflow:hidden;min-width:0;display:flex;flex-direction:column;isolation:isolate}
+.tsui-root[data-tsui-surface=floating]{position:fixed;box-shadow:0 18px 60px #0007;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
+.tsui-root[data-tsui-surface=embedded]{position:relative;width:100%;min-height:220px;max-height:80dvh}
+.tsui-header{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:var(--tsui-space,10px);background:var(--tsui-raised,#242d3c);border-bottom:1px solid var(--tsui-border,#506076);flex:none}
+.tsui-title{font-weight:750;flex:1;min-width:90px;cursor:move;touch-action:none;padding:6px}.tsui-controls{display:flex;flex-wrap:wrap;gap:4px}
+.tsui-drag-strip,.tsui-header-actions,.tsui-root .tsui-window-options-toggle{display:none}.tsui-window-options{display:contents}.tsui-section-footers{flex:none;max-height:44%;overflow:auto}.tsui-section-footers:empty,.tsui-section-footers:not(:has(.tsui-section-footer:not([hidden]))){display:none}.tsui-section-footer{border-top:1px solid var(--tsui-border);background:var(--tsui-raised);padding:10px}
+.tsui-root button,.tsui-launcher{font:inherit;cursor:pointer;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,6px);padding:6px 10px;min-height:var(--tsui-control-height,34px)}
+.tsui-root button:not(:disabled):hover{background:var(--tsui-selection,#38455b)}.tsui-root :focus-visible,.tsui-launcher:focus-visible{outline:2px solid var(--tsui-focus,#8fbcff);outline-offset:2px}
+.tsui-root :is(button,input,select,textarea):disabled{opacity:.55;cursor:default}
+.tsui-root .tsui-primary,.tsui-root .tsui-primary:not(:disabled):hover{background:var(--tsui-accent,#96b9ff);color:var(--tsui-on-accent,#101828);border-color:var(--tsui-accent,#96b9ff);font-weight:600}
+.tsui-root :is(.tsui-controls,.tsui-nav) button:focus-visible{outline-offset:-3px}
+.tsui-root input,.tsui-root select,.tsui-root textarea{font:inherit;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:4px;padding:8px;max-width:100%}
+.tsui-body{display:grid;grid-template-columns:140px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto auto;min-height:0;flex:1;overflow:auto}.tsui-root[data-tsui-layout=frostbite] .tsui-nav{background:var(--tsui-surface,#242d3c)}.tsui-nav{display:flex;flex-direction:column;gap:6px;padding:10px;border-right:1px solid var(--tsui-border,#506076);grid-row:1/-1}
+.tsui-nav:empty,.tsui-settings:empty,.tsui-inspector:empty{display:none}.tsui-body:not(:has(.tsui-nav button)){grid-template-columns:minmax(0,1fr)}
+.tsui-nav button{text-align:left}.tsui-nav button[aria-current=page]{border-color:var(--tsui-accent,#96b9ff);background:var(--tsui-selection,#38455b);font-weight:bold}
+.tsui-content{min-width:0;padding:16px;overflow:auto;scrollbar-gutter:stable;grid-column:2}.tsui-body:not(:has(.tsui-nav button)) .tsui-content{grid-column:1}.tsui-settings,.tsui-inspector{padding:12px;min-width:0;grid-column:2;border-top:1px solid var(--tsui-border,#506076)}
+.tsui-footer{padding:8px 16px;border-top:1px solid var(--tsui-border,#506076);max-height:34%;overflow:auto;flex:none}.tsui-status:empty,.tsui-notices:empty,.tsui-tasks:empty{display:none}.tsui-footer:not(:has(.tsui-status:not(:empty),.tsui-notice,.tsui-task)){display:none}
+.tsui-notice,.tsui-task{display:flex;align-items:center;gap:8px;margin:4px 0}.tsui-notice span,.tsui-task span{flex:1;overflow-wrap:anywhere}.tsui-notice[data-kind=error]{color:var(--tsui-error,#ff9e9e)}.tsui-notice[data-kind=warning]{color:var(--tsui-warning,#f4ce83)}.tsui-notice[data-kind=success]{color:var(--tsui-success,#a4dfb6)}.tsui-task progress{width:90px}
+.tsui-resize{position:absolute;right:0;bottom:0;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 55%,var(--tsui-border,#506076) 56%,transparent 65%)}.tsui-gesturing{user-select:none}
+.tsui-launchers{position:fixed;bottom:max(12px,env(safe-area-inset-bottom));right:max(12px,env(safe-area-inset-right));width:max-content;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);display:flex;flex-direction:column;align-items:stretch;gap:12px;overflow:auto;box-sizing:border-box;padding:2px}
+.tsui-launcher-host{position:relative;max-width:100%;flex:none}.tsui-launcher{max-width:100%;overflow-wrap:anywhere;white-space:normal;width:100%}
+.tsui-table-scroll{max-width:100%;overflow:auto}.tsui-root table{border-collapse:collapse;width:100%}.tsui-root th,.tsui-root td{text-align:left;border-bottom:1px solid var(--tsui-border,#506076);padding:8px;overflow-wrap:anywhere}
+.tsui-root[data-tsui-layout=workbench] .tsui-body,.tsui-root[data-tsui-layout=torn] .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto}.tsui-root[data-tsui-layout=workbench] .tsui-content,.tsui-root[data-tsui-layout=torn] .tsui-content{grid-column:1}
+.tsui-root[data-tsui-layout=workbench] .tsui-nav,.tsui-root[data-tsui-layout=torn] .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);grid-row:auto}
+.tsui-root[data-tsui-layout=workbench] .tsui-nav{padding-bottom:0;gap:2px}.tsui-root[data-tsui-layout=workbench] .tsui-nav button{border-bottom-left-radius:0;border-bottom-right-radius:0}.tsui-root[data-tsui-layout=workbench] .tsui-settings,.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:1}
+.tsui-root[data-tsui-layout=frostbite] .tsui-header{background:linear-gradient(115deg,var(--tsui-surface),var(--tsui-raised));min-height:70px;padding:12px 16px}.tsui-root[data-tsui-layout=frostbite] .tsui-nav{background:var(--tsui-background)}.tsui-root[data-tsui-layout=frostbite] .tsui-nav button[aria-current=page]{box-shadow:inset 3px 0 0 var(--tsui-accent)}
+.tsui-root[data-tsui-layout=workbench] .tsui-header{background:var(--tsui-background);padding:8px 12px}.tsui-root[data-tsui-layout=workbench] .tsui-title{font-family:Consolas,"SFMono-Regular",monospace;font-size:.95em}.tsui-root[data-tsui-layout=workbench] .tsui-nav{background:var(--tsui-background);gap:0;padding-top:0}.tsui-root[data-tsui-layout=workbench] .tsui-nav button{border-top:2px solid var(--tsui-background);border-bottom:0;color:var(--tsui-muted);background:var(--tsui-background);padding:9px 14px}.tsui-root[data-tsui-layout=workbench] .tsui-nav button[aria-current=page]{border-top-color:var(--tsui-accent);background:var(--tsui-surface);color:var(--tsui-text)}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{background:var(--tsui-background)}
+.tsui-root[data-tsui-layout=torn]{box-shadow:inset 0 0 0 2px var(--tsui-surface),0 18px 60px #0007}.tsui-root[data-tsui-layout=torn] .tsui-header{padding:5px 8px;background:linear-gradient(var(--tsui-raised),var(--tsui-surface));border-top:2px solid var(--tsui-accent);box-shadow:inset 0 1px 0 var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] .tsui-title{font-family:Arial,Helvetica,sans-serif;font-size:.92em;letter-spacing:.025em;text-transform:uppercase}.tsui-root[data-tsui-layout=torn] .tsui-nav{padding:5px;gap:4px;background:var(--tsui-raised);box-shadow:inset 0 1px 0 var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] .tsui-nav button{padding:5px 10px;font-size:.9em;font-weight:700}.tsui-root[data-tsui-layout=torn] .tsui-content{padding:10px;background:var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] :is(th,td){padding:6px 8px}.tsui-root[data-tsui-layout=torn] th{background:linear-gradient(var(--tsui-raised),var(--tsui-surface));font-size:.9em}.tsui-root[data-tsui-layout=torn] tbody tr:nth-child(even){background:var(--tsui-raised)}.tsui-root[data-tsui-layout=torn] .tsui-settings,.tsui-root[data-tsui-layout=torn] .tsui-inspector{grid-column:1}
+@media(min-width:850px){.tsui-root[data-tsui-layout=workbench] .tsui-body:has(.tsui-inspector:not(:empty)){grid-template-columns:minmax(0,1fr) 180px}.tsui-root[data-tsui-layout=workbench] .tsui-nav{grid-column:1/-1}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:2;grid-row:2/4;border-left:1px solid var(--tsui-border,#506076)}}
+@media(max-width:600px),(pointer:coarse){.tsui-root button,.tsui-launcher{min-height:44px}.tsui-root input,.tsui-root select,.tsui-root textarea{font-size:16px}.tsui-header{gap:4px;padding:6px}.tsui-controls{width:100%;overflow:auto;flex-wrap:nowrap}.tsui-controls button{flex:1;padding:4px;font-size:12px}.tsui-root .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto auto;align-content:start}.tsui-root .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);padding:6px;grid-row:auto}.tsui-root .tsui-content{padding:10px;grid-column:1;overflow:visible}.tsui-root .tsui-settings,.tsui-root .tsui-inspector{grid-column:1;grid-row:auto}.tsui-resize{display:none}.tsui-title{touch-action:auto;cursor:default}.tsui-task{flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce){.tsui-root *{animation:none!important;transition:none!important}}
+.tsui-root[data-tsui-layout=stock]{font-family:Arial,Helvetica,sans-serif;font-size:calc(13px * var(--tsui-font-scale,1))}
+.tsui-root[data-tsui-layout=stock] .tsui-theme-mark{display:none}
+.tsui-root[data-tsui-layout=stock][data-tsui-surface=floating]:not([data-tsui-maximized=true]) .tsui-drag-strip{display:block;background:var(--tsui-selection);color:var(--tsui-muted);font:10px/18px Consolas,monospace;letter-spacing:2px;text-align:center;cursor:move;touch-action:none;border-bottom:1px solid var(--tsui-border);flex:none}
+.tsui-root[data-tsui-layout=stock] .tsui-header{padding:7px 10px;gap:6px;flex-wrap:nowrap;background:var(--tsui-raised);z-index:3}
+.tsui-root[data-tsui-layout=stock] .tsui-title{font-size:1em;font-weight:600;color:var(--tsui-accent);padding:3px 0;min-width:60px;overflow-wrap:anywhere}
+.tsui-root[data-tsui-layout=stock] .tsui-controls{width:auto;flex-wrap:nowrap;overflow:visible;gap:4px;flex:none}
+.tsui-root[data-tsui-layout=stock] .tsui-header-actions{display:flex;gap:4px}.tsui-root[data-tsui-layout=stock] .tsui-header-actions:empty{display:none}
+.tsui-root[data-tsui-layout=stock] .tsui-controls>button,.tsui-root[data-tsui-layout=stock] .tsui-header-actions>button{width:30px;min-height:30px;padding:3px;border-radius:3px;color:var(--tsui-accent)}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options-toggle{display:block}
+.tsui-root[data-tsui-layout=stock] .tsui-controls>[aria-label="Collapse or expand"]{font-size:0}.tsui-root[data-tsui-layout=stock] .tsui-controls>[aria-label="Collapse or expand"]:before{content:'▴';font-size:16px}
+.tsui-root[data-tsui-layout=stock][data-tsui-collapsed=true] .tsui-controls>[aria-label="Collapse or expand"]:before{content:'▾'}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options{display:none;position:absolute;right:8px;top:calc(100% + 3px);width:190px;max-height:min(250px,60dvh);overflow:auto;padding:6px;background:var(--tsui-surface);border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);box-shadow:0 6px 20px #0006}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options[data-open=true]{display:flex;flex-direction:column;gap:4px}.tsui-root[data-tsui-layout=stock] .tsui-window-options button{text-align:left}
+.tsui-root[data-tsui-layout=stock] .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto;overflow:hidden}
+.tsui-root[data-tsui-layout=stock] .tsui-content{grid-column:1;padding:12px;overflow:auto;scrollbar-gutter:auto}
+.tsui-root[data-tsui-layout=stock] .tsui-nav{flex-direction:row;flex-wrap:wrap;grid-row:auto;border-right:0;border-bottom:1px solid var(--tsui-border);padding:0 10px;gap:16px;background:var(--tsui-surface)}
+.tsui-root[data-tsui-layout=stock] .tsui-nav button{background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:9px 2px;color:var(--tsui-muted);font-size:.95em}
+.tsui-root[data-tsui-layout=stock] .tsui-nav button[aria-current=page]{border-bottom-color:var(--tsui-accent);color:var(--tsui-accent)}
+.tsui-root[data-tsui-layout=stock] .tsui-nav [data-tsui-header-action=true]{display:none}.tsui-root[data-tsui-layout=stock] .tsui-settings,.tsui-root[data-tsui-layout=stock] .tsui-inspector{grid-column:1}
+.tsui-root[data-tsui-layout=stock] input,.tsui-root[data-tsui-layout=stock] select{background:var(--tsui-background)}
+.tsui-root[data-tsui-layout=stock][data-tsui-pda=true] .tsui-section-footers{padding-bottom:max(48px,env(safe-area-inset-bottom));background:var(--tsui-raised)}
+@media(max-width:600px),(pointer:coarse){.tsui-root[data-tsui-layout=stock] .tsui-controls>button,.tsui-root[data-tsui-layout=stock] .tsui-header-actions>button{width:44px;min-height:44px}.tsui-root[data-tsui-layout=stock] .tsui-body{grid-template-rows:auto minmax(0,1fr) auto auto;align-content:stretch}.tsui-root[data-tsui-layout=stock] .tsui-content{overflow:auto}.tsui-root[data-tsui-layout=stock] .tsui-nav button{min-height:44px}.tsui-root[data-tsui-layout=stock] .tsui-title{font-size:13px}}
+`;
+}
+// Appearance-only adoption for explicitly declared legacy roots. This bridge
+// shares the existing menu registration identity and never moves script content.
+function createScriptUiAppearanceAdapter(options) {
+  const {doc,win,id,read=()=>null,write=()=>{},getInstance=()=>null,onChange=()=>{}}=options;
+  const safeId=value=>typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$/.test(value);
+  if(!safeId(id))throw new TypeError('A bounded script id is required.');
+  const normalize=options.normalize||(typeof normalizeScriptUiTheme==='function'?normalizeScriptUiTheme:require('./script-hub-theme.cjs').normalizeScriptUiTheme);
+  const apply=options.apply||(typeof applyScriptUiTheme==='function'?applyScriptUiTheme:require('./script-hub-theme.cjs').applyScriptUiTheme);
+  const css=options.css||(typeof scriptUiThemeCss==='function'?scriptUiThemeCss:require('./script-hub-theme.cjs').scriptUiThemeCss);
+  const createClient=options.createClient||(typeof createScriptUiThemeClient==='function'?createScriptUiThemeClient:require('./script-hub-theme-client.cjs').createScriptUiThemeClient);
+  const selectors=(Array.isArray(options.selectors)?options.selectors:[]).filter(value=>typeof value==='string'&&value.length>0&&value.length<=240).slice(0,12);
+  const commandEvent='torn-script-hub:v1:appearance',resultEvent=commandEvent+'-result';
+  let started=false,disposed=false,suspended=false,pdaActive=true,ready=false,generation=0,frame=null,observer=null,style=null;
+  let saved=null,readFailed=false,pending=0,queue=Promise.resolve();
+  const roots=new Map(),listeners=[],seen=new Set();
+  const active=()=>started&&!suspended&&pdaActive&&doc.visibilityState!=='hidden';
+  const stateTheme=()=>saved===null?client.get():normalize(saved);
+  function revision(){
+    const text=JSON.stringify(saved);let first=2166136261,second=5381;
+    for(let i=0;i<text.length;i++){first=Math.imul(first^text.charCodeAt(i),16777619);second=Math.imul(second,33)^text.charCodeAt(i);}
+    return 'ui-v1:'+(first>>>0).toString(16).padStart(8,'0')+(second>>>0).toString(16).padStart(8,'0');
+  }
+  async function readSaved(){try{const raw=await read();saved=raw===null||raw===undefined?null:normalize(raw);readFailed=false;return saved;}catch(error){readFailed=true;throw error;}}
+  const client=createClient({doc,win,scriptId:id,read:readSaved,write:async value=>{const theme=value===null?null:normalize(value);await write(theme);saved=theme;},onChange:theme=>{ready=true;if(active()){schedule();try{onChange(normalize(theme));}catch(_){}}}});
+  function response(command,status){
+    if(!active()||getInstance()!==command.instance)return;
+    const value={id,instance:command.instance,request:command.request,page:'ui-appearance',status,data:{theme:stateTheme(),inherit:saved===null,revision:revision()}};
+    try{const EventClass=win.CustomEvent||globalThis.CustomEvent;doc.dispatchEvent(new EventClass(resultEvent,{detail:JSON.stringify(value)}));}catch(_){}
+  }
+  function receive(event){
+    if(!active()||!ready||typeof event.detail!=='string'||event.detail.length>16384)return;
+    let command;try{command=JSON.parse(event.detail);}catch(_){return;}
+    if(!command||command.id!==id||!safeId(command.instance)||command.instance!==getInstance()||!safeId(command.request)||command.page!=='ui-appearance'||!['read','save'].includes(command.method))return;
+    if(command.method==='save'&&(typeof command.revision!=='string'||command.revision.length>128||!Object.prototype.hasOwnProperty.call(command,'theme')||(command.theme!==null&&(typeof command.theme!=='object'||Array.isArray(command.theme)))))return;
+    const key=command.instance+':'+command.request;if(seen.has(key))return;
+    if(pending>=5){response(command,'error');return;}
+    seen.add(key);if(seen.size>30)seen.delete(seen.values().next().value);pending++;
+    const ownGeneration=generation;
+    const run=async()=>{
+      try{
+        if(!active()||generation!==ownGeneration||getInstance()!==command.instance)return;
+        await client.refresh();
+        if(!active()||generation!==ownGeneration||getInstance()!==command.instance)return;
+        if(readFailed)throw new Error('Appearance read unavailable.');
+        if(command.method==='save'){
+          if(command.revision!==revision()){response(command,'conflict');return;}
+          await client.setOverride(command.theme===null?null:normalize(command.theme));
+        }
+        if(generation===ownGeneration)response(command,'ok');
+      }catch(_){if(generation===ownGeneration)response(command,'error');}
+      finally{if(generation===ownGeneration)pending--;}
     };
-  })();
+    queue=queue.then(run,run);
+  }
+  const aliases={
+    '--ocm-bg':'background','--ocm-bg-card':'surface','--ocm-bg-hover':'raised','--ocm-text':'text','--ocm-text-card':'text',
+    '--ocm-text-dim':'muted','--ocm-text-muted':'muted','--ocm-text-faint':'muted','--ocm-border':'border','--ocm-border-soft':'border','--ocm-link':'accent',
+    '--ocm-cpr-good':'success','--ocm-cpr-warn':'warning','--ocm-cpr-crit':'error',
+    '--ground':'background','--surface':'surface','--raise':'raised','--line':'border','--text':'text','--dim':'muted','--muted':'muted','--faint':'muted',
+    '--accent':'accent','--accent-dim':'accent','--warn':'warning','--bad':'error','--info':'focus',
+    '--twpc-bg':'background','--twpc-surface':'surface','--twpc-text':'text','--twpc-muted':'muted','--twpc-line':'border','--twpc-accent':'accent'
+  };
+  function restore(node,record){
+    for(const [key,entry]of record.styles){
+      // A script may update its own inline properties while the bridge is active.
+      if(node.style.getPropertyValue(key)!==entry.last||node.style.getPropertyPriority(key)!==entry.lastPriority)continue;
+      if(entry.value)node.style.setProperty(key,entry.value,entry.priority);else node.style.removeProperty(key);
+    }
+    for(const [key,entry]of record.attributes)if(node.getAttribute(key)===entry.last){if(entry.value===null)node.removeAttribute(key);else node.setAttribute(key,entry.value);}
+    if(!record.hadClass)node.classList.remove('tsui-legacy-surface');
+  }
+  function releaseRoots(){for(const [node,record]of roots)restore(node,record);roots.clear();}
+  function applyRoot(node,theme){
+    let record=roots.get(node);if(!record){record={styles:new Map(),attributes:new Map(),hadClass:node.classList.contains('tsui-legacy-surface')};roots.set(node,record);}
+    const styles=new Map(),attributes=new Map();
+    const resolved=apply({style:{setProperty:(key,value)=>styles.set(key,value)},setAttribute:(key,value)=>attributes.set(key,value)},theme,win.matchMedia?.('(prefers-color-scheme: dark)').matches===true);
+    attributes.set('data-tsui-owner',id);
+    for(const [key,role]of Object.entries(aliases))styles.set(key,resolved.colors[role]);
+    for(const [key,value]of styles){
+      if(!record.styles.has(key))record.styles.set(key,{value:node.style.getPropertyValue(key),priority:node.style.getPropertyPriority(key)});
+      node.style.setProperty(key,value);Object.assign(record.styles.get(key),{last:value,lastPriority:''});
+    }
+    for(const [key,value]of attributes){if(!record.attributes.has(key))record.attributes.set(key,{value:node.getAttribute(key)});node.setAttribute(key,value);record.attributes.get(key).last=value;}
+    node.classList.add('tsui-legacy-surface');
+  }
+  function render(){
+    frame=null;if(!active()||!ready)return;
+    const found=new Set();for(const selector of selectors){let nodes;try{nodes=doc.querySelectorAll(selector);}catch(_){continue;}for(let i=0;i<nodes.length&&found.size<48;i++)found.add(nodes[i]);if(found.size>=48)break;}
+    for(const [node,record]of roots)if(!found.has(node)||node.isConnected===false){restore(node,record);roots.delete(node);}
+    const theme=client.get();for(const node of found)applyRoot(node,theme);
+    if(found.size&&!style){style=doc.createElement('style');style.setAttribute('data-tsui-appearance-owner',id);style.textContent=css()+'\n.tsui-legacy-surface{background-color:var(--tsui-background);color:var(--tsui-text);border-color:var(--tsui-border)}';(doc.head||doc.documentElement).appendChild(style);}
+    if(!observer&&selectors.length&&typeof win.MutationObserver==='function'){observer=new win.MutationObserver(schedule);observer.observe(doc.documentElement,{childList:true,subtree:true});}
+  }
+  function schedule(){if(!active()||!ready||frame!==null)return;frame=win.requestAnimationFrame(render);}
+  function pause(){if(frame!==null)win.cancelAnimationFrame(frame);frame=null;observer?.disconnect();observer=null;}
+  function activity(){if(active())schedule();else pause();}
+  function pda(event){const state=event.detail;if(typeof state?.isActiveTab!=='boolean'||typeof state?.isWebViewVisible!=='boolean')return;pdaActive=state.isActiveTab&&state.isWebViewVisible;activity();}
+  function route(){pause();if(active())releaseRoots();schedule();}
+  function pagehide(event){if(event.persisted){suspended=true;pause();}else stop();}
+  function pageshow(event){if(event.persisted){suspended=false;activity();}}
+  function listen(target,name,callback){target.addEventListener(name,callback);listeners.push(()=>target.removeEventListener(name,callback));}
+  async function start(){
+    if(disposed)return client.get();if(started)return client.get();started=true;suspended=false;pdaActive=true;ready=false;generation++;
+    listen(doc,commandEvent,receive);listen(doc,'visibilitychange',activity);listen(win,'tornpda:tabState',pda);listen(win,'hashchange',route);listen(win,'pagehide',pagehide);listen(win,'pageshow',pageshow);
+    return client.start();
+  }
+  function stop(){started=false;generation++;client.stop();pause();releaseRoots();style?.remove();style=null;for(const remove of listeners.splice(0))remove();seen.clear();pending=0;queue=Promise.resolve();}
+  function dispose(){if(disposed)return;stop();disposed=true;}
+  return {start,stop,dispose,client};
+}
+'use strict';
+
+// These functions are bundled into the hub's private userscript scope.
+const hubFormTypes = new Set(['text', 'textarea', 'number', 'integer', 'password', 'secret', 'checkbox', 'toggle', 'select', 'radio', 'range', 'color', 'date', 'time']);
+const hubFormNumeric = new Set(['number', 'integer', 'range']);
+const hubFormSecret = field => field.type === 'password' || field.type === 'secret';
+const hubFormBoolean = field => field.type === 'checkbox' || field.type === 'toggle';
+const hubFormOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+let hubFormSequence = 0;
+
+function normalizeHubPage(raw) {
+  const fail = () => { throw new TypeError('Unsupported or invalid settings page.'); };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail();
+  let serialized;
+  try { serialized = JSON.stringify(raw); } catch (_) { fail(); }
+  // Count UTF-8 bytes without relying on Node or an optional browser API.
+  if (!serialized || serialized.length > 65536 || encodeURIComponent(serialized).replace(/%[A-F\d]{2}/g, '_').length > 65536) fail();
+  const id = value => {
+    if (typeof value !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$/.test(value) || ['__proto__', 'prototype', 'constructor'].includes(value)) fail();
+    return value;
+  };
+  const text = (value, optional = false) => {
+    if (optional && value === undefined) return '';
+    if (typeof value !== 'string' || value.length > 8192) fail();
+    return value;
+  };
+  const scalar = value => typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
+  const fields = new Map();
+  let count = 0;
+  if (!Array.isArray(raw.sections) || raw.sections.length > 100) fail();
+  const sectionIds = new Set();
+  const sections = raw.sections.map(section => {
+    if (!section || typeof section !== 'object' || !Array.isArray(section.fields)) fail();
+    const sectionId = id(section.id);
+    if (sectionIds.has(sectionId)) fail();
+    sectionIds.add(sectionId);
+    return { id: sectionId, title: text(section.title), fields: section.fields.map(source => {
+      if (!source || typeof source !== 'object' || ++count > 100) fail();
+      const fieldId = id(source.id);
+      const type = source.type === 'slider' ? 'range' : source.type;
+      if (fields.has(fieldId) || !hubFormTypes.has(type)) fail();
+      const field = { id: fieldId, type, label: text(source.label) };
+      fields.set(fieldId, field);
+      if (source.description !== undefined) field.description = text(source.description);
+      if (source.unit !== undefined) field.unit = text(source.unit);
+      for (const key of ['required', 'readOnly']) {
+        if (source[key] !== undefined) {
+          if (typeof source[key] !== 'boolean') fail();
+          field[key] = source[key];
+        }
+      }
+      for (const key of ['min', 'max', 'step', 'minLength', 'maxLength']) {
+        if (source[key] === undefined) continue;
+        if (typeof source[key] !== 'number' || !Number.isFinite(source[key])) fail();
+        if (key.endsWith('Length') && (!Number.isInteger(source[key]) || source[key] < 0 || source[key] > 32768)) fail();
+        if (key === 'step' && source[key] <= 0) fail();
+        field[key] = source[key];
+      }
+      if (field.min > field.max || field.minLength > field.maxLength) fail();
+      if (source.format !== undefined) {
+        if (!['email', 'url'].includes(source.format) || !['text', 'textarea'].includes(type)) fail();
+        field.format = source.format;
+      }
+      if (type === 'select' || type === 'radio') {
+        if (!Array.isArray(source.options) || !source.options.length || source.options.length > 100) fail();
+        const optionIds = new Set();
+        field.options = source.options.map(option => {
+          const value = typeof option === 'string' ? option : option && option.value;
+          if (!scalar(value) || optionIds.has(JSON.stringify(value))) fail();
+          optionIds.add(JSON.stringify(value));
+          return { value, label: text(typeof option === 'string' ? option : option.label) };
+        });
+      }
+      if (source.visibleWhen !== undefined) {
+        const condition = source.visibleWhen;
+        if (!condition || typeof condition !== 'object' || !scalar(condition.equals)) fail();
+        field.visibleWhen = { field: id(condition.field), equals: condition.equals };
+      }
+      if (hubFormOwn(source, 'default') && !hubFormSecret(field)) {
+        if (!scalar(source.default)) fail();
+        field.default = source.default;
+      }
+      return field;
+    }) };
+  });
+  for (const field of fields.values()) {
+    const visited = new Set([field.id]);
+    let current = field;
+    while (current.visibleWhen) {
+      const dependency = fields.get(current.visibleWhen.field);
+      if (!dependency || hubFormSecret(dependency) || visited.has(dependency.id)) fail();
+      visited.add(dependency.id);
+      current = dependency;
+    }
+    if (hubFormOwn(field, 'default') && hubFormFieldValue(field, field.default).error) fail();
+  }
+  if (raw.actions !== undefined && (!Array.isArray(raw.actions) || raw.actions.length > 100)) fail();
+  const actionIds = new Set();
+  const actions = (raw.actions || []).map(action => {
+    if (!action || typeof action !== 'object') fail();
+    const actionId = id(action.id);
+    if (actionIds.has(actionId)) fail();
+    actionIds.add(actionId);
+    return { id: actionId, label: text(action.label) };
+  });
+  return { id: id(raw.id), title: text(raw.title), description: text(raw.description, true), sections, actions };
+}
+
+function hubFormFieldValue(field, raw) {
+  const missing = raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '');
+  if (missing) {
+    if (field.required) return { error: 'This field is required.' };
+    return { value: hubFormBoolean(field) ? false : '' };
+  }
+  if (hubFormBoolean(field)) {
+    if (typeof raw !== 'boolean') return { error: 'Choose an enabled or disabled value.' };
+    if (field.required && !raw) return { error: 'This field must be enabled.' };
+    return { value: raw };
+  }
+  if (hubFormNumeric.has(field.type)) {
+    if (typeof raw !== 'number' && (typeof raw !== 'string' || !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(raw.trim()))) return { error: 'Enter a number.' };
+    const value = Number(raw);
+    if (!Number.isFinite(value) || (field.type === 'integer' && !Number.isSafeInteger(value))) return { error: field.type === 'integer' ? 'Enter a whole number.' : 'Enter a finite number.' };
+    if ((field.min !== undefined && value < field.min) || (field.max !== undefined && value > field.max)) return { error: 'Enter a number within the allowed range.' };
+    if (field.step !== undefined) {
+      const base = field.min || 0;
+      const steps = (value - base) / field.step;
+      const nearest = base + Math.round(steps) * field.step;
+      // Allow operand rounding error, but never a half-step mismatch at any magnitude.
+      const tolerance = Math.min(field.step * 1e-9, Number.EPSILON * 4 * Math.max(1, Math.abs(value), Math.abs(base), Math.abs(nearest)));
+      if (!Number.isFinite(steps) || !Number.isFinite(nearest) || Math.abs(value - nearest) > tolerance) return { error: 'Enter a number matching the allowed step.' };
+    }
+    return { value };
+  }
+  if (field.type === 'select' || field.type === 'radio') {
+    const option = field.options.find(item => item.value === raw);
+    return option ? { value: option.value } : { error: 'Choose one of the available options.' };
+  }
+  if (typeof raw !== 'string' || raw.length > 32768) return { error: 'Enter a valid text value.' };
+  if ((field.minLength !== undefined && raw.length < field.minLength) || (field.maxLength !== undefined && raw.length > field.maxLength)) return { error: 'Use the allowed text length.' };
+  if (field.format === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return { error: 'Enter a valid email address.' };
+  if (field.format === 'url') {
+    try { const parsed = new URL(raw); if (!['https:', 'http:'].includes(parsed.protocol) || !parsed.hostname) throw new Error(); } catch (_) { return { error: 'Enter an HTTP or HTTPS URL.' }; }
+  }
+  if (field.type === 'color' && !/^#[0-9a-f]{6}$/i.test(raw)) return { error: 'Choose a six-digit color.' };
+  if (field.type === 'date') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { error: 'Enter a valid date.' };
+    const date = new Date(raw + 'T00:00:00Z');
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== raw) return { error: 'Enter a valid date.' };
+  }
+  if (field.type === 'time' && !/^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(raw)) return { error: 'Enter a valid time.' };
+  return { value: raw };
+}
+
+function hubFormValues(page, input) {
+  const result = {};
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  for (const section of page.sections) for (const field of section.fields) {
+    if (hubFormSecret(field)) continue;
+    const value = hubFormOwn(source, field.id) ? source[field.id] : hubFormOwn(field, 'default') ? field.default : hubFormBoolean(field) ? false : '';
+    result[field.id] = (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') ? value : '';
+  }
+  return result;
+}
+
+function hubFormVisible(field, fields, values) {
+  if (!field.visibleWhen) return true;
+  const dependency = fields.get(field.visibleWhen.field);
+  if (!hubFormVisible(dependency, fields, values)) return false;
+  const parsed = hubFormFieldValue(dependency, values[dependency.id]);
+  return !parsed.error && parsed.value === field.visibleWhen.equals;
+}
+
+function validateHubSettings(page, input) {
+  page = normalizeHubPage(page);
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const fields = new Map(page.sections.flatMap(section => section.fields).map(field => [field.id, field]));
+  const combined = { ...hubFormValues(page, source) };
+  const values = {}, errors = {}, secretPatch = {};
+  for (const field of fields.values()) {
+    if (field.readOnly || !hubFormVisible(field, fields, combined)) continue;
+    const raw = hubFormSecret(field) ? source[field.id] : hubFormOwn(source, field.id) ? source[field.id] : combined[field.id];
+    const parsed = hubFormFieldValue(field, raw);
+    if (parsed.error) errors[field.id] = parsed.error;
+    else if (!hubFormSecret(field)) values[field.id] = parsed.value;
+    else if (parsed.value !== '') secretPatch[field.id] = parsed.value;
+  }
+  const checkSize = (patch, message) => {
+    const serialized = JSON.stringify(patch);
+    const bytes = encodeURIComponent(serialized).replace(/%[A-F\d]{2}/g, '_').length;
+    if (bytes > 32768) {
+      const lastField = Object.keys(patch).at(-1);
+      errors[lastField] = message;
+    }
+  };
+  checkSize(values, 'Settings exceed the 32 KiB limit. Shorten the values before saving.');
+  checkSize(secretPatch, 'New secret values exceed the 32 KiB limit. Shorten them before saving.');
+  return { ok: Object.keys(errors).length === 0, values, errors };
+}
+
+function renderHubForm(document, page, values, options = {}) {
+  page = normalizeHubPage(page);
+  const prefix = 'tsh-form-' + (++hubFormSequence) + '-';
+  const fields = new Map(page.sections.flatMap(section => section.fields).map(field => [field.id, field]));
+  const controls = new Map(), rows = new Map(), errors = new Map(), listeners = [];
+  let destroyed = false, busy = false;
+  let baseline = hubFormValues(page, values);
+  const make = (tag, className, text) => {
+    const node = document.createElement(tag);
+    node.className = 'tsh-form-' + className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const listen = (node, event, callback) => { node.addEventListener(event, callback); listeners.push(() => node.removeEventListener(event, callback)); };
+  const element = make('form', 'root');
+  element.noValidate = true;
+  element.append(make('h3', 'title', page.title));
+  if (page.description) element.append(make('p', 'description', page.description));
+  const status = make('p', 'status');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.hidden = true;
+  for (const section of page.sections) {
+    const group = make('fieldset', 'section');
+    group.append(make('legend', 'section-title', section.title));
+    for (const field of section.fields) {
+      const row = make(field.type === 'radio' ? 'fieldset' : 'div', 'field');
+      row.dataset.field = field.id;
+      const label = make(field.type === 'radio' ? 'legend' : 'label', 'label', field.label + (field.required ? ' *' : ''));
+      const controlId = prefix + field.id;
+      if (field.type !== 'radio') label.htmlFor = controlId;
+      row.append(label);
+      const helpId = controlId + '-help', errorId = controlId + '-error';
+      const fieldControls = [];
+      if (field.type === 'radio') {
+        field.options.forEach((option, index) => {
+          const optionLabel = make('label', 'option');
+          const control = make('input', 'input');
+          control.type = 'radio'; control.name = controlId; control.id = controlId + '-' + index; control.value = String(index);
+          optionLabel.append(control, document.createTextNode(option.label)); row.append(optionLabel); fieldControls.push(control);
+        });
+      } else {
+        const control = make(field.type === 'textarea' ? 'textarea' : field.type === 'select' ? 'select' : 'input', 'input');
+        control.id = controlId;
+        if (field.type === 'select') {
+          const empty = document.createElement('option'); empty.value = ''; empty.textContent = 'Choose…'; control.append(empty);
+          field.options.forEach((option, index) => { const node = document.createElement('option'); node.value = String(index); node.textContent = option.label; control.append(node); });
+        } else if (field.type !== 'textarea') {
+          control.type = hubFormSecret(field) ? 'password' : hubFormBoolean(field) ? 'checkbox' : field.type === 'integer' ? 'number' : field.type;
+          if (field.type === 'toggle') control.setAttribute('role', 'switch');
+        }
+        if (hubFormSecret(field)) { control.autocomplete = 'new-password'; control.setAttribute('data-write-only', 'true'); }
+        for (const key of ['min', 'max', 'step', 'minLength', 'maxLength']) if (field[key] !== undefined) control.setAttribute(key.toLowerCase(), String(field[key]));
+        if (field.type === 'integer' && field.step === undefined) control.step = '1';
+        if (field.type === 'number' && field.step === undefined) control.step = 'any';
+        row.append(control); fieldControls.push(control);
+      }
+      if (field.unit) row.append(make('span', 'unit', field.unit));
+      if (field.description) { const help = make('p', 'help', field.description); help.id = helpId; row.append(help); }
+      const error = make('p', 'error'); error.id = errorId; error.hidden = true; error.setAttribute('role', 'alert'); row.append(error);
+      for (const control of fieldControls) {
+        control.setAttribute('aria-describedby', (field.description ? helpId + ' ' : '') + errorId);
+        if (field.required) control.setAttribute('aria-required', 'true');
+        if (field.readOnly) { control.readOnly = true; control.setAttribute('aria-readonly', 'true'); }
+        listen(control, 'input', update); listen(control, 'change', update);
+      }
+      controls.set(field.id, fieldControls); rows.set(field.id, row); errors.set(field.id, error); group.append(row);
+    }
+    element.append(group);
+  }
+  element.append(status);
+  const actions = make('div', 'actions');
+  const buttons = [];
+  const button = (text, className, callback, submit = false) => {
+    const node = make('button', className, text); node.type = submit ? 'submit' : 'button';
+    if (callback) listen(node, 'click', callback);
+    buttons.push(node); actions.append(node); return node;
+  };
+  const save = button('Save', 'save', null, true);
+  button('Cancel', 'cancel', () => invoke(options.onCancel));
+  button('Reset defaults', 'reset', () => invoke(async () => {
+    if (options.onReset && await options.onReset() === false) return;
+    resetDefaults();
+  }, true));
+  for (const action of page.actions) button(action.label, 'action', () => invoke(() => options.onAction && options.onAction(action.id)));
+  element.append(actions);
+
+  function read(field) {
+    const list = controls.get(field.id), control = list[0];
+    if (field.type === 'radio') { const selected = list.find(item => item.checked); return selected ? field.options[Number(selected.value)].value : ''; }
+    if (field.type === 'select') return control.value === '' ? '' : field.options[Number(control.value)].value;
+    if (hubFormBoolean(field)) return control.checked;
+    if (hubFormNumeric.has(field.type)) return control.validity.badInput ? NaN : control.value === '' ? '' : Number(control.value);
+    return control.value;
+  }
+  function getValues() {
+    const result = {};
+    if (!destroyed) for (const field of fields.values()) if (!hubFormSecret(field)) result[field.id] = read(field);
+    return result;
+  }
+  // Intentionally separate: callers may only route this patch through encrypted transport.
+  function getSecretValues() {
+    const result = {};
+    if (!destroyed) {
+      const current = getValues();
+      for (const field of fields.values()) if (hubFormSecret(field) && !field.readOnly && hubFormVisible(field, fields, current)) {
+        const value = read(field); if (value !== '') result[field.id] = value;
+      }
+    }
+    return result;
+  }
+  function isDirty() { return !destroyed && (JSON.stringify(getValues()) !== JSON.stringify(baseline) || Object.keys(getSecretValues()).length > 0); }
+  function write(next) {
+    for (const field of fields.values()) {
+      const list = controls.get(field.id), value = hubFormSecret(field) ? '' : next[field.id];
+      if (field.type === 'radio') list.forEach((control, index) => { control.checked = field.options[index].value === value; });
+      else if (field.type === 'select') { const index = field.options.findIndex(option => option.value === value); list[0].value = index < 0 ? '' : String(index); }
+      else if (hubFormBoolean(field)) list[0].checked = value === true;
+      else list[0].value = value === undefined || value === null ? '' : String(value);
+    }
+    // Browser color/range controls canonicalize blank and invalid initial values.
+    update();
+  }
+  function clearErrors() { for (const [id, error] of errors) { error.hidden = true; error.textContent = ''; for (const control of controls.get(id)) control.removeAttribute('aria-invalid'); } }
+  function update() {
+    if (destroyed) return;
+    const current = getValues();
+    for (const field of fields.values()) {
+      const visible = hubFormVisible(field, fields, current);
+      rows.get(field.id).hidden = !visible;
+      for (const control of controls.get(field.id)) {
+        control.disabled = busy || !visible || (field.readOnly && (hubFormBoolean(field) || ['select', 'radio', 'range', 'color'].includes(field.type)));
+        if (field.type === 'toggle') control.setAttribute('aria-checked', String(control.checked));
+      }
+    }
+    for (const node of buttons) node.disabled = busy;
+    save.disabled = busy || !isDirty();
+  }
+  async function invoke(callback, restoreFocus = false) {
+    if (destroyed || busy || typeof callback !== 'function') return;
+    const origin = restoreFocus ? document.activeElement : null;
+    busy = true; update();
+    try { await callback(); } catch (_) { if (!destroyed) { status.textContent = 'Unable to complete this action.'; status.hidden = false; } }
+    finally {
+      busy = false; update();
+      // A reset confirmation removes its focused button while the form is busy.
+      if (!destroyed && origin?.isConnected && document.activeElement === document.body) origin.focus({ preventScroll: true });
+    }
+  }
+  function setValues(next, settings = {}) {
+    if (destroyed || (isDirty() && !settings.force)) return false;
+    baseline = hubFormValues(page, next); write(baseline); baseline = getValues(); clearErrors(); status.hidden = true; update(); return true;
+  }
+  function resetDefaults() {
+    if (destroyed) return;
+    const next = getValues();
+    for (const field of fields.values()) if (!hubFormSecret(field) && !field.readOnly && hubFormOwn(field, 'default')) next[field.id] = field.default;
+    write(next); clearErrors(); status.hidden = true; update();
+  }
+  listen(element, 'submit', event => {
+    event.preventDefault();
+    if (busy || destroyed) return;
+    clearErrors();
+    const submitted = getValues();
+    const validation = validateHubSettings(page, { ...submitted, ...getSecretValues() });
+    if (!validation.ok) {
+      for (const [id, message] of Object.entries(validation.errors)) { const error = errors.get(id); error.textContent = message; error.hidden = false; for (const control of controls.get(id)) control.setAttribute('aria-invalid', 'true'); }
+      controls.get(Object.keys(validation.errors)[0])[0].focus(); return;
+    }
+    if (typeof options.onSave !== 'function') return;
+    invoke(async () => {
+      const result = await options.onSave(validation.values);
+      if (result === false || destroyed) return;
+      if (result && typeof result === 'object' && result.values && typeof result.values === 'object' && !Array.isArray(result.values)) {
+        write(hubFormValues(page, { ...submitted, ...result.values }));
+        baseline = getValues();
+      } else baseline = submitted;
+      for (const field of fields.values()) if (hubFormSecret(field)) controls.get(field.id)[0].value = '';
+      status.textContent = 'Settings saved.'; status.hidden = false;
+    });
+  });
+  write(baseline); baseline = getValues(); update();
+  function destroy() {
+    if (destroyed) return;
+    for (const field of fields.values()) if (hubFormSecret(field)) controls.get(field.id)[0].value = '';
+    destroyed = true; for (const dispose of listeners.splice(0)) dispose();
+    element.remove(); controls.clear(); rows.clear(); errors.clear(); fields.clear(); baseline = {}; options = {};
+  }
+  return { element, getValues, getSecretValues, isDirty, setValues, resetDefaults, destroy };
+}
+'use strict';
+
+// Only selected manager/native APIs may hold identities, consent pins or values.
+// Native PDA namespaces are durable storage, not protection against installed scripts.
+function createHubCredentialStorage(env, namespace) {
+  env = env || {};
+  const validNamespace = typeof namespace === 'string' && /^[a-zA-Z0-9_.:-]{1,120}$/.test(namespace);
+  const native = env.PDA_storage;
+  const pda = !!native || !!env.flutter_inappwebview || !!env.__PDA_platformReadyPromise ||
+    typeof env.PDA_getTabState === 'function' || typeof env.PDA_httpGet === 'function' ||
+    env.isTornPDA === true || Object.keys(env).some(key => key.startsWith('PDA_') && env[key] != null);
+  const manager = env.GM_info?.scriptHandler || env.GM?.info?.scriptHandler;
+  const managerKnown = ['Tampermonkey', 'Violentmonkey', 'Greasemonkey'].includes(manager);
+  let owner = null, read = null, write = null, remove = null, backend = 'none';
+  if (native && ['get', 'set', 'delete'].every(name => typeof native[name] === 'function')) {
+    owner = native; read = native.get; write = native.set; remove = native.delete; backend = 'pda';
+  } else if (!pda && managerKnown) {
+    if (['GM_getValue', 'GM_setValue', 'GM_deleteValue'].every(name => typeof env[name] === 'function')) {
+      owner = env; read = env.GM_getValue; write = env.GM_setValue; remove = env.GM_deleteValue; backend = 'gm';
+    } else if (env.GM && ['getValue', 'setValue', 'deleteValue'].every(name => typeof env.GM[name] === 'function')) {
+      owner = env.GM; read = env.GM.getValue; write = env.GM.setValue; remove = env.GM.deleteValue; backend = 'gm';
+    }
+  }
+  let eligible = validNamespace && backend !== 'none';
+  const validKey = key => typeof key === 'string' && /^[a-zA-Z0-9_.:-]{1,150}$/.test(key);
+  const prefix = namespace + ':';
+  return {
+    get eligible() { return eligible; },
+    backend: eligible ? backend : 'none',
+    async exclusive(work) {
+      if (!eligible || typeof env.locks?.request !== 'function') return false;
+      return env.locks.request('torn-script-hub-private:' + namespace, work);
+    },
+    async get(key) {
+      if (!eligible || !validKey(key)) return null;
+      try { const value = await read.call(owner, prefix + key, null); return value === undefined ? null : value; }
+      catch (_) { eligible = false; return null; }
+    },
+    async set(key, value) {
+      if (!eligible || !validKey(key)) return false;
+      try { await write.call(owner, prefix + key, value); return true; }
+      catch (_) { eligible = false; return false; }
+    },
+    async delete(key) {
+      if (!eligible || !validKey(key)) return false;
+      try { await remove.call(owner, prefix + key); return true; }
+      catch (_) { eligible = false; return false; }
+    }
+  };
+}
+
+// No network, DOM, raw-error logging, or manager globals exist below this point.
+const HUB_CREDENTIAL_TTL = 30000;
+const HUB_CREDENTIAL_PROVIDERS = 20;
+const HUB_CREDENTIAL_GRANTS = 200;
+const HUB_CREDENTIAL_HISTORY = 256;
+const HUB_CREDENTIAL_PENDING = 128;
+const HUB_CREDENTIAL_KEYS = 20;
+const hubCredentialLabel = value => typeof value === 'string' && value.trim().length > 0 && value.length <= 60 && !/[\u0000-\u001f\u007f]/.test(value);
+const hubCredentialClone = value => JSON.parse(JSON.stringify(value));
+const hubCredentialBytes = value => new TextEncoder().encode(value);
+const hubCredentialHex = value => Array.from(new Uint8Array(value), byte => byte.toString(16).padStart(2, '0')).join('');
+function hubCredentialUnhex(value, maxBytes) {
+  if (typeof value !== 'string' || value.length > maxBytes * 2 || value.length % 2 || !/^[a-f0-9]+$/.test(value)) throw new Error('Unavailable');
+  return Uint8Array.from(value.match(/../g), byte => parseInt(byte, 16));
+}
+const hubCredentialId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,100}$/.test(value);
+function hubCredentialPublic(raw) {
+  if (!raw || raw.kty !== 'EC' || raw.crv !== 'P-256' || typeof raw.x !== 'string' ||
+      typeof raw.y !== 'string' || !/^[a-zA-Z0-9_-]{43}$/.test(raw.x) || !/^[a-zA-Z0-9_-]{43}$/.test(raw.y) || raw.d !== undefined) throw new Error('Unavailable');
+  return { kty: 'EC', crv: 'P-256', x: raw.x, y: raw.y };
+}
+async function hubCredentialFingerprint(crypto, raw) {
+  return hubCredentialHex(await crypto.subtle.digest('SHA-256', hubCredentialBytes(JSON.stringify(hubCredentialPublic(raw)))));
+}
+function hubCredentialCryptoAvailable(crypto) {
+  return !!crypto && typeof crypto.getRandomValues === 'function' && crypto.subtle &&
+    ['generateKey', 'exportKey', 'importKey', 'deriveKey', 'digest', 'encrypt', 'decrypt'].every(name => typeof crypto.subtle[name] === 'function');
+}
+async function hubCredentialIdentity(crypto, stored) {
+  let publicJwk, privateJwk;
+  if (stored) {
+    publicJwk = hubCredentialPublic(stored.publicJwk);
+    privateJwk = stored.privateJwk;
+    if (!privateJwk || typeof privateJwk.d !== 'string' || privateJwk.x !== publicJwk.x || privateJwk.y !== publicJwk.y) throw new Error('Unavailable');
+  } else {
+    const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveKey']);
+    publicJwk = hubCredentialPublic(await crypto.subtle.exportKey('jwk', pair.publicKey));
+    privateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey);
+  }
+  const privateKey = await crypto.subtle.importKey('jwk', privateJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+  // Public import validates that the stored coordinates describe an actual point.
+  await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  return { privateKey, persisted: { publicJwk, privateJwk }, publicJwk, fingerprint: await hubCredentialFingerprint(crypto, publicJwk) };
+}
+async function hubCredentialPeerKey(crypto, privateKey, publicJwk) {
+  const publicKey = await crypto.subtle.importKey('jwk', hubCredentialPublic(publicJwk), { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  return crypto.subtle.deriveKey({ name: 'ECDH', public: publicKey }, privateKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+function hubCredentialRoute(request) {
+  if (!request || request.version !== 1 || !['scriptId', 'providerId', 'instance', 'requestId'].every(name => hubCredentialId(request[name])) ||
+      !Number.isSafeInteger(request.expiresAt)) throw new Error('Unavailable');
+  if (request.pageId !== undefined && !hubCredentialId(request.pageId)) throw new Error('Unavailable');
+  const route = { version: 1, scriptId: request.scriptId, providerId: request.providerId, instance: request.instance, requestId: request.requestId, expiresAt: request.expiresAt };
+  if (request.pageId !== undefined) route.pageId = request.pageId;
+  return route;
+}
+function hubCredentialFresh(route) {
+  const now = Date.now();
+  return route.expiresAt > now && route.expiresAt <= now + HUB_CREDENTIAL_TTL;
+}
+function hubCredentialAad(route, clientFingerprint, hubFingerprint) {
+  return hubCredentialBytes(JSON.stringify({ ...route, direction: 'hub-to-client', clientFingerprint, hubFingerprint }));
+}
+function hubCredentialPrune(map) {
+  const now = Date.now();
+  for (const [key, value] of map) if (value.expiresAt <= now) map.delete(key);
+}
+function hubCredentialRequestKey(route) { return JSON.stringify([route.scriptId, route.instance, route.requestId]); }
+function hubCredentialValidatedVaultState(stored) {
+  if (!stored || stored.version !== 1 || !stored.identity || !Array.isArray(stored.providers) || !Array.isArray(stored.grants) ||
+      stored.providers.length > HUB_CREDENTIAL_PROVIDERS || stored.grants.length > HUB_CREDENTIAL_GRANTS) throw new Error('Unavailable');
+  const providerIds = new Set();
+  for (const p of stored.providers) {
+    if (!p || !hubCredentialId(p.id) || providerIds.has(p.id) || !(p.value === null || typeof p.value === 'string' && p.value.length <= 4096) ||
+        !Number.isSafeInteger(p.revision) || p.revision < 0) throw new Error('Unavailable');
+    providerIds.add(p.id);
+    if (p.globalFallback !== undefined && typeof p.globalFallback !== 'boolean') throw new Error('Unavailable');
+    if (p.keys !== undefined && (!Array.isArray(p.keys) || p.keys.length > HUB_CREDENTIAL_KEYS)) throw new Error('Unavailable');
+    const ids = new Set();
+    for (const key of p.keys || []) {
+      if (!key || !hubCredentialId(key.id) || key.id === 'global' || ids.has(key.id) || !hubCredentialLabel(key.label) ||
+          !(key.value === null || typeof key.value === 'string' && key.value.length > 0 && key.value.length <= 4096)) throw new Error('Unavailable');
+      ids.add(key.id);
+    }
+  }
+  const grantIds = new Set();
+  for (const g of stored.grants) {
+    if (!g || !hubCredentialId(g.scriptId) || !providerIds.has(g.providerId) || !/^[a-f0-9]{64}$/.test(g.fingerprint)) throw new Error('Unavailable');
+    const key = g.scriptId + '\n' + g.providerId;
+    if (grantIds.has(key)) throw new Error('Unavailable');
+    grantIds.add(key);
+    if (g.keyId !== undefined && !hubCredentialId(g.keyId)) throw new Error('Unavailable');
+    if (g.allowed !== undefined && typeof g.allowed !== 'boolean') throw new Error('Unavailable');
+  }
+  return hubCredentialClone(stored);
+}
+
+function createHubCredentialVault({ storage, crypto } = {}) {
+  let destroyed = false, enabled = false, identity = null, state = null, initialization = null;
+  const seen = new Map();
+  let queue = Promise.resolve();
+  const disable = () => { enabled = false; identity = null; state = null; seen.clear(); };
+  function ordered(work) {
+    const result = queue.then(async () => {
+      if (typeof storage?.exclusive !== 'function') return false;
+      return storage.exclusive(async () => {
+        if (!await ready()) return false;
+        // Refresh under the same cross-tab lock as the subsequent mutation or
+        // delivery. Never merge against this tab's cached permissions.
+        const loaded = hubCredentialValidatedVaultState(await storage.get('vault-v1'));
+        const keys = await hubCredentialIdentity(crypto, loaded.identity);
+        if (destroyed || !storage.eligible) return false;
+        state = loaded; identity = keys;
+        return work();
+      });
+    }).catch(() => { disable(); return false; });
+    queue = result.then(() => undefined);
+    return result;
+  }
+  async function ready() {
+    if (destroyed) return false;
+    if (!initialization) initialization = (async () => {
+      try {
+        if (!storage?.eligible || !hubCredentialCryptoAvailable(crypto)) return false;
+        const stored = await storage.get('vault-v1');
+        if (!storage.eligible || destroyed) return false;
+        const loaded = stored === null ? { version: 1, providers: ['torn', 'tornstats', 'ffscouter'].map(id => ({ id, value: null, revision: 0 })), grants: [] }
+          : hubCredentialValidatedVaultState(stored);
+        const keys = await hubCredentialIdentity(crypto, loaded.identity);
+        if (destroyed) return false;
+        loaded.identity = keys.persisted;
+        if (!stored && !await storage.set('vault-v1', loaded)) return false;
+        if (destroyed || !storage.eligible) return false;
+        state = hubCredentialClone(loaded); identity = keys; enabled = true;
+        return true;
+      } catch (_) { disable(); return false; }
+    })();
+    return await initialization && !destroyed && enabled && storage.eligible;
+  }
+  async function save(next) {
+    if (!await storage.set('vault-v1', next) || destroyed || !storage.eligible) { disable(); return false; }
+    state = next;
+    return true;
+  }
+  async function publicIdentity() {
+    return await ordered(async () => await ready() ? { publicJwk: hubCredentialClone(identity.publicJwk), fingerprint: identity.fingerprint } : null) || null;
+  }
+  function refresh() {
+    return ordered(async () => {
+      if (!await ready()) return false;
+      // One private backend read; never generate an identity or rewrite on resume.
+      const stored = await storage.get('vault-v1');
+      if (!storage.eligible || destroyed) { disable(); return false; }
+      const loaded = hubCredentialValidatedVaultState(stored);
+      const keys = await hubCredentialIdentity(crypto, loaded.identity);
+      if (destroyed || !storage.eligible) { disable(); return false; }
+      state = loaded; identity = keys;
+      // Keep seen requests intact across refresh, including key/grant changes.
+      return true;
+    });
+  }
+  async function status() {
+    return await ordered(async () => {
+    if (!await ready()) return [];
+    return state.providers.map(p => ({ id: p.id, configured: typeof p.value === 'string' && p.value.length > 0, revision: p.revision,
+      globalFallback: p.globalFallback === true,
+      keys: (p.keys || []).map(key => ({id:key.id,label:key.label,configured:!!key.value})),
+      assignments: state.grants.filter(g=>g.providerId===p.id).map(g=>({scriptId:g.scriptId,keyId:g.keyId||'global'})),
+      permissions: state.grants.filter(g => g.providerId === p.id && g.allowed!==false).map(g => ({ scriptId: g.scriptId, fingerprint: g.fingerprint, keyId:g.keyId || 'global' })) }));
+    }) || [];
+  }
+  function editProvider(providerId, edit) {
+    return ordered(async () => {
+      if (!await ready() || !hubCredentialId(providerId) || providerId === 'script-settings') return false;
+      const next = hubCredentialClone(state), provider = next.providers.find(p => p.id === providerId);
+      if (!provider || provider.revision >= Number.MAX_SAFE_INTEGER || !edit(provider, next)) return false;
+      provider.revision++;
+      return save(next);
+    });
+  }
+  async function addNamedKey(providerId, label, value) {
+    if (!await ordered(() => ready()) || !hubCredentialLabel(label) || typeof value !== 'string' || !value.length || value.length > 4096) return false;
+    const id = 'key-' + hubCredentialHex(crypto.getRandomValues(new Uint8Array(12)));
+    return await editProvider(providerId, provider => {
+      provider.keys ||= [];
+      if (provider.keys.length >= HUB_CREDENTIAL_KEYS) return false;
+      provider.keys.push({id,label:label.trim(),value});return true;
+    }) ? id : false;
+  }
+  function setNamedKey(providerId, keyId, label, value) {
+    if (!hubCredentialLabel(label) || !(value === undefined || typeof value === 'string' && value.length > 0 && value.length <= 4096)) return Promise.resolve(false);
+    return editProvider(providerId, provider => {
+      const key = provider.keys?.find(k => k.id === keyId);if (!key) return false;
+      key.label = label.trim();if (value !== undefined) key.value = value;return true;
+    });
+  }
+  function deleteNamedKey(providerId, keyId) {
+    return editProvider(providerId, provider => {
+      const key = provider.keys?.find(k => k.id === keyId);if (!key) return false;
+      key.value = null;return true;
+    });
+  }
+  function setGlobalFallback(providerId, value) {
+    if (typeof value !== 'boolean') return Promise.resolve(false);
+    return editProvider(providerId, provider => {provider.globalFallback=value;return true;});
+  }
+  function assignKey(scriptId, providerId, keyId) {
+    if (!hubCredentialId(scriptId) || !hubCredentialId(keyId)) return Promise.resolve(false);
+    return editProvider(providerId, (provider, next) => {
+      const grant = next.grants.find(g => g.scriptId === scriptId && g.providerId === providerId);
+      if (!grant || keyId !== 'global' && !provider.keys?.some(k => k.id === keyId)) return false;
+      grant.keyId=keyId;return true;
+    });
+  }
+  function setCredential(providerId, value) {
+    return ordered(async () => {
+      if (!await ready() || !hubCredentialId(providerId) || typeof value !== 'string' || !value.length || value.length > 4096) return false;
+      const next = hubCredentialClone(state);
+      let provider = next.providers.find(p => p.id === providerId);
+      if (!provider) {
+        if (next.providers.length >= HUB_CREDENTIAL_PROVIDERS) return false;
+        provider = { id: providerId, value: null, revision: 0 }; next.providers.push(provider);
+      }
+      if (provider.revision >= Number.MAX_SAFE_INTEGER) return false;
+      provider.value = value; provider.revision += 1;
+      return save(next);
+    });
+  }
+  function deleteCredential(providerId) {
+    return ordered(async () => {
+      if (!await ready() || !hubCredentialId(providerId)) return false;
+      const next = hubCredentialClone(state), provider = next.providers.find(p => p.id === providerId);
+      if (!provider || provider.revision >= Number.MAX_SAFE_INTEGER) return false;
+      provider.value = null; provider.revision += 1;
+      return save(next);
+    });
+  }
+  function grant(scriptId, providerId, publicJwk) {
+    return ordered(async () => {
+      if (!await ready() || !hubCredentialId(scriptId) || !hubCredentialId(providerId)) return false;
+      let fingerprint;
+      try {
+        // Reject invalid points before pinning a grant.
+        await hubCredentialPeerKey(crypto, identity.privateKey, publicJwk);
+        fingerprint = await hubCredentialFingerprint(crypto, publicJwk);
+      } catch (_) { return false; }
+      const next = hubCredentialClone(state);
+      if (!next.providers.some(p => p.id === providerId)) {
+        if (next.providers.length >= HUB_CREDENTIAL_PROVIDERS) return false;
+        next.providers.push({ id: providerId, value: null, revision: 0 });
+      }
+      const existing = next.grants.find(g => g.scriptId === scriptId && g.providerId === providerId);
+      if (existing) {existing.fingerprint = fingerprint;existing.allowed=true;}
+      else {
+        if (next.grants.length >= HUB_CREDENTIAL_GRANTS) return false;
+        next.grants.push({ scriptId, providerId, fingerprint });
+      }
+      return save(next);
+    });
+  }
+  function revoke(scriptId, providerId) {
+    return ordered(async () => {
+      if (!await ready() || !hubCredentialId(scriptId) || !hubCredentialId(providerId)) return false;
+      const next = hubCredentialClone(state);
+      const grant=next.grants.find(g=>g.scriptId===scriptId&&g.providerId===providerId);
+      if(grant)grant.allowed=false;
+      return save(next);
+    });
+  }
+  async function encryptedResponse(request, payloadForProvider) {
+    const result = await ordered(async () => {
+      if (!await ready()) return { status: 'unavailable' };
+      try {
+        const route = hubCredentialRoute(request);
+        if (!hubCredentialFresh(route)) return { status: 'denied' };
+        const publicJwk = hubCredentialPublic(request.publicJwk);
+        const fingerprint = await hubCredentialFingerprint(crypto, publicJwk);
+        const permission = state.grants.find(g => g.scriptId === route.scriptId && g.providerId === route.providerId);
+        const provider = state.providers.find(p => p.id === route.providerId);
+        if (!permission || permission.allowed===false || permission.fingerprint !== fingerprint || !provider) return { status: 'denied' };
+        const payload = payloadForProvider(provider, permission);
+        if (typeof payload !== 'string' || !payload.length || hubCredentialBytes(payload).length > 32768) return { status: 'denied' };
+        hubCredentialPrune(seen);
+        const requestKey = hubCredentialRequestKey(route);
+        if (seen.has(requestKey) || seen.size >= HUB_CREDENTIAL_HISTORY) return { status: 'denied' };
+        seen.set(requestKey, route);
+        const key = await hubCredentialPeerKey(crypto, identity.privateKey, publicJwk);
+        const nonce = crypto.getRandomValues(new Uint8Array(12));
+        const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: hubCredentialAad(route, fingerprint, identity.fingerprint), tagLength: 128 }, key, hubCredentialBytes(payload));
+        if (destroyed || !enabled || !storage.eligible || !hubCredentialFresh(route)) return { status: 'unavailable' };
+        return { ...route, status: 'ok', publicJwk: hubCredentialClone(identity.publicJwk), nonce: hubCredentialHex(nonce), ciphertext: hubCredentialHex(encrypted) };
+      } catch (_) { return { status: 'denied' }; }
+    });
+    return result || { status: 'unavailable' };
+  }
+  function respond(request) {
+    return encryptedResponse(request, (provider, permission) => {
+      const assigned=permission.keyId || 'global';
+      let keyId=assigned,value=assigned==='global'?provider.value:provider.keys?.find(k=>k.id===assigned)?.value || null;
+      const fallback=!value && assigned!=='global' && provider.globalFallback===true && !!provider.value;
+      if(fallback){keyId='global';value=provider.value;}
+      return request.pageId==='credential-context-v2'
+        ? JSON.stringify({version:2,value:value || null,keyId,fallback,managed:true}) : value;
+    });
+  }
+  // Internal hub UI only; same consent and routing checks as credential deliveries.
+  function encryptMessage(request, payloadString) { return encryptedResponse(request, () => payloadString); }
+  function destroy() { destroyed = true; disable(); }
+  return { ready: () => ordered(() => ready()), publicIdentity, refresh, setCredential, deleteCredential, addNamedKey, setNamedKey, deleteNamedKey, setGlobalFallback, assignKey, status, grant, revoke, respond, encryptMessage, destroy };
+}
+
+function createHubCredentialClient({ storage, crypto, scriptId } = {}) {
+  let destroyed = false, enabled = false, identity = null, state = null, initialization = null;
+  let queue = Promise.resolve();
+  const pending = new Map();
+  const disable = () => { enabled = false; identity = null; state = null; pending.clear(); };
+  const storageKey = 'client-v1:' + scriptId;
+  async function ready() {
+    if (destroyed) return false;
+    if (!initialization) initialization = (async () => {
+      try {
+        if (!hubCredentialId(scriptId) || !storage?.eligible || !hubCredentialCryptoAvailable(crypto)) return false;
+        const stored = await storage.get(storageKey);
+        if (!storage.eligible || destroyed || stored && (stored.version !== 1 || !stored.identity || !(stored.hubFingerprint === null || /^[a-f0-9]{64}$/.test(stored.hubFingerprint)) ||
+          stored.managedProviders !== undefined && (!Array.isArray(stored.managedProviders) || stored.managedProviders.length > 20 || !stored.managedProviders.every(hubCredentialId)))) return false;
+        const loaded = stored || { version: 1, hubFingerprint: null };
+        const keys = await hubCredentialIdentity(crypto, loaded.identity);
+        if (destroyed) return false;
+        loaded.identity = keys.persisted;
+        if (!stored && !await storage.set(storageKey, loaded)) return false;
+        if (destroyed || !storage.eligible) return false;
+        state = hubCredentialClone(loaded); identity = keys; enabled = true;
+        return true;
+      } catch (_) { disable(); return false; }
+    })();
+    return await initialization && !destroyed && enabled && storage.eligible;
+  }
+  async function publicIdentity() {
+    return await ready() ? { publicJwk: hubCredentialClone(identity.publicJwk), fingerprint: identity.fingerprint } : null;
+  }
+  function pinHub(publicJwk, options = {}) {
+    // First discovery is TOFU, not authentication of the host page. Never pin a reply.
+    const result = queue.then(async () => {
+      if (!await ready()) return false;
+      try {
+        await hubCredentialPeerKey(crypto, identity.privateKey, publicJwk);
+        const fingerprint = await hubCredentialFingerprint(crypto, publicJwk);
+        if (state.hubFingerprint && state.hubFingerprint !== fingerprint && options.replace !== true) return false;
+        if (state.hubFingerprint === fingerprint) return true;
+        const next = { ...state, hubFingerprint: fingerprint };
+        if (!await storage.set(storageKey, next) || destroyed || !storage.eligible) { disable(); return false; }
+        state = next; pending.clear();
+        return true;
+      } catch (_) { return false; }
+    }).catch(() => { disable(); return false; });
+    queue = result.then(() => undefined);
+    return result;
+  }
+  async function createRequest(providerId, instance, requestId, options = {}) {
+    if (!await ready()) return null;
+    try {
+      const route = hubCredentialRoute({ version: 1, scriptId, providerId, instance, requestId, expiresAt: Date.now() + HUB_CREDENTIAL_TTL, ...(options.pageId === undefined ? {} : { pageId: options.pageId }) });
+      hubCredentialPrune(pending);
+      const requestKey = hubCredentialRequestKey(route);
+      if (pending.size >= HUB_CREDENTIAL_PENDING || pending.has(requestKey)) return null;
+      const request = { ...route, publicJwk: hubCredentialClone(identity.publicJwk) };
+      pending.set(requestKey, { ...route, encoded: JSON.stringify(request), hubFingerprint: state.hubFingerprint });
+      return request;
+    } catch (_) { return null; }
+  }
+  async function consumeReply(reply, request) {
+    if (!await ready()) return null;
+    try {
+      const route = hubCredentialRoute(request), requestKey = hubCredentialRequestKey(route), owned = pending.get(requestKey);
+      if (!owned || owned.encoded !== JSON.stringify(request) || route.scriptId !== scriptId) return null;
+      // Claim synchronously before any crypto await so concurrent replay cannot win.
+      pending.delete(requestKey);
+      if (!state.hubFingerprint || owned.hubFingerprint !== state.hubFingerprint || !hubCredentialFresh(route) || reply?.status !== 'ok') return null;
+      const replyRoute = hubCredentialRoute(reply);
+      if (JSON.stringify(replyRoute) !== JSON.stringify(route)) return null;
+      const hubFingerprint = await hubCredentialFingerprint(crypto, reply.publicJwk);
+      if (hubFingerprint !== state.hubFingerprint) return null;
+      const key = await hubCredentialPeerKey(crypto, identity.privateKey, reply.publicJwk);
+      const nonce = hubCredentialUnhex(reply.nonce, 12);
+      if (nonce.length !== 12) return null;
+      const ciphertext = hubCredentialUnhex(reply.ciphertext, 32784);
+      const bytes = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce, additionalData: hubCredentialAad(route, identity.fingerprint, hubFingerprint), tagLength: 128 }, key, ciphertext);
+      if (destroyed || !enabled || !storage.eligible || !hubCredentialFresh(route) || state.hubFingerprint !== hubFingerprint) return null;
+      const value = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      return value.length && bytes.byteLength <= 32768 ? value : null;
+    } catch (_) { return null; }
+  }
+  function destroy() { destroyed = true; disable(); }
+  function isManaged(providerId) { return state?.managedProviders?.includes(providerId) === true; }
+  function rememberManaged(providerId) {
+    const result=queue.then(async()=>{
+      if(!await ready() || !hubCredentialId(providerId))return false;
+      if(isManaged(providerId))return true;
+      const managedProviders=[...(state.managedProviders || []),providerId];if(managedProviders.length>20)return false;
+      const next={...state,managedProviders};
+      if(!await storage.set(storageKey,next) || destroyed || !storage.eligible){disable();return false;}
+      state=next;return true;
+    }).catch(()=>{disable();return false;});queue=result.then(()=>undefined);return result;
+  }
+  return { ready, publicIdentity, pinHub, createRequest, consumeReply, isManaged, rememberManaged, destroy };
+}
+// Capture granted APIs from the userscript scope; managers need not put them on
+// page window/globalThis. Only advertise native capabilities that actually exist.
+function getHubPlatformEnvironment() {
+  const env={crypto:globalThis.crypto,locks:globalThis.navigator?.locks};
+  if(typeof GM_info!=='undefined')env.GM_info=GM_info;
+  if(typeof GM_getValue==='function')env.GM_getValue=GM_getValue;
+  if(typeof GM_setValue==='function')env.GM_setValue=GM_setValue;
+  if(typeof GM_deleteValue==='function')env.GM_deleteValue=GM_deleteValue;
+  if(typeof GM!=='undefined')env.GM=GM;
+  for(const name of ['PDA_storage','flutter_inappwebview','__PDA_platformReadyPromise','PDA_getTabState','PDA_httpGet','__tornpda'])if(globalThis[name])env[name]=globalThis[name];
+  // PDA binds this native store inside the script's private outer closure.
+  // Prefer that namespace over any unrelated page-global value.
+  if(typeof PDA_storage!=='undefined'&&PDA_storage)env.PDA_storage=PDA_storage;
+  return env;
+}
+// Script-owned harmless settings: no duplicate store, arbitrary actions or keys.
+function createHubScriptSettings(pages, readValues, applyValues, credentialClient, onSharedCredentialChange, saveSecrets) {
+  const schemas=new Map(pages.map(page=>{const schema=normalizeHubPage(page);return[schema.id,schema];}));
+  const snapshots=new Map();
+  const writes=new Map();
+  function schema(id){const page=schemas.get(id);if(!page)throw new Error('Unsupported settings page.');return page;}
+  async function readSettings(id){
+    schema(id);const values=await readValues(id);const serialized=JSON.stringify(values);
+    const prior=snapshots.get(id), revision=prior?.serialized===serialized?prior.revision:(prior?.revision||0)+1;
+    snapshots.set(id,{serialized,revision});return{values,revision:'settings-'+revision};
+  }
+  return {
+    describePage:id=>schema(id),readSettings,
+    saveSettings(id,patch,revision){
+      const write=(writes.get(id)||Promise.resolve()).catch(()=>{}).then(async()=>{
+      const current=await readSettings(id);if(current.revision!==revision)throw new Error('Settings changed.');
+      const page=schema(id), allowed=page.sections.flatMap(section=>section.fields).filter(field=>!field.readOnly&&!['secret','password'].includes(field.type));
+      if(Object.keys(patch).some(id=>!allowed.some(field=>field.id===id)))throw new Error('Unsupported setting.');
+      const result=validateHubSettings(page,{...current.values,...patch});if(!result.ok)throw new Error('Invalid setting.');
+      await applyValues(id,result.values);return readSettings(id);
+      });
+      writes.set(id,write);write.finally(()=>{if(writes.get(id)===write)writes.delete(id);}).catch(()=>{});return write;
+    },
+    credentialClient,onSharedCredentialChange,
+    ...(saveSecrets?{saveSecrets}:{}),
+  };
+}
+// Bundled into each participating script; callbacks stay in that script's scope.
+function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
+  const prefix = 'torn-script-hub:v1:';
+  const instance = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID() : 'menu-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  let attached = false, disposed = false;
+  const seen = new Set();
+  const requests = new Map();
+  const preparedSecrets = new Map();
+  const credentialContexts = new Map();
+  let changeTimer = null;
+  let credentialIdentity = null;
+  let pairedHub = null;
+  let pdaActive = true, active = doc.visibilityState !== 'hidden', drainingChanges = false, activityGeneration = 0;
+  const providerRevisions = new Map(), changedProviders = new Map();
+  const sharedProviders = [...new Set((Array.isArray(features.sharedProviders) ? features.sharedProviders : ['torn']).filter(value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(value)))].slice(0,20);
+  function usable() { return attached && !disposed && active && doc.visibilityState !== 'hidden'; }
+  function hook(name) {
+    try { const result = features[name]?.(); if(result && typeof result.then==='function')result.catch(()=>{}); } catch (_) {}
+  }
+  function send(name, value) {
+    try { doc.dispatchEvent(new CustomEvent(prefix + name, { detail: JSON.stringify(value) })); } catch (_) {}
+  }
+  function announce() { send('register', { ...metadata, credentialScope:features.credentialScope==='script'?'script':'main', credentialProviders:features.credentialClient?sharedProviders:[], capabilities:[...new Set([...(metadata.capabilities||[]),...(features.credentialContext?['hub-keys-v2']:[])])], instance, ...(credentialIdentity ? {credentialIdentity} : {}) }); }
+  const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(value);
+  const safeField = value => typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$/.test(value)&&!['__proto__','constructor','prototype'].includes(value);
+  function decode(event, limit = 65536) {
+    try { return typeof event.detail === 'string' && event.detail.length <= limit ? JSON.parse(event.detail) : null; } catch (_) { return null; }
+  }
+  function publicSchema(schema) {
+    if(typeof normalizeHubPage==='function')return normalizeHubPage(schema);
+    const value={id:schema.id,title:schema.title,description:schema.description||'',sections:[],actions:[]};
+    for(const section of schema.sections||[]){
+      const fields=[];
+      for(const source of section.fields||[]){
+        const field={};for(const key of ['id','type','label','description','required','readOnly','min','max','step','minLength','maxLength','options','visibleWhen','format','unit'])if(source[key]!==undefined)field[key]=source[key];
+        if(!['password','secret'].includes(source.type)&&source.default!==undefined)field.default=source.default;fields.push(field);
+      }
+      value.sections.push({id:section.id,title:section.title,fields});
+    }
+    value.actions=(schema.actions||[]).map(action=>({id:action.id,label:action.label}));
+    for (const section of value.sections || []) for (const field of section.fields || []) {
+      if (['password','secret'].includes(field.type)) { delete field.default; delete field.value; }
+    }
+    return value;
+  }
+  function publicValues(schema, state) {
+    const values = {};
+    for (const section of schema.sections || []) for (const field of section.fields || []) {
+      if (['password','secret'].includes(field.type) || !safeField(field.id)) continue;
+      const value = state?.values?.[field.id];
+      if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) || (typeof value === 'string' && value.length <= 32768)) values[field.id] = value;
+    }
+    if(encodeURIComponent(JSON.stringify(values)).replace(/%[A-F\d]{2}/g,'_').length>32768)throw new Error('Settings exceed transport limit.');
+    return {values,revision:typeof state?.revision === 'string' ? state.revision.slice(0,128) : ''};
+  }
+  async function rpc(event) {
+    const command = decode(event, 49152);
+    if (!command || command.id !== metadata.id || command.instance !== instance || !safeId(command.request)
+        || !metadata.pages?.some(page => page.id === command.page) || !['describe','read','save','prepare-secret'].includes(command.method)
+        || typeof features.describePage !== 'function' || typeof features.readSettings !== 'function' || !usable()) return;
+    const key = 'rpc-' + command.request;
+    if (seen.has(key)) return;
+    seen.add(key); if (seen.size > 30) seen.delete(seen.values().next().value);
+    const reply = (status, data) => {
+      if (!attached || disposed) return;
+      const output = {id:metadata.id,instance,request:command.request,page:command.page,status,...(data ? {data} : {})};
+      if (JSON.stringify(output).length <= 98304) send('rpc-result', output);
+      else send('rpc-result', {id:metadata.id,instance,request:command.request,page:command.page,status:'error'});
+    };
+    try {
+      const schema = publicSchema(await features.describePage(command.page));
+      if (command.method === 'describe') { reply('ok', schema); return; }
+      if(command.method==='prepare-secret'){
+        if(!features.credentialClient||typeof features.saveSecrets!=='function'||preparedSecrets.size>=10){reply('error');return;}
+        const request=await features.credentialClient.createRequest('script-settings',instance,'secret-'+command.request,{pageId:command.page});
+        if(!request||!usable()){reply('error');return;}
+        const timer=setTimeout(()=>preparedSecrets.delete(request.requestId),30000);
+        preparedSecrets.set(request.requestId,{request,timer});reply('ok',request);return;
+      }
+      const current = publicValues(schema, await features.readSettings(command.page));
+      if (command.method === 'read') { reply('ok', current); return; }
+      if (typeof features.saveSettings !== 'function' || !command.values || typeof command.values !== 'object' || Array.isArray(command.values)) { reply('error'); return; }
+      const fields = (schema.sections || []).flatMap(section => section.fields || []).filter(field => !['password','secret'].includes(field.type) && !field.readOnly);
+      if (Object.keys(command.values).some(id => !fields.some(field => field.id === id))) { reply('error'); return; }
+      if(encodeURIComponent(JSON.stringify(command.values)).replace(/%[A-F\d]{2}/g,'_').length>32768){reply('error');return;}
+      if (command.revision !== current.revision) { reply('conflict'); return; }
+      const result = await features.saveSettings(command.page, command.values, command.revision);
+      reply('ok', publicValues(schema, result || await features.readSettings(command.page)));
+    } catch (_) { reply('error'); }
+  }
+  async function onCredentialInfo(event) {
+    const info = decode(event, 8192);
+    if (!info?.identity?.publicJwk || !features.credentialClient || !usable()) return;
+    const token=activityGeneration;
+    try {
+      if (!await features.credentialClient.pinHub(info.identity.publicJwk)) return;
+      const identity=await features.credentialClient.publicIdentity();
+      if(!usable()||token!==activityGeneration)return;
+      if(identity&&credentialIdentity?.fingerprint!==identity.fingerprint){credentialIdentity=identity;announce();}
+      const peer=JSON.stringify([info.identity.publicJwk.x,info.identity.publicJwk.y]);
+      const initial=pairedHub!==peer;pairedHub=peer;
+      const providers=Array.isArray(info.providers)?info.providers.slice(0,20):[];
+      for(const providerId of sharedProviders){
+        const record=providers.find(item=>item?.id===providerId&&Number.isSafeInteger(item.revision)&&item.revision>=0&&typeof item.configured==='boolean');
+        const revision=record?JSON.stringify([record.revision,record.configured]):null;
+        if(initial||(revision!==null&&providerRevisions.get(providerId)!==revision))queueCredentialChange(providerId);
+        if(revision!==null)providerRevisions.set(providerId,revision);
+      }
+    } catch (_) {}
+  }
+  async function onCredentialReply(event) {
+    const reply = decode(event, 131072);
+    if (!reply || reply.scriptId !== metadata.id || reply.instance !== instance || !usable()) return;
+    const item = requests.get(reply.requestId);
+    if (!item) return;
+    requests.delete(reply.requestId); clearTimeout(item.timer);
+    try{
+      let value=await features.credentialClient.consumeReply(reply,item.request);
+      if(item.request.pageId==='credential-context-v2' && value!==null){
+        const context=JSON.parse(value);
+        if(context?.version!==2||context.managed!==true||typeof context.fallback!=='boolean'||!(context.value===null||typeof context.value==='string'&&context.value.length<=4096)||
+          !(context.keyId==='global'||/^key-[a-f0-9]{24}$/.test(context.keyId)))throw new Error('Unavailable');
+        if(!usable())throw new Error('Unavailable');
+        if(!await features.credentialClient.rememberManaged(reply.providerId)){
+          send('credential-policy',{scriptId:metadata.id,instance,providerId:reply.providerId,status:'failed'});
+          features.onCredentialPolicyFailure?.(reply.providerId);throw new Error('Unavailable');
+        }
+        if(!usable())throw new Error('Unavailable');
+        features.onHubManagementChange?.(reply.providerId,true);
+        send('credential-policy',{scriptId:metadata.id,instance,providerId:reply.providerId,status:'saved'});
+        credentialContexts.set(reply.providerId,context);value=context.value;
+        features.onCredentialContext?.(reply.providerId,{keyId:context.keyId,fallback:context.fallback});
+      }else if(value===null)credentialContexts.delete(reply.providerId);
+      item.resolve(usable()?value:null);
+    }catch(_){credentialContexts.delete(reply.providerId);item.resolve(null);}
+  }
+  async function onSecretSettings(event){
+    const message=decode(event,131072),request=message?.request;
+    if(!request||request.scriptId!==metadata.id||request.instance!==instance||request.providerId!=='script-settings'||!usable())return;
+    const item=preparedSecrets.get(request.requestId);if(!item||item.request.pageId!==request.pageId)return;
+    preparedSecrets.delete(request.requestId);clearTimeout(item.timer);
+    let status='error';
+    try{
+      const value=await features.credentialClient.consumeReply(message.envelope,item.request);
+      if(value===null||!usable())return;
+      const values=JSON.parse(value),schema=await features.describePage(request.pageId);
+      const fields=(schema.sections||[]).flatMap(section=>section.fields||[]).filter(field=>['password','secret'].includes(field.type)&&!field.readOnly);
+      if(!values||typeof values!=='object'||Array.isArray(values)||Object.keys(values).some(id=>{const field=fields.find(field=>field.id===id),value=values[id];return !field||typeof value!=='string'||value.length>32768||(field.minLength!==undefined&&value.length<field.minLength)||(field.maxLength!==undefined&&value.length>field.maxLength);}))throw new Error();
+      if(!usable())return;
+      await features.saveSecrets(request.pageId,values);status='ok';
+    }catch(_){}
+    if(usable())send('secret-result',{id:metadata.id,instance,page:request.pageId,request:request.requestId,status});
+  }
+  function queueCredentialChange(providerId){
+    if(!features.credentialClient||!sharedProviders.includes(providerId))return;
+    changedProviders.set(providerId,(changedProviders.get(providerId)||0)+1);
+    if(!usable()||changeTimer!==null||drainingChanges)return;
+    changeTimer=setTimeout(drainCredentialChanges,250);
+  }
+  async function drainCredentialChanges(){
+    changeTimer=null;if(!usable()||drainingChanges)return;
+    drainingChanges=true;const token=activityGeneration;
+    try{
+      const providers=[...changedProviders.keys()];changedProviders.clear();
+      for(const providerId of providers){
+        if(!usable()||token!==activityGeneration)break;
+        const value=await requestSharedCredential(providerId);
+        if(usable()&&token===activityGeneration&&!changedProviders.has(providerId)&&typeof features.onSharedCredentialChange==='function')try{features.onSharedCredentialChange(providerId,value);}catch(_){}
+      }
+    }finally{drainingChanges=false;if(usable()&&changedProviders.size&&changeTimer===null)changeTimer=setTimeout(drainCredentialChanges,250);}
+  }
+  function onCredentialChanged(event){
+    const change=decode(event,1024);
+    if(!features.credentialClient||typeof features.onSharedCredentialChange!=='function'||!change||!safeId(change.providerId)||(change.scriptId&&change.scriptId!==metadata.id))return;
+    queueCredentialChange(change.providerId);
+  }
+  async function requestSharedCredential(providerId) {
+    if (!usable() || !features.credentialClient || !sharedProviders.includes(providerId) || requests.size >= 10) return null;
+    const requestId = 'key-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    try {
+      const request = await features.credentialClient.createRequest(providerId,instance,requestId,features.credentialContext?{pageId:'credential-context-v2'}:{});
+      if (!request || !usable()) return null;
+      return await new Promise(resolve => {
+        const timer = setTimeout(() => {requests.delete(requestId);resolve(null);},2000);
+        requests.set(requestId,{resolve,timer,request}); send('credential-request',request);
+      });
+    } catch (_) { return null; }
+  }
+  function clearCredentialWork(){
+    for(const item of requests.values()){clearTimeout(item.timer);item.resolve(null);}requests.clear();
+    for(const item of preparedSecrets.values())clearTimeout(item.timer);preparedSecrets.clear();
+    clearTimeout(changeTimer);changeTimer=null;
+  }
+  function updateActivity(){
+    const next=doc.visibilityState!=='hidden'&&pdaActive;
+    if(next===active)return;active=next;activityGeneration++;
+    if(!active)clearCredentialWork();
+    else if(attached){providerRevisions.clear();for(const providerId of sharedProviders)changedProviders.set(providerId,1);send('credential-discover',{});}
+  }
+  function onPdaActivity(event){const info=event.detail;pdaActive=info?.isActiveTab===true&&info?.isWebViewVisible===true;updateActivity();}
+  function takeover(event) {
+    try {
+      if (typeof event.detail !== 'string' || event.detail.length > 16000) return;
+      const next = JSON.parse(event.detail);
+      if (next?.id === metadata.id && typeof next.instance === 'string' && next.instance !== instance) dispose();
+    } catch (_) {}
+  }
+  function activate(event) {
+    let command;
+    try {
+      if (typeof event.detail !== 'string' || event.detail.length > 1024) return;
+      command = JSON.parse(event.detail);
+    } catch (_) { return; }
+    if (!command || command.id !== metadata.id || command.instance !== instance || typeof command.action !== 'string'
+        || !Object.prototype.hasOwnProperty.call(callbacks, command.action)
+        || !metadata.actions.some(action => action.id === command.action)
+        || typeof command.request !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(command.request)) return;
+    if (seen.has(command.request)) return;
+    seen.add(command.request);
+    if (seen.size > 30) seen.delete(seen.values().next().value);
+    const report = status => send('result', { id: metadata.id, action: command.action, request: command.request, instance, status });
+    const statusFor = value => value === false ? 'not-ready' : value === 'navigate' ? 'navigate' : 'opened';
+    try {
+      const result = callbacks[command.action]();
+      if (result && typeof result.then === 'function') result.then(value => report(statusFor(value)), () => report('error'));
+      else report(statusFor(result));
+    } catch (_) { report('error'); }
+  }
+  function detach() {
+    if (!attached) return;
+    attached = false;
+    activityGeneration++;
+    doc.removeEventListener(prefix + 'discover', announce);
+    doc.removeEventListener(prefix + 'activate', activate);
+    doc.removeEventListener(prefix + 'register', takeover);
+    doc.removeEventListener(prefix + 'rpc', rpc);
+    doc.removeEventListener(prefix + 'credential-info', onCredentialInfo);
+    doc.removeEventListener(prefix + 'credential-reply', onCredentialReply);
+    doc.removeEventListener(prefix + 'credential-changed',onCredentialChanged);
+    doc.removeEventListener(prefix + 'secret-settings',onSecretSettings);
+    credentialContexts.clear();
+    clearCredentialWork();
+    send('unregister', { id: metadata.id, instance });
+    hook('onDetach');
+  }
+  function attach() {
+    if (attached || disposed) return;
+    attached = true;
+    active=doc.visibilityState!=='hidden'&&pdaActive;
+    doc.addEventListener(prefix + 'discover', announce);
+    doc.addEventListener(prefix + 'activate', activate);
+    doc.addEventListener(prefix + 'register', takeover);
+    if (metadata.pages?.length) doc.addEventListener(prefix + 'rpc', rpc);
+    if (features.credentialClient) {
+      doc.addEventListener(prefix + 'credential-info', onCredentialInfo);
+      doc.addEventListener(prefix + 'credential-reply', onCredentialReply);
+      doc.addEventListener(prefix + 'credential-changed',onCredentialChanged);
+      if(typeof features.saveSecrets==='function')doc.addEventListener(prefix + 'secret-settings',onSecretSettings);
+    }
+    announce();
+    hook('onAttach');
+    if(features.credentialClient&&usable()){providerRevisions.clear();send('credential-discover',{});}
+  }
+  win.addEventListener('pagehide', detach);
+  win.addEventListener('pageshow', attach);
+  doc.addEventListener('visibilitychange',updateActivity);
+  win.addEventListener('tornpda:tabState',onPdaActivity);
+  if(typeof win.PDA_getTabState==='function')Promise.resolve().then(()=>win.PDA_getTabState()).then(info=>{if(!disposed)onPdaActivity({detail:info});}).catch(()=>{});
+  function dispose() {
+    if(disposed)return;
+    disposed = true;
+    detach();
+    win.removeEventListener('pagehide', detach);
+    win.removeEventListener('pageshow', attach);
+    doc.removeEventListener('visibilitychange',updateActivity);
+    win.removeEventListener('tornpda:tabState',onPdaActivity);
+    seen.clear();
+    features.credentialClient?.destroy();
+    changedProviders.clear();providerRevisions.clear();hook('onDispose');
+  }
+  attach();
+  dispose.requestSharedCredential = requestSharedCredential;
+  dispose.instance = instance;
+  if (features.credentialClient) {
+    Promise.resolve().then(() => features.credentialClient.ready()).then(async ready => {
+      if(disposed)return;
+      features.onCredentialPolicyReady?.(ready,providerId=>features.credentialClient.isManaged?.(providerId)===true);
+      if (!ready || !usable()) return;
+      credentialIdentity = await features.credentialClient.publicIdentity();
+      if (usable() && credentialIdentity) {announce();send('credential-discover',{});}
+    }).catch(() => {});
+  }
+  return dispose;
+}
+function hubReveal(selector) {
+  const root = document.querySelector(selector); if (!root) return false;
+  root.hidden = false; root.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  root.querySelector('button, [tabindex="0"], input:not([type="password"])')?.focus({ preventScroll: true });
+  return true;
+}
+function hubOpenOc(tab) {
+      if (!document.getElementById('ocm-root')) return 'navigate';
+      const button = document.querySelector('#ocm-tabs [data-tab="' + tab + '"]');
+      if (!button) return false;
+      button.click(); return hubReveal('#ocm-root');
+    }
+
+const hubSettingsPages = [{"id":"preferences","title":"Display and refresh","sections":[{"id":"display","title":"Display","fields":[{"id":"theme","type":"select","label":"Theme","options":[{"value":"default","label":"Default"}],"default":"default"},{"id":"cprWarn","type":"number","label":"CPR warning threshold","min":0,"max":100,"step":1,"unit":"%","default":70,"required":true},{"id":"cprCrit","type":"number","label":"CPR critical threshold","min":0,"max":100,"step":1,"unit":"%","default":60,"required":true},{"id":"refreshSeconds","type":"integer","label":"Refresh interval","min":30,"max":3600,"step":1,"unit":"seconds","default":60,"required":true}]}],"actions":[{"id":"settings","label":"Open original full settings"}]},{"id":"connection","title":"API connection","description":"Use your personal key as fallback, or approve this script in API Keys for an optional shared Torn key.","sections":[{"id":"connection","title":"Connection","fields":[{"id":"personalKeyPresent","type":"checkbox","label":"Personal fallback key configured","readOnly":true},{"id":"sharedKeyPresent","type":"checkbox","label":"Shared key available","readOnly":true},{"id":"personalApiKey","type":"secret","label":"Replace personal fallback key","description":"Write-only. Saved in this script\u2019s existing key setting; shared keys are never copied here.","minLength":16,"maxLength":16}]}],"actions":[{"id":"settings","label":"Open original full settings"}]}];
+hubSettingsPages[0].sections[0].fields[0].options = Object.entries(THEMES).map(([value, theme]) => ({value, label: theme.label || value}));
+function hubBindingRootReady() { return !!document.getElementById('ocm-root'); }
+function hubBindingRefresh(key) {
+  if (!key) { clearInterval(window._ocmRefresh); return; }
+  if (_ocmLoadInFlight) hubBindingPending = true;
+  else loadData(key);
+  scheduleRefresh(key);
+}
+function hubReadSettings(page) {
+  if (page === 'connection') return {personalKeyPresent: !!GM_getValue(GMK.API_KEY, ''), sharedKeyPresent: !!hubSharedTornKey};
+  return {theme: GM_getValue(GMK.THEME, 'default'), cprWarn: CPR_WARN, cprCrit: CPR_CRIT, refreshSeconds: REFRESH_S};
+}
+function hubApplySettings(page, values) {
+  if (page === 'connection') return;
+  if (values.cprCrit > values.cprWarn) throw new Error('Critical threshold must not exceed the warning threshold.');
+  const changed = CPR_WARN !== values.cprWarn || CPR_CRIT !== values.cprCrit || REFRESH_S !== values.refreshSeconds;
+  saveConfig(values.cprWarn, values.cprCrit, WEIGHT_HIGH, WEIGHT_MID, values.refreshSeconds, MIN_PER_DIFF);
+  GM_setValue(GMK.THEME, values.theme); applyTheme(values.theme);
+  for (const [id, value] of [['ocm-theme-select',values.theme],['ocm-cfg-cpr-warn',values.cprWarn],['ocm-cfg-cpr-crit',values.cprCrit],['ocm-cfg-refresh',values.refreshSeconds]]) {
+    const input = document.getElementById(id); if (input) input.value = String(value);
+  }
+  if (changed) hubBindingQueueRefresh();
+}
+async function hubSavePersonalSecrets(page, patch) {
+  if (page !== 'connection' || !patch || Object.keys(patch).some(key => key !== 'personalApiKey') ||
+      typeof patch.personalApiKey !== 'string' || !/^[a-zA-Z0-9]{16}$/.test(patch.personalApiKey)) throw new Error('Invalid personal key.');
+  const before = hubEffectiveTornKey();
+  GM_setValue(GMK.API_KEY, patch.personalApiKey);
+  const input = document.getElementById('ocm-api-input'); if (input) input.value = '••••••••••••••••';
+  if (before !== hubEffectiveTornKey()) hubBindingQueueRefresh();
+}
+const hubPrivateCredentialClient = createHubCredentialClient({storage: createHubCredentialStorage(getHubPlatformEnvironment(), 'oc-suite-hub-client-v1'), crypto: globalThis.crypto, scriptId: 'oc-suite'});
+const hubSettingsFeatures = createHubScriptSettings(hubSettingsPages, hubReadSettings, hubApplySettings, hubPrivateCredentialClient, undefined, hubSavePersonalSecrets);
+
+let hubBindingAttached = false, hubBindingPending = false, hubBindingTimer = null, hubBindingPdaActive = true;
+function hubBindingAwake() {
+  return document.visibilityState !== 'hidden' && hubBindingPdaActive && hubBindingRootReady();
+}
+function hubBindingQueueRefresh() {
+  hubBindingPending = true;
+  if (!hubBindingAttached || !hubBindingAwake() || hubBindingTimer !== null) return;
+  hubBindingTimer = setTimeout(() => {
+    hubBindingTimer = null;
+    if (!hubBindingAttached || !hubBindingAwake() || !hubBindingPending) return;
+    hubBindingPending = false;
+    const key = hubEffectiveTornKey();
+    hubBindingRefresh(key);
+  }, 250);
+}
+function hubBindingVisibility() { if (hubBindingPending) hubBindingQueueRefresh(); }
+function hubBindingTabState(event) {
+  const info = event.detail;
+  hubBindingPdaActive = info?.isActiveTab === true && info?.isWebViewVisible === true;
+  if (!hubBindingPdaActive) { clearTimeout(hubBindingTimer); hubBindingTimer = null; }
+  else hubBindingVisibility();
+}
+function hubBindingCredentialChanged(provider, value) {
+  if (provider !== 'torn') return;
+  const before = hubEffectiveTornKey();
+  hubStoreSharedTornKey(value);
+  if (before !== hubEffectiveTornKey()) hubBindingQueueRefresh();
+}
+Object.assign(hubSettingsFeatures, {
+  sharedProviders: ['torn'],
+  onSharedCredentialChange: hubBindingCredentialChanged,
+  onAttach() {
+    if (hubBindingAttached) return;
+    hubBindingAttached = true;
+    document.addEventListener('visibilitychange', hubBindingVisibility);
+    window.addEventListener('tornpda:tabState', hubBindingTabState);
+    if (typeof globalThis.PDA_getTabState === 'function') {
+      hubBindingPdaActive = false;
+      Promise.resolve().then(() => globalThis.PDA_getTabState()).then(info => {
+        if (hubBindingAttached) hubBindingTabState({detail: info});
+      }).catch(() => {});
+    }
+    hubBindingVisibility();
+  },
+  onDetach() {
+    hubBindingAttached = false;
+    document.removeEventListener('visibilitychange', hubBindingVisibility);
+    window.removeEventListener('tornpda:tabState', hubBindingTabState);
+    clearTimeout(hubBindingTimer); hubBindingTimer = null;
+    hubStoreSharedTornKey(null);
+  },
+  onDispose() { hubSettingsFeatures.onDetach(); hubBindingPending = false; },
+});
+const hubMenuAdapter = registerTornScriptMenu(document, window, {
+  "id": "oc-suite",
+  "name": "OC Suite",
+  "icon": "oc",
+  "version": "3.37.0-codex17",
+  "url": "https://www.torn.com/factions.php?step=your&type=1#/tab=crimes",
+  "actions": [
+    {
+      "id": "open",
+      "label": "Open OC Suite"
+    },
+    {
+      "id": "crimes",
+      "label": "Organized crimes"
+    },
+    {
+      "id": "people",
+      "label": "People and CPR"
+    },
+    {
+      "id": "finance",
+      "label": "OC finances"
+    },
+    {
+      "id": "loans",
+      "label": "OC item loans"
+    },
+    {
+      "id": "armoury",
+      "label": "Armoury"
+    },
+    {
+      "id": "settings",
+      "label": "Settings"
+    }
+  ],
+  "pages": [
+    {
+      "id": "preferences",
+      "title": "Display and refresh"
+    },
+    {
+      "id": "connection",
+      "title": "API connection"
+    }
+  ],
+  "capabilities": [
+    "settings",
+    "credentials",
+    "secret-settings",
+    "appearance"
+  ],
+  "category": "Faction"
+}, {
+  "open": () => { return hubOpenOc('home'); },
+  "crimes": () => { return hubOpenOc('crimes'); },
+  "people": () => { return hubOpenOc('people'); },
+  "finance": () => { return hubOpenOc('money'); },
+  "loans": () => { ARM.state.view = 'loans'; return hubOpenOc('armoury'); },
+  "armoury": () => { return hubOpenOc('armoury'); },
+  "settings": () => { const panel = document.getElementById('ocm-config-panel'); if (!panel) return 'navigate'; panel.style.display = 'block'; return hubReveal('#ocm-config-panel'); }
+}, hubSettingsFeatures);
+
+const hubAppearanceKey="torn-script-hub:ui-override:v1:oc-suite";
+const hubAppearance=createScriptUiAppearanceAdapter({doc:document,win:window,id:"oc-suite",selectors:["#ocm-root","#ocm-sidebar-widget"],getInstance:()=>hubMenuAdapter.instance,
+read:()=>typeof GM_getValue==='function'?GM_getValue(hubAppearanceKey,null):typeof GM!=='undefined'&&typeof GM.getValue==='function'?GM.getValue(hubAppearanceKey,null):JSON.parse(localStorage.getItem(hubAppearanceKey)||'null'),
+write:value=>{if(typeof GM_setValue==='function')return GM_setValue(hubAppearanceKey,value);if(typeof GM!=='undefined'&&typeof GM.setValue==='function')return GM.setValue(hubAppearanceKey,value);localStorage.setItem(hubAppearanceKey,JSON.stringify(value));}});
+hubAppearance.start().catch(()=>{});
+// SCRIPT HUB ADAPTER END
 })();

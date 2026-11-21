@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Report
 // @namespace    https://github.com/iSatomi/torn-war-payout-report
-// @version      2.12.0
+// @version      2.12.8
 // @description  Per-member ranked war breakdown: hits, losses (all attackers + enemy-only), defends held, stalemates, assists and respect — plus a FACTION DRUG ANALYZER that ties Xanax taken from the armoury to hits actually landed, per war, and a MULTI-WAR SWEEP that runs the same check across every war at once to surface repeat offenders. Loops faction/attacks across the war window (handles the 100-record cap), classifies every hit, and exports as an aligned table, Discord block, TSV, CSV or a standalone HTML report.
 // @author       iSatomi [3580191]
 // @license      GPL-3.0
@@ -151,12 +151,14 @@
         });
 
         const payload = {
-            v: 2,
+            v: 3,
+            reportScanVersion: report ? 3 : ((prev && prev.reportScanVersion) || 0),
             savedAt: Date.now(),
             warId: war.warId,
             oppName: war.oppName,
             attacksScanned: attacksScanned != null ? attacksScanned : (prev ? prev.attacksScanned : 0),
-            partial: !!partial,
+            partial: report ? !!partial : !!(prev && prev.partial),
+            reportSavedAt: report ? Date.now() : (prev ? (prev.reportSavedAt || prev.savedAt) : null),
             drugs: drugs || (prev ? prev.drugs : null) || null,
             // Torn's official per-member hits. Immutable once a war has ended,
             // so caching it makes a re-sweep of the same wars completely free.
@@ -181,8 +183,25 @@
             // Callers that need the attack report must check `p.report` — and do.
             if (!p || !p.savedAt || (!p.report && !p.drugs && !p.official)) return null;
             if (Date.now() - p.savedAt > CACHE_TTL_MS) { await cacheDelete(warId); return null; }
+            if (p.report && (p.reportScanVersion !== 3 || Date.now() - (p.reportSavedAt || p.savedAt) > CACHE_TTL_MS)) { p.report = null; p.partial = true; }
             return p;
         } catch (e) { return null; }
+    }
+
+    // Update the same stored report without renewing its age or overwriting
+    // attack and drug data from the snapshot displayed before the request.
+    async function cacheEnemyHitTotal(warId, reportSavedAt, count, current) {
+        if (!Number.isSafeInteger(count) || count < 0) return;
+        const cacheKey = CACHE_PREFIX + warId;
+        try {
+            const raw = await gmGet(cacheKey, '');
+            const saved = raw ? JSON.parse(raw) : null;
+            if (!current() || !saved?.report || saved.partial || saved.reportScanVersion !== 3 ||
+                (saved.reportSavedAt || saved.savedAt) !== reportSavedAt ||
+                Date.now() - reportSavedAt > CACHE_TTL_MS || saved.report.enemyReportHits != null) return;
+            saved.report.enemyReportHits = count;
+            await gmSet(cacheKey, JSON.stringify(saved));
+        } catch (_) { /* Keep the fetched total for this view if storage is unavailable. */ }
     }
 
     async function cacheDelete(warId) {
@@ -381,75 +400,46 @@
     // Loop faction/attacks across [from, to], advancing by timestamp.
     // Returns { list, partial } — partial is true if a page ultimately failed
     // after retries but some attacks were already collected.
-    async function pullAttacks(key, from, to, onProgress) {
-        const seen = new Map();        // attackId -> attack
-        let cursor = from;
-        let iterations = 0;
-        let emptyStreak = 0;
-        let partial = false;
-
-        // Walk forward by timestamp until we reach the war-end time (`to`) or
-        // the feed is genuinely exhausted. Do NOT stop on a partial (<100) page:
-        // Torn's per-call caching can return a short page mid-stream, and
-        // stopping there silently drops every later attack (incoming hits get
-        // hit hardest by this). We only stop on repeated empty pages, a stalled
-        // cursor, or reaching `to`.
-        while (iterations < PAGE_HARD_LIMIT) {
-            iterations++;
-            let data;
-            try {
-                data = await fetchJSON('faction/', {
-                    selections: 'attacks',
-                    from: cursor,
-                    to: to,
-                }, key);
-            } catch (e) {
-                // Already retried inside fetchJSON. If we've collected data,
-                // keep it and stop gracefully rather than losing everything.
-                if (seen.size > 0) { partial = true; break; }
-                throw e;
-            }
-
-            const batch = data.attacks || {};
-            const ids = Object.keys(batch);
-
-            if (ids.length === 0) {
-                // One empty page might just be the 30s cache; confirm with a
-                // second before giving up.
-                if (++emptyStreak >= 2) break;
-                cursor += 1;
-                await sleep(REQ_DELAY_MS);
-                continue;
+    // Inclusive timestamp boundaries are re-read and deduplicated. A full
+    // page at one second cannot prove completeness without an ID cursor.
+    async function pullTimestampPages(fetchPage, from, to, normalize, onProgress) {
+        if (!Number.isFinite(from) || !Number.isFinite(to) || from <= 0 || to < from) throw new Error('Invalid report time window');
+        const seen = new Map();
+        let cursor = from, emptyStreak = 0, complete = false, partial = false;
+        for (let page = 1; page <= PAGE_HARD_LIMIT; page++) {
+            let rows;
+            try { rows = normalize(await fetchPage(cursor)); }
+            catch (error) { if (!seen.size) throw error; partial = true; break; }
+            if (!Array.isArray(rows)) { partial = true; break; }
+            if (!rows.length) {
+                if (++emptyStreak >= 2) { complete = true; break; }
+                await sleep(REQ_DELAY_MS); continue;
             }
             emptyStreak = 0;
-
-            let newCount = 0;
-            let maxStarted = cursor;
-            for (const id of ids) {
-                const a = batch[id];
-                if (!seen.has(id)) { seen.set(id, a); newCount++; }
-                const ts = Number(a.timestamp_started || 0);
-                if (ts > maxStarted) maxStarted = ts;
+            let maxTs = cursor;
+            for (const row of rows) {
+                const ts = Number(row.timestamp_started ?? row.timestamp ?? row.ts);
+                const id = String(row.id ?? row.ID ?? '');
+                if (!id || !Number.isFinite(ts) || ts < from || ts > to || ts < cursor) { partial = true; continue; }
+                seen.set(id, row);
+                maxTs = Math.max(maxTs, ts);
             }
-
-            if (onProgress) onProgress(seen.size, iterations);
-
-            // Reached (or passed) the end of the war window.
-            if (maxStarted >= to) break;
-
-            // Advance the cursor. If timestamps didn't move forward (a cluster
-            // of same-second attacks, or a stale cached page), nudge by 1s so we
-            // don't loop — the Map dedupes any overlap.
-            cursor = maxStarted > cursor ? maxStarted : cursor + 1;
-
-            // If a short page returned only duplicates AND the clock didn't move,
-            // we're genuinely done.
-            if (newCount === 0 && maxStarted <= cursor - 1) break;
-
+            if (onProgress) onProgress(seen.size, page);
+            if (maxTs === cursor && rows.length >= PAGE_SIZE) { partial = true; break; }
+            if (maxTs >= to && rows.length < PAGE_SIZE) { complete = true; break; }
+            cursor = maxTs > cursor ? maxTs : cursor + 1;
+            if (cursor > to) { complete = true; break; }
             await sleep(REQ_DELAY_MS);
         }
-
-        return { list: Array.from(seen.values()), partial };
+        return { list: Array.from(seen.values()), partial: partial || !complete };
+    }
+    async function pullAttacks(key, from, to, onProgress) {
+        return pullTimestampPages(cursor => fetchJSON('faction/', {
+            selections: 'attacks', from: cursor, to, sort: 'ASC',
+        }, key), from, to, data => {
+            if (!data || !data.attacks || typeof data.attacks !== 'object' || Array.isArray(data.attacks)) return null;
+            return Object.entries(data.attacks).map(([id, attack]) => ({ ...attack, id }));
+        }, onProgress);
     }
 
     /* ==================== drug analyzer ======================== */
@@ -557,49 +547,12 @@
     // ASCENDING from a timestamp cursor so a burst of 100+ entries in one window
     // is caught up on the next page instead of being stepped over permanently.
     async function pullArmoryNews(key, from, to, onProgress) {
-        const seen = new Map();
-        let cursor = from, iterations = 0, partial = false, emptyStreak = 0;
-
-        while (iterations < PAGE_HARD_LIMIT) {
-            iterations++;
-            let data;
-            try {
-                data = await fetchV2('faction/news', {
-                    cat: 'armoryAction', striptags: 'false',
-                    limit: PAGE_SIZE, sort: 'ASC', from: cursor, to,
-                }, key);
-            } catch (e) {
-                if (seen.size > 0) { partial = true; break; }
-                throw e;
-            }
-
-            const raw = data.news;
-            const list = Array.isArray(raw)
-                ? raw
-                : Object.entries(raw || {}).map(([id, n]) => (n && typeof n === 'object' ? { id, ...n } : { id, text: n }));
-
-            if (!list.length) { if (++emptyStreak >= 2) break; cursor += 1; await sleep(REQ_DELAY_MS); continue; }
-            emptyStreak = 0;
-
-            let maxTs = cursor, newCount = 0;
-            for (const n of list) {
-                const id = String(n.id ?? n.ID ?? '');
-                if (id && !seen.has(id)) { seen.set(id, n); newCount++; }
-                const ts = Number(n.timestamp ?? n.ts ?? 0);
-                if (ts > maxTs) maxTs = ts;
-            }
-            if (onProgress) onProgress(seen.size, iterations);
-
-            if (list.length < PAGE_SIZE) break;      // genuinely the last page
-            if (maxTs >= to) break;
-            // Nudge by a second when a whole page shares one timestamp, or we'd
-            // re-request the same window forever. The id Map dedupes the overlap.
-            cursor = maxTs > cursor ? maxTs : cursor + 1;
-            if (newCount === 0) break;
-            await sleep(REQ_DELAY_MS);
-        }
-
-        return { list: Array.from(seen.values()), partial };
+        return pullTimestampPages(cursor => fetchV2('faction/news', {
+            cat: 'armoryAction', striptags: 'false', limit: PAGE_SIZE, sort: 'ASC', from: cursor, to,
+        }, key), from, to, data => {
+            if (!data || !data.news || typeof data.news !== 'object') return null;
+            return Array.isArray(data.news) ? data.news : Object.entries(data.news).map(([id, row]) => ({ ...row, id }));
+        }, onProgress);
     }
 
     // Fold parsed uses into per-member rows and join them to the war report, so
@@ -646,6 +599,50 @@
         return list;
     }
 
+    /** Join cached armoury evidence to the current trusted hit source. */
+    function restoreSingleWarDrugs(cached, report) {
+        if (!Array.isArray(cached?.list) || !Array.isArray(report?.list) || report.__partial) {
+            return refreshDrugReport(cached);
+        }
+        const byId = new Map(), byName = new Map();
+        const nameKey = name => String(name || '').trim().toLowerCase();
+        for (const row of report.list) {
+            const name = nameKey(row.name);
+            byId.set(String(row.id), row);
+            if (name) byName.set(name, byName.has(name) ? null : row);
+        }
+        const counters = ['xanax', 'xanPre', 'xanWar', 'xanPost', 'xanTaken', 'xanDeposited',
+            'drugTaken', 'otherDrugs', 'nonDrug', 'total'];
+        const rows = [], joined = new Map();
+        for (const evidence of cached.list) {
+            // Hit-only rows were synthetic. Recreate these from the finished scan.
+            if (!counters.some(k => Number(evidence[k]) > 0) && !Object.keys(evidence.byItem || {}).length) continue;
+            const member = evidence.id ? byId.get(String(evidence.id)) : byName.get(nameKey(evidence.name));
+            const id = member ? String(member.id) : '';
+            const previous = id && joined.get(id);
+            if (previous) {
+                for (const k of counters) previous[k] = (Number(previous[k]) || 0) + (Number(evidence[k]) || 0);
+                for (const [item, count] of Object.entries(evidence.byItem || {})) {
+                    previous.byItem[item] = (Number(previous.byItem[item]) || 0) + (Number(count) || 0);
+                }
+                continue;
+            }
+            const row = { ...evidence, id: member?.id ?? evidence.id, name: member?.name ?? evidence.name,
+                byItem: Object.assign(Object.create(null), evidence.byItem),
+                hits: member?.wins ?? 0, respect: member?.respect ?? 0, inFaction: !!member || evidence.inFaction };
+            rows.push(row);
+            if (id) joined.set(id, row);
+        }
+        for (const member of report.list) {
+            if (!member.wins || joined.has(String(member.id))) continue;
+            rows.push({ ...Object.fromEntries(counters.map(k => [k, 0])), byItem: {},
+                id: member.id, name: member.name, hits: member.wins, respect: member.respect, inFaction: true });
+        }
+        const totalHits = rows.reduce((sum, row) => sum + (Number(row.hits) || 0), 0);
+        return refreshDrugReport({ ...cached, list: rows, totalHits,
+            hitsPerXan: cached.totalXan > 0 ? totalHits / cached.totalXan : null });
+    }
+
     /** Re-derive a cached report so old conclusions can't outlive a logic fix. */
     function refreshDrugReport(d) {
         if (!d || !Array.isArray(d.list)) return d;
@@ -689,15 +686,45 @@
             const list = [];
             for (const mid of Object.keys(f.members)) {
                 const m = f.members[mid] || {};
+                const raw = m.attacks;
+                const wins = typeof raw === 'number' ? raw
+                    : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw) : NaN;
+                // The sweep judges hits per war, so it cannot use a partially known roster.
+                if (!Number.isSafeInteger(wins) || wins < 0) return null;
                 list.push({
                     id: String(mid),
                     name: m.name || `#${mid}`,
-                    wins: Number(m.attacks || 0),
+                    wins,
                     respect: Number(m.score || 0),
                 });
             }
-            return list.length ? { list } : null;
+            return list.length ? { list, hitCountVersion: 1 } : null;
         } catch (e) { return null; }
+    }
+
+    function planSweepWindows(wars, opts) {
+        const leadDays = Math.max(0, Math.min(14, Number(opts.leadDays) || 0));
+        const tailHours = Math.max(0, Math.min(72, Number(opts.tailHours) || 0));
+        const now = Math.floor(Date.now() / 1000);
+        const windows = wars.map(war => {
+            const warStart = war.start;
+            const warEnd = war.end > 0 ? war.end : now;
+            return { war, warStart, warEnd, leadDays, tailHours,
+                from: warStart - Math.round(leadDays * 86400),
+                to: warEnd + Math.round(tailHours * 3600) };
+        });
+        // A cached per-war count has no evidence IDs. Reject shared seconds
+        // rather than counting a single armoury entry as multiple uses or flags.
+        const sorted = windows.slice().sort((a, b) => a.from - b.from);
+        for (let i = 1; i < sorted.length; i++) {
+            const a = sorted[i - 1], b = sorted[i];
+            if (a.to >= b.from) {
+                const label = w => w.war.oppName || "war #" + w.war.warId;
+                return { overlap: "Armoury windows overlap for " + label(a) + " and " + label(b) +
+                    ". Reduce Lead days or Tail hours, or sweep those wars separately." };
+            }
+        }
+        return { windows };
     }
 
     /**
@@ -713,18 +740,11 @@
      *   'cache'  — a full attack pull we did earlier and stored.
      *   'none'   — unavailable (live war). Nobody is flagged; the UI says so.
      */
-    async function sweepWars(key, ctx, wars, opts, onProgress) {
-        const leadDays = Math.max(0, Math.min(14, Number(opts.leadDays) || 0));
-        const tailHours = Math.max(0, Math.min(72, Number(opts.tailHours) || 0));
+    async function sweepWars(key, ctx, windows, opts, onProgress) {
         const out = [];
-
-        for (let i = 0; i < wars.length; i++) {
-            const war = wars[i];
-            const step = (msg) => onProgress && onProgress(i + 1, wars.length, war, msg);
-            const warStart = war.start;
-            const warEnd = war.end && war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
-            const from = warStart - Math.round(leadDays * 86400);
-            const to = warEnd + Math.round(tailHours * 3600);
+        for (let i = 0; i < windows.length; i++) {
+            const { war, warStart, warEnd, from, to, leadDays, tailHours } = windows[i];
+            const step = msg => onProgress && onProgress(i + 1, windows.length, war, msg);
 
             const cached = opts.useCache ? await cacheLoad(war.warId) : null;
 
@@ -732,10 +752,11 @@
             // Order matters: a full attack pull beats the official report, since
             // it carries losses and defends the report never had.
             let warReport = null, hitsSrc = 'none', freshOfficial = null;
-            if (cached && cached.report && cached.report.list && cached.report.list.length) {
+            if (cached && !cached.partial && cached.report && cached.report.list && cached.report.list.length) {
                 warReport = cached.report; hitsSrc = 'cache';
-            } else if (cached && cached.official && cached.official.list && cached.official.list.length) {
-                // Already fetched on an earlier sweep. A finished war's report
+            } else if (cached?.official?.hitCountVersion === 1 && cached.official.list?.length) {
+                // Older caches may have coerced an absent count to zero.
+                // A validated, finished war's report
                 // never changes, so re-reading it would be a wasted call.
                 warReport = cached.official; hitsSrc = 'report';
             } else {
@@ -749,10 +770,14 @@
             }
 
             let drugs = null, fromCache = false, partial = false, cachedNow = false;
-            if (cached && cached.drugs && cached.drugs.list) {
-                // Re-derive rather than trust: a report cached before a flag fix
-                // must not keep publishing the old conclusion.
-                drugs = refreshDrugReport(cached.drugs);
+            const windowClosed = war.end > 0 && to <= Math.floor(Date.now() / 1000);
+            const evidence = cached?.drugs;
+            if (windowClosed && Array.isArray(evidence?.list) && !evidence.armouryPartial &&
+                evidence.warStart === warStart && evidence.warEnd === warEnd &&
+                evidence.pullFrom === from && evidence.pullTo === to && (tailHours === 0 || evidence.armouryWindowClosed === true)) {
+                // Rejoin to the trusted hit source even when both sides came from
+                // cache. An unknown result must not retain any earlier hit values.
+                drugs = restoreSingleWarDrugs(evidence, warReport || { list: [] });
                 fromCache = true;
             } else {
                 step('pulling the armoury log…');
@@ -760,9 +785,10 @@
                     step(`armoury log — ${fmt(count)} entries (page ${page})`);
                 });
                 partial = pulled.partial;
-                drugs = buildDrugReport(ctx, warReport, pulled.list, { warStart, warEnd });
+                const evidence = buildDrugReport(ctx, null, pulled.list, { warStart, warEnd });
+                drugs = warReport ? restoreSingleWarDrugs(evidence, warReport) : evidence;
                 drugs.leadDays = leadDays; drugs.tailHours = tailHours;
-                drugs.pullFrom = from; drugs.pullTo = to;
+                drugs.pullFrom = from; drugs.pullTo = to; drugs.armouryWindowClosed = windowClosed;
                 // Fold into the same 30-day cache the single-war view uses, so a
                 // war analysed by the sweep never has to be pulled again — by
                 // the sweep OR by the single-war pane.
@@ -777,7 +803,7 @@
                 // API cut short would freeze an undercount in place for thirty
                 // days, and an undercount here means somebody's Xanax quietly
                 // goes missing from the totals.
-                if (!partial) {
+                if (!partial && windowClosed) {
                     await cacheSave(war, null, null, false, drugs, freshOfficial);
                     cachedNow = true;
                 }
@@ -943,18 +969,15 @@
             }
         }
 
+        const hasCompleteSweepHits = g => g.warsKnown > 0 && g.warsKnown === g.warsSeen;
         const list = [...rows.values()].map(g => ({
             ...g,
-            // A member whose ONLY wars are still live has no hit data at all.
-            // Their totals would compute to 0 and publish "landed nothing, 0.00
-            // efficiency" about someone we know nothing about — the same
-            // unknown-as-zero trap the per-war cells already refuse. Everything
-            // derived from hits is null for them, and the UI shows "?".
-            hitsKnown: g.warsKnown > 0,
-            avgHits: g.warsKnown > 0 ? g.totalHits / g.warsKnown : null,
+            // Member aggregates require complete hit coverage. Known per-war counts remain visible.
+            hitsKnown: hasCompleteSweepHits(g),
+            avgHits: hasCompleteSweepHits(g) ? g.totalHits / g.warsKnown : null,
             // Both ratios are measured on what was SWALLOWED. A member who only
             // ever withdrew has no measurable efficiency — not a zero one.
-            hitsPerXan: (g.warsKnown > 0 && g.totalUsed > 0) ? g.totalHits / g.totalUsed : null,
+            hitsPerXan: (hasCompleteSweepHits(g) && g.totalUsed > 0) ? g.totalHits / g.totalUsed : null,
             // Xanax-equivalents of energy that never became a hit, BEFORE any
             // overdose is taken into account. applyOdExcuses derives the
             // reported figure from this, so it can run repeatedly without
@@ -965,7 +988,7 @@
             // What share of what they drew was actually converted. 100% means
             // every Xanax became ten hits; it can exceed 100% because natural
             // regen is free energy, and that is not an error.
-            efficiency: (g.warsKnown > 0 && g.totalUsed > 0)
+            efficiency: (hasCompleteSweepHits(g) && g.totalUsed > 0)
                 ? (g.totalHits / (g.totalUsed * HITS_PER_XANAX)) : null,
             // Stock that left the armoury into someone's pocket and was never
             // mentioned again. Reported, never charged as waste: the log simply
@@ -1496,6 +1519,12 @@
         return lossScope() === 'enemy' ? row.lossEnemy : row.lossAll;
     }
 
+    function lossSummary(report) {
+        return lossScope() === 'enemy'
+            ? { suffix: ' (enemy only)', total: report.list.reduce((sum, row) => sum + row.lossEnemy, 0) }
+            : { suffix: '', total: report.totalLosses };
+    }
+
     /* ========================= UI ============================= */
     const CSS = `
     #twpr-fab{position:fixed;z-index:2147483646;width:54px;height:54px;border-radius:50%;
@@ -1543,6 +1572,24 @@
     .twpr-note{font-size:11px;color:#8b90a6;margin-top:4px;}
     .twpr-status{font-size:12px;color:#9fe8c0;margin:8px 0;min-height:16px;}
     .twpr-status.err{color:#ff8b8b;}
+    .twpr-status{line-height:1.45;overflow-wrap:anywhere;}
+    #twpr-panel :is(#twpr-close,#twpr-load,#twpr-run,#twpr-cache-clear):focus-visible,
+    #twpr-panel .twpr-fresh-control:has(input:focus-visible){outline:2px solid #9fc7ff;outline-offset:2px;}
+    @media(max-width:600px){
+      #twpr-overlay{padding:10px 8px;}
+      #twpr-head{padding:6px 12px;}
+      #twpr-close{min-width:44px;min-height:44px;}
+      .twpr-body{padding:12px;}
+      #twpr-panel :is(#twpr-api-row,#twpr-war-row){gap:8px;}
+      #twpr-panel :is(#twpr-api-row,#twpr-war-row)>.twpr-field{flex:1 1 100% !important;min-width:0 !important;}
+      #twpr-panel .twpr-control-spacer{display:none;}
+      #twpr-panel :is(#twpr-key,#twpr-war,#twpr-load,#twpr-run,#twpr-cache-clear){
+        width:100%;min-width:0;min-height:44px;box-sizing:border-box;}
+      #twpr-panel :is(#twpr-key,#twpr-war){font-size:16px;}
+      #twpr-panel .twpr-war-options{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;}
+      #twpr-panel .twpr-fresh-control{box-sizing:border-box;display:flex;align-items:center;gap:6px;margin:0;
+        min-height:44px;padding:0 8px;border:1px solid rgba(255,255,255,.18);border-radius:8px;}
+    }
     .twpr-tablewrap{max-height:48vh;overflow:auto;border:1px solid rgba(255,255,255,.1);border-radius:10px;margin-top:10px;}
     table.twpr{width:100%;border-collapse:collapse;font-size:12.5px;}
     table.twpr th,table.twpr td{padding:7px 9px;text-align:right;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,.06);}
@@ -1844,37 +1891,37 @@
           <div id="twpr-panel">
             <div id="twpr-head">
               <h2>⚔️ War Payout Report</h2>
-              <button id="twpr-close" title="Close">×</button>
+              <button id="twpr-close" type="button" title="Close" aria-label="Close">×</button>
             </div>
             <div class="twpr-body">
-              <div class="twpr-row">
+              <div class="twpr-row" id="twpr-api-row">
                 <div class="twpr-field" style="flex:1;min-width:220px;">
-                  <label>Torn API key (faction access)</label>
+                  <label for="twpr-key">Torn API key (faction access)</label>
                   <input class="twpr-input" id="twpr-key" type="password" placeholder="paste key…" autocomplete="off">
                   <div class="twpr-note">Leader/AA key. <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" style="color:#9fc7ff;">Create one →</a> (stored locally only)</div>
                 </div>
                 <div class="twpr-field">
-                  <label>&nbsp;</label>
-                  <button class="twpr-btn ghost" id="twpr-load">Load wars</button>
+                  <span class="twpr-control-spacer" aria-hidden="true">&nbsp;</span>
+                  <button class="twpr-btn ghost" id="twpr-load" type="button">Load wars</button>
                 </div>
               </div>
 
               <div class="twpr-row" id="twpr-war-row" style="display:none;align-items:flex-end;">
                 <div class="twpr-field" style="flex:1;min-width:200px;">
-                  <label>War</label>
+                  <label for="twpr-war">War</label>
                   <select class="twpr-select" id="twpr-war"></select>
                 </div>
                 <div class="twpr-field">
-                  <label>&nbsp;</label>
-                  <button class="twpr-btn" id="twpr-run">Pull report</button>
+                  <span class="twpr-control-spacer" aria-hidden="true">&nbsp;</span>
+                  <button class="twpr-btn" id="twpr-run" type="button">Pull report</button>
                 </div>
-                <div class="twpr-field" style="min-width:auto;">
-                  <label style="white-space:nowrap;"><input type="checkbox" id="twpr-fresh" style="vertical-align:middle;"> Fresh pull</label>
+                <div class="twpr-field twpr-war-options" style="min-width:auto;">
+                  <label class="twpr-fresh-control" style="white-space:nowrap;"><input type="checkbox" id="twpr-fresh" style="vertical-align:middle;"> Fresh pull</label>
                   <button class="twpr-colortoggle" id="twpr-cache-clear" type="button" style="padding:4px 8px;font-size:11px;">Clear cache</button>
                 </div>
               </div>
 
-              <div class="twpr-status" id="twpr-status"></div>
+              <div class="twpr-status" id="twpr-status" role="status" aria-live="polite" aria-atomic="true"></div>
 
               <!-- The tab bar deliberately sits OUTSIDE the result wrapper.
                    It used to live inside it, so Colors, Guide and the sweep —
@@ -2005,7 +2052,7 @@
                         <option value="nodrug">Hits · no faction Xanax</option>
                       </select>
                     </div>
-                    <button class="twpr-colortoggle" id="twpr-drug-od" type="button" title="For members who took drugs but landed no hits, read Torn's public overdose stat. An OD hospitalises you for hours and ends your war — it's the most common innocent explanation.">🩺 Check for ODs</button>
+                    <button class="twpr-colortoggle" id="twpr-drug-od" type="button" disabled title="For members who took drugs but landed no hits, read Torn's public overdose stat. An OD hospitalises you for hours and ends your war — it's the most common innocent explanation.">🩺 Check for ODs</button>
                     <div class="twpr-field">
                       <label>Export</label>
                       <select class="twpr-select" id="twpr-drug-fmt">
@@ -2014,9 +2061,9 @@
                         <option value="discord">Discord (code block)</option>
                       </select>
                     </div>
-                    <button class="twpr-colortoggle" id="twpr-drug-copy" type="button">Copy</button>
-                    <button class="twpr-colortoggle" id="twpr-drug-csv" type="button">⬇ Download</button>
-                    <button class="twpr-colortoggle" id="twpr-drug-html" type="button">⬇ HTML report</button>
+                    <button class="twpr-colortoggle" id="twpr-drug-copy" type="button" disabled>Copy</button>
+                    <button class="twpr-colortoggle" id="twpr-drug-csv" type="button" disabled>⬇ Download</button>
+                    <button class="twpr-colortoggle" id="twpr-drug-html" type="button" disabled>⬇ HTML report</button>
                   </div>
 
                 </div>
@@ -2084,7 +2131,7 @@
                         <select class="twpr-select" id="twpr-sweep-show" style="min-width:240px;">
                           <option value="all">Everyone</option>
                           <option value="took">Took faction Xanax</option>
-                          <option value="zero">Landed ZERO hits in every war</option>
+                          <option value="zero">Confirmed zero hits in all recorded wars</option>
                           <option value="under">Hits below a threshold…</option>
                           <option value="waste">Wasted more than…</option>
                           <option value="flagged">Took Xanax, landed nothing (any war)</option>
@@ -2140,7 +2187,7 @@
                 <div id="twpr-result" style="display:none;">
                 <div class="twpr-row" style="margin-bottom:8px;gap:14px;">
                   <div class="twpr-field">
-                    <label>Count "losses" as</label>
+                    <label for="twpr-lossscope">Count "losses" as</label>
                     <select class="twpr-select" id="twpr-lossscope">
                       <option value="all">All losses during war (any attacker)</option>
                       <option value="enemy">Losses to enemy faction only</option>
@@ -2168,7 +2215,7 @@
                 <div class="twpr-foot">
                   <div class="twpr-summary" id="twpr-summary"></div>
                   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                    <select class="twpr-select" id="twpr-fmt" style="padding:8px 10px;">
+                    <select class="twpr-select" id="twpr-fmt" aria-label="Export format" style="padding:8px 10px;">
                       <option value="aligned">Aligned table</option>
                       <option value="discord">Discord (code block)</option>
                       <option value="tsv">Spreadsheet (TSV)</option>
@@ -2336,15 +2383,23 @@
         }
     }
 
+    let reportRun = 0;
     async function onRun() {
+        const run = ++reportRun;
+        const ownsRun = () => run === reportRun;
         const key = $('#twpr-key').value.trim();
         const idx = Number($('#twpr-war').value);
         const war = state.wars[idx];
         if (!war) { setStatus('Select a war.', true); return; }
+        const current = () => ownsRun() && state.wars[Number($('#twpr-war').value)] === war
+            && $('#twpr-key').value.trim() === key;
+        const changed = () => { if (ownsRun()) setStatus('The selected war or API key changed. Pull again for a new report.'); };
         state.war = war;
+        state.report = null;
         // Drug data is per-war — never carry the last war's numbers over.
         state.drugs = null;
         state.odResults = null;
+        updateDrugActions();
         if ($('#twpr-drug-body')) {
             $('#twpr-drug-body').innerHTML =
                 '<div class="twpr-note" style="font-size:12.5px;">Press <b>Pull drug data</b> to fetch the ' +
@@ -2357,13 +2412,14 @@
 
         // Serve from the 30-day cache unless "Fresh pull" is ticked.
         const forceFresh = !!($('#twpr-fresh') && $('#twpr-fresh').checked);
-        if (!forceFresh) {
+        if (!forceFresh && war.end > 0) {
             const cached = await cacheLoad(war.warId);
+            if (!current()) { changed(); return; }
             // `cached.report` is now optional: the multi-war sweep writes drug
             // data for wars it never pulled attacks for. Such an entry can't
             // serve this pane — it must fall through to a live attack pull —
             // but its drug report is still restored below rather than discarded.
-            if (cached && cached.report) {
+            if (cached && cached.report && !cached.partial) {
                 state.report = cached.report;
                 state.report.__scanned = cached.attacksScanned || 0;
                 showReport();
@@ -2376,12 +2432,28 @@
                 // saved before that fix existed.
                 if (cached.od) state.odResults = cached.od;   // before renderDrugs, so the OD column paints
                 if (cached.drugs) {
-                    state.drugs = refreshDrugReport(cached.drugs);
+                    state.drugs = restoreSingleWarDrugs(cached.drugs, state.report);
                     renderDrugs();
                     drugNote = ' Drug report restored too.' + (cached.od ? ' Overdose checks too.' : '');
                 }
-                const age = humanAge(Date.now() - cached.savedAt);
-                setStatus(`Loaded from cache (saved ${age} ago, ${fmt(cached.attacksScanned || 0)} attacks).${drugNote} Tick "Fresh pull" for live data.`);
+                const age = humanAge(Date.now() - (cached.reportSavedAt || cached.savedAt));
+                const cacheStatus = `Loaded from cache (saved ${age} ago, ${fmt(cached.attacksScanned || 0)} attacks).${drugNote}`;
+                const freshHint = ' Tick "Fresh pull" for a full rescan.';
+                if (state.report.enemyReportHits == null && key && war.oppId) {
+                    setStatus(cacheStatus + ' Checking the official enemy hit total.');
+                    const officialEnemyHits = await fetchEnemyHits(key, war.warId, war.oppId);
+                    if (!current()) { changed(); return; }
+                    if (officialEnemyHits != null) {
+                        state.report.enemyReportHits = officialEnemyHits;
+                        renderTable();
+                        setStatus(cacheStatus + ' Enemy hit total taken from the war report.' + freshHint);
+                        await cacheEnemyHitTotal(war.warId, cached.reportSavedAt || cached.savedAt, officialEnemyHits, current);
+                    } else {
+                        setStatus(cacheStatus + ' Official enemy hit total unavailable; showing the attack-log estimate.' + freshHint);
+                    }
+                } else {
+                    setStatus(cacheStatus + freshHint);
+                }
                 return;
             }
             // Sweep-only entry: no attack report, but the drug work is done.
@@ -2398,31 +2470,45 @@
         setStatus('Pulling attacks… (this can take a moment for big wars)');
         try {
             const pulled = await pullAttacks(key, from, to, (count, page) => {
-                setStatus(`Pulling attacks… ${fmt(count)} loaded (page ${page})`);
+                if (current()) setStatus(`Pulling attacks… ${fmt(count)} loaded (page ${page})`);
             });
+            if (!current()) return;
             const attacks = pulled.list;
-            state.report = buildReport(state.ctx, war, attacks);
-            state.report.__scanned = attacks.length;
-            showReport();
-            renderTable();
-            renderRaffle();
-            const partialNote = pulled.partial ? ' (partial — Torn had a backend hiccup; re-pull to fill in the rest)' : '';
+            const report = buildReport(state.ctx, war, attacks);
+            report.__scanned = attacks.length;
+            report.__partial = pulled.partial;
+            const partialNote = pulled.partial ? ' (partial — API pagination could not establish completeness; re-pull before using totals)' : '';
             setStatus(`Scanned ${fmt(attacks.length)} attacks${partialNote}. Checking the war report for the enemy's hit total…`);
             // Authoritative enemy hit count comes from the ranked war report,
             // since the attack log doesn't capture every incoming hit.
-            state.report.enemyReportHits = await fetchEnemyHits(key, war.warId, war.oppId);
+            const enemyHits = await fetchEnemyHits(key, war.warId, war.oppId);
+            if (!current()) return;
+            report.enemyReportHits = enemyHits;
+            state.report = report;
+            if (state.drugs) {
+                if (!report.__partial) state.drugs = restoreSingleWarDrugs(state.drugs, report);
+                renderDrugs();
+            }
+            showReport();
             renderTable();
+            renderRaffle();
             // Cache the finished report for 30 days (skip caching partial pulls).
-            if (!pulled.partial) await cacheSave(war, state.report, attacks.length, pulled.partial);
+            if (!pulled.partial && war.end > 0) await cacheSave(war, state.report, attacks.length, pulled.partial);
+            if (!current()) return;
             const source = state.report.enemyReportHits != null
                 ? 'Enemy hit total taken from the war report.'
-                : 'War report not available yet (live war) — enemy count is the attack-log estimate; re-pull after the war ends for the exact total.';
-            const cacheNote = pulled.partial ? ' Not cached (partial).' : ' Cached for 30 days.';
+                : war.end > 0
+                    ? 'Official enemy hit total unavailable; showing the attack-log estimate.'
+                    : 'Official enemy hit total unavailable during the live war; showing the attack-log estimate.';
+            const cacheNote = pulled.partial ? ' Not cached (partial).' : war.end > 0 ? ' Cached for 30 days.' : ' Live report not cached.';
             setStatus(`Done. ${source}${partialNote}${cacheNote}`, pulled.partial);
         } catch (e) {
-            setStatus(e.message || 'Pull failed.', true);
+            if (current()) setStatus(e.message || 'Pull failed.', true);
         } finally {
-            $('#twpr-run').disabled = false;
+            if (ownsRun()) {
+                if (!current()) changed();
+                $('#twpr-run').disabled = false;
+            }
         }
     }
 
@@ -2435,15 +2521,26 @@
             if (!rep || !rep.factions) return null;
             const enemy = rep.factions[oppId] || rep.factions[String(oppId)];
             if (!enemy) return null;
-            // Prefer a faction-level attacks count; otherwise sum each member's.
-            let total = Number(enemy.attacks || 0);
-            if (!total && enemy.members) {
-                for (const mid of Object.keys(enemy.members)) {
-                    const m = enemy.members[mid] || {};
-                    total += Number(m.attacks || m.hits || 0);
-                }
+            // Missing data is not an authoritative zero.
+            const hitCount = value => {
+                if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value.trim()))) return null;
+                const count = Number(value);
+                return Number.isSafeInteger(count) && count >= 0 ? count : null;
+            };
+            const reported = hitCount(enemy.attacks);
+            if (reported !== null) return reported;
+
+            const members = enemy.members && typeof enemy.members === 'object'
+                ? Object.values(enemy.members)
+                : [];
+            if (!members.length) return null;
+            let total = 0;
+            for (const member of members) {
+                const count = hitCount(member?.attacks ?? member?.hits);
+                if (count === null) return null;
+                total += count;
             }
-            return Number.isFinite(total) ? total : null;
+            return hitCount(total);
         } catch (e) {
             return null;
         }
@@ -2495,8 +2592,13 @@
         } else {
             enemyStr = `Enemy hits on us: <b>~${fmt(logEnemy)}</b> <span style="color:#8b90a6;">(attack-log estimate — undercounts incoming)</span>`;
         }
-        $('#twpr-summary').innerHTML =
-            `War hits: <b>${fmt(rep.totalHits)}</b> · Our losses: <b class="twpr-loss">${fmt(rep.totalLosses)}</b> · ` +
+        $('#twpr-copy-table').disabled = !!rep.__partial;
+        const scanWarning = rep.__partial
+            ? '<strong>Partial attack scan. Re-pull before copying or using totals.</strong><br>'
+            : '';
+        const losses = lossSummary(rep);
+        $('#twpr-summary').innerHTML = scanWarning +
+            `War hits: <b>${fmt(rep.totalHits)}</b> · Our losses${losses.suffix}: <b class="twpr-loss">${fmt(losses.total)}</b> · ` +
             enemyStr + ` · Respect: <b>${fmt(rep.totalRespect.toFixed(2))}</b>`;
     }
 
@@ -2576,11 +2678,12 @@
             ? `${fmt(rep.enemyReportHits)} (war report)`
             : `~${fmt(logEnemy)} (attack-log estimate)`;
         const when = state.war ? (state.war.oppName || 'enemy') : 'enemy';
-        return `War vs ${when} — our hits: ${fmt(rep.totalHits)} · our losses: ${fmt(rep.totalLosses)} · enemy hits on us: ${enemy}`;
+        const losses = lossSummary(rep);
+        return `War vs ${when} — our hits: ${fmt(rep.totalHits)} · our losses${losses.suffix}: ${fmt(losses.total)} · enemy hits on us: ${enemy}`;
     }
 
     function onCopyTable() {
-        if (!state.report) return;
+        if (!state.report || state.report.__partial) return;
         const rows = reportRows();
         if (!rows.length) { setStatus('No active members to copy.', true); return; }
         const mode = $('#twpr-fmt') ? $('#twpr-fmt').value : 'aligned';
@@ -2653,12 +2756,46 @@
         });
     }
 
+    let drugOdInFlight = null;
+    function drugIncompleteReason(d) {
+        const reasons = [];
+        if (state.report?.__partial) reasons.push('Incomplete attack scan. Pull a fresh war report.');
+        if (d?.armouryPartial) reasons.push('Incomplete armoury scan. Pull drug data again.');
+        return reasons.join(' ');
+    }
+    function drugActionProblem() {
+        if (!state.report || !drugRunContext().current()) return 'Pull the selected war report first.';
+        if ($('#twpr-drug-run')?.disabled) return 'Wait for the armoury scan to finish.';
+        if (!state.drugs) return 'Pull drug data first.';
+        return drugIncompleteReason(state.drugs);
+    }
+    function updateDrugActions() {
+        const disabled = !!drugActionProblem();
+        for (const id of ['copy', 'csv', 'html', 'od']) {
+            const el = $('#twpr-drug-' + id);
+            if (el) el.disabled = disabled || (id === 'od' && !!state.drugs && drugOdInFlight === state.drugs);
+        }
+    }
+    function canUseDrugResults() {
+        const problem = drugActionProblem();
+        if (problem) setStatus(problem, true);
+        return !problem;
+    }
+
     function renderDrugs() {
         const box = $('#twpr-drug-body');
         if (!box) return;
         const d = state.drugs;
+        updateDrugActions();
+        const filter = $('#twpr-drug-filter');
+        if (filter) filter.disabled = false;
         if (!d) return;
 
+        const incomplete = drugIncompleteReason(d) || (!state.report ? 'War attacks are still loading.' : '');
+        if (incomplete && filter) {
+            filter.value = 'all';
+            filter.disabled = true;
+        }
         const rows = drugRows();
         const flagged = d.freeloaders.length;
 
@@ -2679,16 +2816,16 @@
             <div class="twpr-kpi"><div class="k">Hits landed</div><div class="v">${fmt(d.totalHits)}</div>
               <div class="s">war hits only</div></div>
             <div class="twpr-kpi"><div class="k">Hits per Xanax</div>
-              <div class="v">${d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2)}</div>
+              <div class="v">${incomplete || d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2)}</div>
               <div class="s">faction average</div></div>
-            <div class="twpr-kpi"><div class="k">Took · no hits</div>
+            ${incomplete ? '' : `<div class="twpr-kpi"><div class="k">Took · no hits</div>
               <div class="v" style="color:${flagged ? '#ff9a9a' : '#7fe3a0'}">${fmt(flagged)}</div>
-              <div class="s">${flagged ? 'burned stock for nothing' : 'nobody wasted stock'}</div></div>
+              <div class="s">${flagged ? 'burned stock for nothing' : 'nobody wasted stock'}</div></div>`}
             <div class="twpr-kpi"><div class="k">Other drugs</div><div class="v">${fmt(d.totalOtherDrugs)}</div>
               <div class="s">E, LSD, PCP, etc.</div></div>
           </div>`;
 
-        const flagBox = flagged
+        const flagBox = !incomplete && flagged
             ? `<div class="twpr-warnbox"><b>${fmt(flagged)}</b> member${flagged === 1 ? '' : 's'} swallowed faction Xanax
                and landed <b>zero</b> war hits with it:
                ${d.freeloaders.slice(0, 12).map(r => `${escHtml(r.name)} (${fmt(r.xanax)})`).join(', ')}${flagged > 12 ? ` … +${flagged - 12} more` : ''}.
@@ -2722,42 +2859,54 @@
                 <td><b>${fmt(r.drawn)}</b>${r.xanDeposited ? ` <span class="twpr-ok" title="Also put ${fmt(r.xanDeposited)} Xanax INTO the armoury">+${fmt(r.xanDeposited)} in</span>` : ''}</td>
                 <td>${r.otherDrugs ? fmt(r.otherDrugs) : '—'}</td>
                 <td class="twpr-win">${fmt(r.hits)}</td>
-                <td>${r.hitsPerXan == null ? '—' : r.hitsPerXan.toFixed(2)}</td>
+                <td>${incomplete || r.hitsPerXan == null ? '—' : r.hitsPerXan.toFixed(2)}</td>
                 <td class="twpr-respect">${fmt(Number(r.respect || 0).toFixed(2))}</td>
-                <td>${odCell(r)}</td>
-                <td class="${r.freeloader ? 'twpr-flag' : 'twpr-ok'}">${r.freeloader ? '⚠ no hits' : r.stocker ? '📦 stocker' : (r.drawn ? 'ok' : '')}</td>
+                <td>${incomplete ? '-' : odCell(r)}</td>
+                ${incomplete ? '<td>-</td>' : `<td class="${r.freeloader ? 'twpr-flag' : 'twpr-ok'}">${r.freeloader ? '⚠ no hits' : r.stocker ? '📦 stocker' : (r.drawn ? 'ok' : '')}</td>`}
               </tr>`).join('')}</tbody>
             </table>
           </div>
           <div class="twpr-note">${fmt(rows.length)} row(s) shown ·
-            drug window ${dayStr(d.pullFrom || d.firstTs)} → ${dayStr(d.pullTo || d.lastTs)} UTC
+            drug window ${dayStr(d.pullFrom || d.firstTs)} → ${dayStr(d.pullTo || d.lastTs)} TCT
             (${fmt(d.leadDays || 0)}d build-up + war + ${fmt(d.tailHours || 0)}h tail) ·
-            fighting started ${dayStr(d.warStart)} ·
+            fighting started ${dayStr(d.warStart)} TCT ·
             ${fmt(d.entries)} armoury entries scanned${d.kinds ? ` — ${fmt(d.kinds.use || 0)} item uses, ${fmt(d.kinds.take || 0)} withdrawals, ${fmt(d.kinds.deposit || 0)} deposits` : ''}${d.unparsed ? `, ${fmt(d.unparsed)} other (retrieve / return / blood-bag fills)` : ''}.
             ${d.unrecognised && d.unrecognised.length ? `<br><span style="color:#6a7080">Unrecognised phrasing sample: ${d.unrecognised.map(t => escHtml(t)).join(' · ')}</span>` : ''}</div>`;
 
-        const emptyNote = noData
+        const emptyNote = noData && !incomplete
             ? `<div class="twpr-warnbox">The armoury log returned <b>no drug use at all</b> for this war window.
                That usually means Torn has already pruned the news that far back (faction news doesn't keep
                forever), or the faction genuinely runs on personal Xanax rather than armoury stock.
                Recent wars parse cleanly — try the newest one to confirm the pull itself works.</div>`
             : '';
 
-        markTab('drugs', true, flagged > 0);
+        markTab('drugs', true, !!incomplete || flagged > 0);
         const db = $('#twpr-drug-blank');
         if (db) db.style.display = 'none';
-        box.innerHTML = kpis + flagBox + emptyNote + table +
+        const coverageNote = incomplete
+            ? `<div class="twpr-warnbox" role="status"><b>${incomplete}</b> Counts shown are provisional. Export and overdose checks are unavailable.</div>`
+            : '';
+        box.innerHTML = coverageNote + kpis + flagBox + emptyNote + table +
             `<div class="twpr-note" style="margin-top:8px;">
                <b>Armoury only.</b> This counts Xanax taken <i>from the faction</i>. Somebody using their own
                stash is invisible to the API entirely — there is no endpoint for it — so a 0 here means
                "took none of yours", not "took none".</div>`;
     }
 
-    async function onDrugRun() {
+    // Single-war drug work must stay paired with the attack report it started with.
+    function drugRunContext() {
+        const run = reportRun;
+        const { war, report, ctx } = state;
         const key = $('#twpr-key').value.trim();
-        const war = state.war;
+        return { war, report, ctx, key, current: () => run === reportRun &&
+            state.war === war && state.report === report && state.ctx === ctx &&
+            state.wars[Number($('#twpr-war').value)] === war && $('#twpr-key').value.trim() === key };
+    }
+
+    async function onDrugRun() {
+        const { war, report, ctx, key, current } = drugRunContext();
         if (!key) { setStatus('Enter your API key first.', true); return; }
-        if (!war) { setStatus('Pull a war report first.', true); return; }
+        if (!war || !report || !current()) { setStatus('Pull the selected war report first.', true); return; }
 
         // The fighting window and the DRUG window are deliberately different.
         // war.start is when hits begin, but the stack-up happens in the days
@@ -2770,30 +2919,45 @@
         const from = warStart - Math.round(leadDays * 86400);
         const to = warEnd + Math.round(tailHours * 3600);
 
+        const windowClosed = war.end > 0 && to <= Math.floor(Date.now() / 1000);
         const btn = $('#twpr-drug-run');
         if (btn) btn.disabled = true;
+        updateDrugActions();
         setStatus('Pulling the faction armoury log…');
         try {
             const pulled = await pullArmoryNews(key, from, to, (count, page) => {
-                setStatus(`Pulling armoury log… ${fmt(count)} entries (page ${page})`);
+                if (current()) setStatus(`Pulling armoury log… ${fmt(count)} entries (page ${page})`);
             });
-            state.drugs = buildDrugReport(state.ctx, state.report, pulled.list, { warStart, warEnd });
-            state.drugs.leadDays = leadDays;
-            state.drugs.tailHours = tailHours;
-            state.drugs.pullFrom = from;
-            state.drugs.pullTo = to;
+            if (!current()) return;
+            const drugs = buildDrugReport(ctx, report, pulled.list, { warStart, warEnd });
+            drugs.leadDays = leadDays;
+            drugs.tailHours = tailHours;
+            drugs.pullFrom = from;
+            drugs.pullTo = to;
+            drugs.armouryPartial = pulled.partial;
+            drugs.armouryWindowClosed = windowClosed;
+            if (state.drugs?.pullFrom !== from || state.drugs?.pullTo !== to) state.odResults = null;
+            state.drugs = drugs;
             renderDrugs();
-            const partialNote = pulled.partial ? ' (partial — Torn hiccuped; re-pull to fill in the rest)' : '';
+            const partialNote = pulled.partial ? ' (partial — API pagination could not establish completeness; re-pull before using totals)' : '';
             setStatus(`Drug report built from ${fmt(pulled.list.length)} armoury entries${partialNote}. ` +
                       `${fmt(state.drugs.totalXan)} Xanax taken by ${fmt(state.drugs.takers)} member(s).`, pulled.partial);
-            // Fold it into the same 30-day cache entry as the war report.
-            if (!pulled.partial && state.report) {
-                await cacheSave(war, state.report, state.report.__scanned || 0, false, state.drugs);
+            // Merge only drug data; an incomplete attack report must not become a complete cache.
+            if (!pulled.partial && !report.__partial && war.end > 0) {
+                await cacheSave(war, null, null, false, drugs);
             }
         } catch (e) {
-            setStatus(e.message || 'Drug pull failed.', true);
+            if (current()) {
+                state.drugs = null;
+                state.odResults = null;
+                const body = $('#twpr-drug-body');
+                if (body) body.innerHTML = '<div class="twpr-warnbox" role="status"><b>Armoury scan failed.</b> Pull drug data again before using this report.</div>';
+                markTab('drugs', true, true);
+                setStatus(e.message || 'Drug pull failed.', true);
+            }
         } finally {
             if (btn) btn.disabled = false;
+            updateDrugActions();
         }
     }
 
@@ -2983,10 +3147,11 @@
             // Both hit-based filters accuse someone of not fighting. Neither may
             // fire on a member whose only wars are still live — we have no hit
             // data on them, and "unknown" must never be filtered as "zero".
-            if (mode === 'zero') return r.hitsKnown && r.totalHits === 0;
+            // An unknown war with recorded activity cannot prove zero hits.
+            if (mode === 'zero') return r.warsKnown > 0 && r.warsKnown === r.warsSeen && r.totalHits === 0;
             if (mode === 'under') {
-                if (!r.hitsKnown) return false;
-                const v = basis === 'avg' ? (r.avgHits == null ? 0 : r.avgHits) : r.totalHits;
+                if (r.warsKnown <= 0 || r.warsKnown !== r.warsSeen) return false;
+                const v = basis === 'avg' ? r.avgHits : r.totalHits;
                 return v < thresh;
             }
             if (mode === 'waste') {
@@ -3013,8 +3178,8 @@
         const what = {
             all: 'everyone with any drug or hit activity',
             took: 'members who took faction Xanax',
-            zero: 'members who landed ZERO hits in every swept war',
-            under: `members under ${fmt(thresh)} ${basis === 'avg' ? 'hits per war on average' : 'total hits'}`,
+            zero: 'members with confirmed zero hits in all recorded wars',
+            under: `members under ${fmt(thresh)} ${basis === 'avg' ? 'hits per war on average' : 'total hits'} with complete recorded hit counts`,
             waste: `members who wasted more than ${fmt(thresh)} Xanax ${basis === 'avg' ? 'per war on average' : 'in total'}`,
             od: 'members with a confirmed overdose during a war',
             flagged: 'members flagged in at least one war',
@@ -3081,7 +3246,15 @@
         const box = $('#twpr-sweep-body');
         if (!box) return;
         const s = state.sweep;
-        if (!s) { box.innerHTML = ''; return; }
+        if (!s) {
+            box.innerHTML = '';
+            const filterRow = $('#twpr-sweep-filters');
+            if (filterRow) filterRow.style.display = 'none';
+            const count = $('#twpr-sweep-count');
+            if (count) count.textContent = '';
+            markTab('sweep', false, false);
+            return;
+        }
 
         const filterRow = $('#twpr-sweep-filters');
         if (filterRow) filterRow.style.display = 'block';
@@ -3123,7 +3296,7 @@
         const caveats = [];
         if (s.unknownWars.length) {
             caveats.push(`<b>${fmt(s.unknownWars.length)} war${s.unknownWars.length === 1 ? '' : 's'}</b> had no hit data
-              (${s.unknownWars.map(w => escHtml(w.oppName)).join(', ')}) — Torn only publishes the report once a war ENDS.
+              (${s.unknownWars.map(w => escHtml(w.oppName)).join(', ')}) — no complete hit report was available.
               Their Xanax still counts, but <b>nobody can be flagged in them</b>, so <b>?</b> in the hits slot means
               unknown, not idle.`);
         }
@@ -3149,7 +3322,7 @@
             <span><span class="sw" style="color:#ff8080;background:rgba(255,120,120,.16)">3 / 0 ⚠</span>
               took Xanax, landed <b>nothing</b> that war</span>
             <span><span class="sw" style="color:#4e5468">–</span> not in that war &nbsp;
-              <span class="sw" style="color:#4e5468">/ ?</span> war still live, hits not published yet</span>
+              <span class="sw" style="color:#4e5468">/ ?</span> war hit data unavailable</span>
           </div>`;
 
         const cell = (r, w, i) => {
@@ -3165,7 +3338,7 @@
             const sp = `twpr-wcell col${i % SWEEP_HUES.length}` + (i === 0 ? ' twpr-split' : '');
             if (!p) return `<td class="${sp} none" title="${escHtml(r.name)} does not appear in this war's data at all — they were not in the faction, or took nothing and landed nothing">–</td>`;
             if (!p.known) {
-                return `<td class="${sp} none" title="${escHtml(w.oppName)} is still live — Torn publishes hits only after a war ends, so this cannot be judged">`
+                return `<td class="${sp} none" title="${escHtml(w.oppName)} has no complete hit report, so this cannot be judged">`
                      + `<span class="x">${fmt(u)}</span> <span class="sep">/ ?</span>${plus}</td>`;
             }
             // An overdose outranks the flag. They took the Xanax and landed
@@ -3208,16 +3381,16 @@
                 <th title="Total successful war hits across every swept war, from Torn's official reports">Hits<br><span style="font-weight:400;color:#7fe3a0;font-size:10px">total</span></th>
                 <th title="Average hits per war this member actually appeared in — the fair comparison when people joined at different times">Avg<br><span style="font-weight:400;color:#8b90a6;font-size:10px">hits/war</span></th>
                 <th title="Overdoses confirmed during the swept wars, for members who took Xanax and landed nothing. An OD hospitalises you for hours and ends your war — the most common innocent explanation. A dot means NOT CHECKED; it never means clean.">OD<br><span style="font-weight:400;color:#8b90a6;font-size:10px">during war</span></th>
-                <th title="Hits landed per Xanax taken. TEN is break-even — that is exactly what 250 energy buys. Below 10 they are not converting what they take; above 10 they are also fighting on natural regen, which is what you want to see.">Hits/Xan<br><span style="font-weight:400;color:#8b90a6;font-size:10px">10 = break-even</span></th>
-                ${cols.map((w, i) => `<th class="twpr-wh${i === 0 ? ' twpr-split' : ''}" title="${escHtml(w.oppName)} — ${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : 'date unknown'}${w.hitsSrc === 'none' ? ' · still live, no hit data' : ''}">
+                <th title="Hits landed per Xanax taken, available only when all wars with recorded member activity have hit counts. TEN is break-even — that is exactly what 250 energy buys. Below 10 they are not converting what they take; above 10 they are also fighting on natural regen, which is what you want to see.">Hits/Xan<br><span style="font-weight:400;color:#8b90a6;font-size:10px">10 = break-even</span></th>
+                ${cols.map((w, i) => `<th class="twpr-wh${i === 0 ? ' twpr-split' : ''}" title="${escHtml(w.oppName)} — ${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : 'date unknown'}${w.hitsSrc === 'none' ? ' · hit data unavailable' : ''}">
                     <span class="n" style="color:${hueOf(i)}">${escHtml(String(w.oppName).slice(0, 12))}</span>
-                    <span class="d">${w.start ? new Date(w.start * 1000).toISOString().slice(5, 10).replace('-', '/') : '?'}${w.hitsSrc === 'none' ? ' LIVE' : ''}</span>
+                    <span class="d">${w.start ? new Date(w.start * 1000).toISOString().slice(5, 10).replace('-', '/') : '?'}${w.hitsSrc === 'none' ? ' ?' : ''}</span>
                     <span class="u"><span class="x" style="color:${hueOf(i)}">xan</span> / <span class="h">hits</span></span>
                   </th>`).join('')}
               </tr></thead>
               <tbody>${rows.map(r => {
                 // "?" not "0" — see hitsKnown in buildSweep.
-                const unk = `<span class="twpr-wcell none" title="Every war this member appears in is still live, so Torn has published no hits for them. This is unknown, not zero.">?</span>`;
+                const unk = `<span class="twpr-wcell none" title="No complete hit report is available for this member. This is unknown, not zero.">?</span>`;
                 return `<tr>
                 <td><span class="twpr-name">${escHtml(r.name)}</span> <span class="twpr-id">[${escHtml(r.id || '?')}]</span></td>
                 <td class="${(r.warsFlaggedNet ?? r.warsFlagged) ? (r.repeat ? 'twpr-repeat' : 'twpr-flag') : 'twpr-ok'}"
@@ -3240,7 +3413,7 @@
                 <td>${r.avgHits == null ? unk : r.avgHits.toFixed(1)}</td>
                 <td>${odCellSweep(r)}</td>
                 <td style="color:${r.hitsPerXan == null ? '#5c6178' : r.hitsPerXan >= HITS_PER_XANAX ? '#7fe3a0' : r.hitsPerXan >= HITS_PER_XANAX / 2 ? '#ffd479' : '#ff8080'};font-weight:600"
-                    title="${r.hitsPerXan == null ? '' : `${(r.hitsPerXan / HITS_PER_XANAX * 100).toFixed(0)}% of what their Xanax could have bought`}">${r.hitsPerXan == null ? (r.hitsKnown ? '—' : unk) : r.hitsPerXan.toFixed(1)}</td>
+                    title="${r.hitsPerXan == null ? '' : `${(r.hitsPerXan / HITS_PER_XANAX * 100).toFixed(0)}% of what their Xanax could have bought`}">${r.hitsPerXan == null ? (r.warsKnown === r.warsSeen ? '—' : unk) : r.hitsPerXan.toFixed(1)}</td>
                 ${cols.map((w, i) => cell(r, w, i)).join('')}
               </tr>`; }).join('')}</tbody>
             </table>
@@ -3268,10 +3441,18 @@
             useCache: !!($('#twpr-sweep-cache') && $('#twpr-sweep-cache').checked),
         };
 
+        const plan = planSweepWindows(wars, opts);
+        if (plan.overlap) {
+            state.sweep = null;
+            state.sweepOd = null;
+            renderSweep();
+            setStatus(plan.overlap, true);
+            return;
+        }
         const btn = $('#twpr-sweep-run');
         if (btn) btn.disabled = true;
         try {
-            const perWar = await sweepWars(key, state.ctx, wars, opts, (i, n, war, msg) => {
+            const perWar = await sweepWars(key, state.ctx, plan.windows, opts, (i, n, war, msg) => {
                 setStatus(`Sweeping war ${i}/${n} — vs ${war.oppName}: ${msg}`);
             });
             state.sweep = buildSweep(perWar);
@@ -3344,7 +3525,7 @@
         const rows = sweepVisible(s);
         const warNames = s.wars.slice()
             .sort((a, b) => (a.start || 0) - (b.start || 0))
-            .map(w => `${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?'} ${w.oppName}${w.hitsSrc === 'none' ? ' (LIVE — no hits published)' : ''}`);
+            .map(w => `${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?'} ${w.oppName}${w.hitsSrc === 'none' ? ' (hit data unavailable)' : ''}`);
 
         const out = [
             'Torn War Payout Report — multi-war drug sweep',
@@ -3352,7 +3533,7 @@
             `Wars swept (${s.wars.length}): ${warNames.join(' | ')}`,
         ];
         if (m.leadDays != null) out.push(`Drug window: ${m.leadDays}d build-up + the war + ${m.tailHours}h tail`);
-        out.push("Hits: Torn's official war reports. A live war publishes none, so nobody can be flagged in one.");
+        out.push("Hits: Torn's official war reports. Without a complete hit report, nobody in that war can be flagged.");
         out.push(`Waste model: 1 Xanax = ${ENERGY_PER_XANAX} energy, 1 hit = ${ENERGY_PER_HIT} energy, so break-even is ${HITS_PER_XANAX} hits per Xanax.`);
         out.push('Waste is charged on Xanax SWALLOWED only — withdrawals to inventory are listed separately and never counted as waste.');
         out.push(`Filter: ${stripTags(sweepFilterLabel(rows.length, s.list.length))}`);
@@ -3432,7 +3613,7 @@
             // caption. A "+" marks members who also withdrew stock.
             String(r.totalUsed) + (r.unaccounted > 0 ? '+' : ''),
             r.hitsKnown ? String(r.totalHits) : '?',
-            r.hitsPerXan == null ? (r.hitsKnown ? '-' : '?') : r.hitsPerXan.toFixed(1),
+            r.hitsPerXan == null ? (r.warsKnown === r.warsSeen ? '-' : '?') : r.hitsPerXan.toFixed(1),
         ]);
         const w = headers.map((_, i) => Math.max(...[headers, ...body].map(row => row[i].length)));
         const line = (row) => row.map((c, i) =>
@@ -3441,7 +3622,7 @@
         const span = `${s.wars.length} war${s.wars.length === 1 ? '' : 's'}`;
         const head = `**Multi-war drug sweep — ${span}**\n`
             + `${fmt(s.totalUsed)} Xanax swallowed${s.totalUnaccounted ? ` (+${fmt(s.totalUnaccounted)} withdrawn as stock, not charged)` : ''}, ${fmt(s.totalHits)} war hits`
-            + (s.totalUsed ? ` (${(s.totalHits / s.totalUsed).toFixed(2)} hits per Xanax swallowed)` : '') + '.\n'
+            + (s.totalUsed && !s.unknownWars.length ? ` (${(s.totalHits / s.totalUsed).toFixed(2)} hits per Xanax swallowed)` : '') + '.\n'
             + (s.repeats.length
                 ? `:warning: ${s.repeats.length} member${s.repeats.length === 1 ? '' : 's'} took stock and landed nothing in 2+ wars.\n`
                 : (s.flaggedAny.length ? `${s.flaggedAny.length} flagged in a single war; no repeat offenders.\n` : 'Nobody was flagged.\n'))
@@ -3576,7 +3757,7 @@
         const legend = wars.map((x, i) =>
             keys[i] + '=' + x.oppName
             + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '')
-            + (x.hitsSrc === 'none' ? ' LIVE' : '')).join(' | ');
+            + (x.hitsSrc === 'none' ? ' ?' : '')).join(' | ');
 
         const head = '**Multi-war drug sweep — ' + s.wars.length + ' war' + (s.wars.length === 1 ? '' : 's') + '**\n'
             + fmt(s.totalUsed) + ' Xanax swallowed, ' + fmt(s.totalHits) + ' war hits, **'
@@ -3590,7 +3771,7 @@
             + '_Each war cell is Xanax swallowed/hits. ' + TICK + '+' + TICK + ' = also withdrew stock (not charged). '
             + TICK + '!' + TICK + ' = swallowed Xanax, landed nothing. '
             + TICK + 'od' + TICK + ' = overdosed, so that war is excused. '
-            + TICK + '-' + TICK + ' = not in that war. ' + TICK + '/?' + TICK + ' = war still live._\n'
+            + TICK + '-' + TICK + ' = not in that war. ' + TICK + '/?' + TICK + ' = hit data unavailable._\n'
             + '_Wars: ' + legend + '_\n'
             + '_Wasted = energy that never became a hit (1 Xanax = ' + ENERGY_PER_XANAX + ' E = '
             + HITS_PER_XANAX + ' hits), charged on Xanax swallowed only. H/X: ' + HITS_PER_XANAX + ' is break-even._\n'
@@ -3835,17 +4016,17 @@
             '  if(mode==="repeat")return r.repeat;',
             '  if(mode==="od")return r.odWars.length>0;',
             // Unknown hits must never be filtered as if they were zero.
-            '  if(mode==="zero")return r.hitsKnown&&r.hits===0;',
-            '  if(mode==="under"){if(!r.hitsKnown)return false;',
-            '   var v=basis==="avg"?(r.avg==null?0:r.avg):r.hits;return v<th}',
+            '  if(mode==="zero")return r.warsKnown>0&&r.warsKnown===r.warsSeen&&r.hits===0;',
+            '  if(mode==="under"){if(r.warsKnown<=0||r.warsKnown!==r.warsSeen)return false;',
+            '   var v=basis==="avg"?r.avg:r.hits;return v<th}',
             '  if(mode==="waste"){if(r.wasted==null)return false;',
             '   var w=basis==="avg"?(r.warsKnown?r.wasted/r.warsKnown:0):r.wasted;return w>th}',
             '  return true})}',
             'function label(n,t){',
             ' var m=$("f-show").value,th=Number($("f-thresh").value)||0,b=$("f-basis").value;',
             ' var w={all:"everyone with drug or hit activity",took:"members who took faction Xanax",',
-            '  zero:"members who landed ZERO hits in every war",',
-            '  under:"members under "+fmt(th)+(b==="avg"?" hits per war on average":" total hits"),',
+            '  zero:"members with confirmed zero hits in all recorded wars",',
+            '  under:"members under "+fmt(th)+(b==="avg"?" hits per war on average":" total hits")+" with complete recorded hit counts",',
             '  waste:"members who wasted more than "+fmt(th)+" Xanax"+(b==="avg"?" per war":" in total"),',
             '  flagged:"members who took Xanax and landed nothing in a war",',
             '  repeat:"repeat offenders — two or more such wars",',
@@ -3860,7 +4041,7 @@
             ' if(!p)return \'<td class="none" title="Not in this war">\\u2013</td>\';',
             ' var plus=p.t?\' <span class="tk" title="Also withdrew \'+fmt(p.t)',
             '  +\' into their own inventory — not counted as waste">+\'+fmt(p.t)+\'</span>\':"";',
-            ' if(!p.k)return \'<td class="none" title="War still live — no hits published">\'+fmt(p.u)',
+            ' if(!p.k)return \'<td class="none" title="War hit data unavailable">\'+fmt(p.u)',
             '  +\' <span class="sep">/ ?</span>\'+plus+\'</td>\';',
             ' if(p.od)return \'<td class="excused" title="Overdosed during \'+esc(w.opp)',
             '  +\' — these Xanax are excused, not wasted">\'+fmt(p.u)+\'<span class="sep">/</span>\'',
@@ -3881,7 +4062,7 @@
             ' var rows=visible().slice();',
             ' rows.sort(function(a,b){var x=a[sortKey],y=b[sortKey];',
             '  if(sortKey==="name")return String(x).localeCompare(String(y))*sortDir;',
-            '  if(x==null)return 1;if(y==null)return -1;return((x-y)||0)*sortDir});',
+            '  if(sortKey==="hits"){x=a.hitsKnown?x:null;y=b.hitsKnown?y:null;}if(x==null)return y==null?0:1;if(y==null)return -1;return((x-y)||0)*sortDir});',
             ' $("count").innerHTML=label(rows.length,D.members.length);',
             // Written on every render, not on beforeprint: iOS Safari prints
             // without ever firing that event, and a PDF that silently dropped
@@ -3906,7 +4087,7 @@
             '  +\'<td style="color:#7fe3a0">\'+(r.hitsKnown?fmt(r.hits):"?")+"</td>"',
             '  +\'<td style="color:\'+(r.hitsPerXan==null?"#4e5468":r.hitsPerXan>=D.breakEven?"#7fe3a0"',
             '   :r.hitsPerXan>=D.breakEven/2?"#ffd479":"#ff8080")+\'">\'',
-            '   +(r.hitsPerXan==null?"\\u2014":r.hitsPerXan.toFixed(1))+"</td>"',
+            '   +(r.hitsPerXan==null?(r.warsKnown===r.warsSeen?"\\u2014":"?"):r.hitsPerXan.toFixed(1))+"</td>"',
             '  +odCell(r)',
             '  +D.wars.map(function(w){return cell(r,w)}).join("")+"</tr>"}).join("")||',
             '  \'<tr><td colspan="\'+(9+D.wars.length)+\'" style="text-align:center;color:#8b90a6;padding:26px">\'',
@@ -3938,7 +4119,7 @@
 
         const warRows = warSum.map((w, i) =>
             '<tr><td><span class="nm" style="color:' + hue(i) + '">' + e(w.oppName) + '</span>'
-            + (w.hitsSrc === 'none' ? ' <span class="id">LIVE</span>' : '') + '</td>'
+            + (w.hitsSrc === 'none' ? ' <span class="id">HITS UNKNOWN</span>' : '') + '</td>'
             + '<td>' + (w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?') + '</td>'
             + '<td>' + fmt(w.took) + '</td>'
             + '<td style="color:#ffd479">' + fmt(w.used) + '</td>'
@@ -4000,7 +4181,7 @@
 + '<th>Withdrawn<br>not charged</th><th>Hits</th>'
 + '<th>Hits/Xan</th><th>Wasted</th><th>Landed nothing</th></tr></thead><tbody>'
 + warRows + '</tbody></table></div>'
-+ '<div class="note">A live war publishes no hits, so its waste cannot be measured and nobody can be '
++ '<div class="note">Without a complete hit report, waste cannot be measured for that war and nobody can be '
 + 'flagged in it — those cells read “—”, which is not the same as zero.</div>'
 + odSection
 + '<h2>By member</h2>'
@@ -4008,7 +4189,7 @@
 + '<div class="f"><label>Show</label><select id="f-show">'
 + '<option value="all">Everyone</option>'
 + '<option value="took">Took faction Xanax</option>'
-+ '<option value="zero">Landed ZERO hits in every war</option>'
++ '<option value="zero">Confirmed zero hits in all recorded wars</option>'
 + '<option value="under">Hits below a threshold</option>'
 + '<option value="waste">Wasted more than</option>'
 + '<option value="flagged">Took Xanax, landed nothing (any war)</option>'
@@ -4086,40 +4267,49 @@
         const { out, ext, mime, kind } = sweepExportBuild();
         if (!out || !out.text) { setStatus('Nothing to export in this filter.', true); return; }
         const name = `drug-sweep-${state.sweep.wars.length}-wars-${new Date().toISOString().slice(0, 10)}` + ext;
+        let url, anchor;
         try {
             // The BOM is for Excel, which otherwise mangles the em-dashes in a
             // CSV. An HTML file declares its own charset and must NOT get one —
             // a stray BOM shows up as a glyph before the doctype.
             const blob = new Blob([(kind === 'csv' ? '﻿' : '') + out.text], { type: mime });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = name;
-            document.body.appendChild(a); a.click(); a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 4000);
-            setStatus(`Downloaded ${name} (${fmt(out.rows)} rows).`);
+            url = URL.createObjectURL(blob);
+            anchor = document.createElement('a');
+            anchor.href = url; anchor.download = name;
+            document.body.appendChild(anchor); anchor.click();
+            setStatus(`Download requested: ${name} (${fmt(out.rows)} rows).`);
         } catch (e) {
-            setStatus('Download blocked — use Copy instead.', true);
+            setStatus(kind === 'html'
+                ? 'Download blocked. Try a desktop browser, or switch formats to copy the report.'
+                : 'Download blocked. Use Copy instead.', true);
+        } finally {
+            anchor?.remove();
+            if (url) setTimeout(() => URL.revokeObjectURL(url), 4000);
         }
     }
 
     async function onDrugOD() {
-        const key = $('#twpr-key').value.trim();
+        const { war, report, key, current: reportCurrent } = drugRunContext();
         if (!key) { setStatus('Enter your API key first.', true); return; }
-        if (!state.drugs) { setStatus('Pull drug data first.', true); return; }
-        if (!state.war) { setStatus('Pull a war report first.', true); return; }
+        if (!war || !report || !reportCurrent()) { setStatus('Pull the selected war report first.', true); return; }
+        const drugs = state.drugs;
+        if (!canUseDrugResults() || drugOdInFlight === drugs) return;
+        const current = () => reportCurrent() && state.drugs === drugs;
 
         // Only the population this question is about: drew from the armoury and
         // landed nothing. Checking all 40 members would cost 120 API calls to
         // answer a question nobody asked about the 30 who clearly fought.
-        const targets = state.drugs.list.filter(r => r.drawn > 0 && r.hits === 0 && r.id);
+        const targets = drugs.list.filter(r => r.drawn > 0 && r.hits === 0 && r.id);
         if (!targets.length) { setStatus('Nobody took drugs without landing a hit — nothing to check.'); return; }
 
-        const btn = $('#twpr-drug-od');
-        if (btn) btn.disabled = true;
+        drugOdInFlight = drugs;
+        updateDrugActions();
         try {
-            state.odResults = await checkOverdoses(key, targets, state.war, (i, n, name) => {
-                setStatus(`Checking overdoses… ${i}/${n} (${name})`);
+            const results = await checkOverdoses(key, targets, war, (i, n, name) => {
+                if (current()) setStatus(`Checking overdoses… ${i}/${n} (${name})`);
             });
+            if (!current()) return;
+            state.odResults = results;
             renderDrugs();
 
             const vals = Object.values(state.odResults);
@@ -4142,12 +4332,13 @@
             }
             // Ride along in the war's cache entry so reopening it shows the OD
             // column straight away instead of asking Torn the same question.
-            if (state.war) await cacheSave(state.war, null, null, false, null, null, state.odResults);
-            setStatus(msg, unknown > 0 && !found);
+            if (!report.__partial && war.end > 0) await cacheSave(war, null, null, false, null, null, results);
+            if (current()) setStatus(msg, unknown > 0 && !found);
         } catch (e) {
-            setStatus(e.message || 'Overdose check failed.', true);
+            if (current()) setStatus(e.message || 'Overdose check failed.', true);
         } finally {
-            if (btn) btn.disabled = false;
+            if (drugOdInFlight === drugs) drugOdInFlight = null;
+            updateDrugActions();
         }
     }
 
@@ -4217,8 +4408,8 @@
         }[drugFilter()] || 'everyone';
         const lines = [
             csvCell('Torn War Payout Report — drug report'),
-            csvCell(`War: vs ${war.oppName || 'enemy'} · fighting started ${dayStr(d.warStart)} UTC`),
-            csvCell(`Drug window: ${dayStr(d.pullFrom || d.firstTs)} → ${dayStr(d.pullTo || d.lastTs)} UTC (${d.leadDays || 0}d build-up + war + ${d.tailHours || 0}h tail)`),
+            csvCell(`War: vs ${war.oppName || 'enemy'} · fighting started ${dayStr(d.warStart)} TCT`),
+            csvCell(`Drug window: ${dayStr(d.pullFrom || d.firstTs)} → ${dayStr(d.pullTo || d.lastTs)} TCT (${d.leadDays || 0}d build-up + war + ${d.tailHours || 0}h tail)`),
             csvCell(`Showing: ${rows.length} of ${(d.list || []).length} — ${modeLabel}`),
             csvCell(`Columns: ${shown ? 'exactly as displayed on screen' : 'full raw data'}`),
             csvCell(state.odResults
@@ -4306,7 +4497,7 @@
     }
 
     function onDrugCopy() {
-        if (!state.drugs) { setStatus('Pull drug data first.', true); return; }
+        if (!canUseDrugResults()) return;
         if (drugExportFormat() === 'discord') {
             const out = buildDrugDiscord();
             if (!out) { setStatus('Nothing to copy in this filter.', true); return; }
@@ -4321,7 +4512,7 @@
     }
 
     function onDrugCsvDownload() {
-        if (!state.drugs) { setStatus('Pull drug data first.', true); return; }
+        if (!canUseDrugResults()) return;
         const discord = drugExportFormat() === 'discord';
         const out = discord ? buildDrugDiscord() : buildDrugCsv();
         if (!out) { setStatus('Nothing to export in this filter.', true); return; }
@@ -4347,7 +4538,7 @@
     // Standalone HTML report — self-contained, no external assets, so it opens
     // offline and can be dropped straight into Discord or a faction forum.
     function onDrugHTML() {
-        if (!state.drugs) { setStatus('Pull drug data first.', true); return; }
+        if (!canUseDrugResults()) return;
         const d = state.drugs, war = state.war || {};
         const esc = (s) => String(s == null ? '' : s)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -4375,8 +4566,8 @@
  .note{color:#8b90a6;font-size:12px;margin-top:16px;line-height:1.65;}
 </style></head><body>
 <h1>💊 Faction Drug Report</h1>
-<div class="sub">War vs <b>${esc(war.oppName || 'enemy')}</b> · fighting started ${esc(dayStr(d.warStart))} UTC ·
-  drug window ${esc(dayStr(d.pullFrom || d.firstTs))} → ${esc(dayStr(d.pullTo || d.lastTs))}
+<div class="sub">War vs <b>${esc(war.oppName || 'enemy')}</b> · fighting started ${esc(dayStr(d.warStart))} TCT ·
+  drug window ${esc(dayStr(d.pullFrom || d.firstTs))} → ${esc(dayStr(d.pullTo || d.lastTs))} TCT
   (${fmt(d.leadDays || 0)}d build-up + war + ${fmt(d.tailHours || 0)}h tail) ·
   generated ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC</div>
 <div class="kpis">
@@ -4788,4 +4979,1176 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
     } else {
         init();
     }
+// SCRIPT HUB ADAPTER START
+// Public appearance data only. These functions are bundled into userscripts.
+function normalizeScriptUiTheme(raw) {
+  const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
+  const own=(object,key)=>Object.prototype.hasOwnProperty.call(object,key)?object[key]:undefined;
+  raw=record(raw);if(own(raw,'version')!==undefined&&own(raw,'version')!==1)raw={};
+  const choice=(key,allowed,fallback)=>allowed.includes(own(raw,key))?own(raw,key):fallback;
+  const bounded=(key,min,max,fallback)=>typeof own(raw,key)==='number'&&Number.isFinite(own(raw,key))?Math.max(min,Math.min(max,own(raw,key))):fallback;
+  const colors={light:{},dark:{}};
+  const roles=['background','surface','raised','text','muted','border','accent','success','warning','error','focus','selection','chart1','chart2','chart3','chart4','chart5','chart6'];
+  for(const mode of ['light','dark']){
+    const input=record(own(record(own(raw,'colors')),mode));
+    for(const role of roles){const value=own(input,role);if(typeof value==='string'&&/^#(?:[a-f\d]{3}|[a-f\d]{6})$/i.test(value))colors[mode][role]=(value.length===4?'#'+[...value.slice(1)].map(c=>c+c).join(''):value).toLowerCase();}
+  }
+  return {version:1,layout:choice('layout',['frostbite','workbench','torn','stock'],'frostbite'),palette:choice('palette',['frostbite','workbench','torn','stock'],'frostbite'),
+    mode:choice('mode',['system','dark','light'],'system'),density:choice('density',['comfortable','compact'],'comfortable'),
+    radius:bounded('radius',0,18,null),fontScale:bounded('fontScale',.85,1.35,1),colors};
+}
+
+function resolveScriptUiTheme(raw, dark=false) {
+  const theme=normalizeScriptUiTheme(raw),mode=theme.mode==='system'?(dark?'dark':'light'):theme.mode;
+  // Each palette owns color roles only; layout defaults never select a palette.
+  const bases={
+    frostbite:{light:['#edf4fa','#ffffff','#e4edf6','#172b40','#4b6075','#bdcedd','#2563a8'],dark:['#0b1421','#111f31','#1a2c42','#e7f0fa','#a4b8cc','#3e546d','#69b5ff']},
+    workbench:{light:['#e9e9f0','#ffffff','#f3f2f8','#302c40','#666078','#d3cede','#7051a2'],dark:['#202028','#2a2933','#34323f','#edeaf5','#b7b0c7','#4a4559','#c4a6f5']},
+    torn:{light:['#e9e9e9','#ffffff','#dddddd','#222222','#555555','#bbbbbb','#416c38'],dark:['#181818','#242424','#333333','#eeeeee','#bbbbbb','#555555','#91be71']},
+    stock:{light:['#edf4f3','#ffffff','#ddeceb','#182d2d','#486363','#9bb8b6','#1a696a'],dark:['#101212','#191c1c','#203030','#e5ebeb','#a3b2b2','#3c5555','#68c3c5']}
+  };
+  const [background,surface,raised,text,muted,border,accent]=bases[theme.palette][mode];
+  const states=mode==='dark'?{success:'#83d99a',warning:'#f4ca68',error:'#ff9696',focus:'#b3d8ff',selection:'#2e4866'}:{success:'#23743c',warning:'#865600',error:'#b42328',focus:'#175fc4',selection:'#c5ddf5'};
+  const chart=mode==='dark'?['#78b6ff','#e8b86a','#b29bff','#6ad0bf','#ed99bb','#b1ce78']:['#2866ae','#946000','#7547b5','#187c70','#ad426f','#657c24'];
+  if(theme.palette==='stock'){states.focus=accent;states.selection=mode==='dark'?'#223b3b':'#c8e5e2';}
+  const colors={background,surface,raised,text,muted,border,accent,...states,...Object.fromEntries(chart.map((value,i)=>['chart'+(i+1),value])),...theme.colors[mode]};
+  const luminance=hex=>{const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255).map(n=>n<=.04045?n/12.92:((n+.055)/1.055)**2.4);return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};
+  const ratio=(a,b)=>{const x=luminance(a),y=luminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
+  colors.onAccent=ratio('#ffffff',colors.accent)>=ratio('#000000',colors.accent)?'#ffffff':'#000000';
+  const acrossSurfaces=role=>Math.min(...['background','surface','raised'].map(key=>ratio(colors[role],colors[key])));
+  const contrast={text:acrossSurfaces('text'),muted:acrossSurfaces('muted'),onAccent:ratio(colors.onAccent,colors.accent),flags:[]};
+  for(const role of ['text','muted','onAccent'])if(contrast[role]<4.5)contrast.flags.push(role);
+  if(ratio(colors.focus,colors.surface)<3)contrast.flags.push('focus');
+  return {...theme,mode,colors,contrast};
+}
+
+function applyScriptUiTheme(node, raw, dark=false) {
+  const resolved=resolveScriptUiTheme(raw,dark);
+  for(const [role,value]of Object.entries(resolved.colors))node.style.setProperty('--tsui-'+role.replace(/[A-Z]/g,char=>'-'+char.toLowerCase()),value);
+  const defaults={frostbite:12,workbench:6,torn:3,stock:6};
+  node.style.setProperty('--tsui-radius',(resolved.radius===null?defaults[resolved.layout]:resolved.radius)+'px');
+  node.style.setProperty('--tsui-font-scale',String(resolved.fontScale));
+  node.style.setProperty('--tsui-space',resolved.density==='compact'?'6px':'10px');
+  node.style.setProperty('--tsui-control-height',resolved.density==='compact'?'32px':'38px');
+  node.setAttribute('data-tsui-layout',resolved.layout);node.setAttribute('data-tsui-density',resolved.density);node.setAttribute('data-tsui-mode',resolved.mode);
+  return resolved;
+}
+
+function scriptUiThemeCss() {
+  return `.tsui-surface{box-sizing:border-box;color:var(--tsui-text);background:var(--tsui-background);border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);font-size:calc(14px * var(--tsui-font-scale,1));color-scheme:light;accent-color:var(--tsui-accent)}
+.tsui-surface[data-tsui-mode="dark"]{color-scheme:dark}
+.tsui-surface *{box-sizing:border-box}.tsui-surface ::selection{background:var(--tsui-selection);color:var(--tsui-text)}
+.tsui-surface :is(button,input,select,textarea){font:inherit;color:var(--tsui-text);background:var(--tsui-surface);border:1px solid var(--tsui-border);border-radius:calc(var(--tsui-radius) / 2);min-height:var(--tsui-control-height);padding:var(--tsui-space)}
+.tsui-surface button{cursor:pointer}.tsui-surface :disabled{cursor:default;opacity:.6}.tsui-surface :focus-visible{outline:2px solid var(--tsui-focus);outline-offset:2px}
+.tsui-surface .tsui-primary{color:var(--tsui-on-accent);background:var(--tsui-accent)}.tsui-surface .tsui-muted{color:var(--tsui-muted)}
+@media(pointer:coarse),(max-width:600px){.tsui-surface :is(button,input,select,textarea){min-height:44px}.tsui-surface :is(input,select,textarea){font-size:max(16px,1em)}}
+@media(prefers-reduced-motion:reduce){.tsui-surface,.tsui-surface *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}`;
+}
+const SCRIPT_UI_THEME_KEY='torn-script-hub:ui-theme:v1';
+const SCRIPT_UI_THEME_EVENT=SCRIPT_UI_THEME_KEY+':changed';
+
+function createScriptUiThemeClient({doc,win,scriptId,read=()=>null,write=()=>{},onChange=()=>{}}) {
+  if(typeof scriptId!=='string'||!scriptId.length||scriptId.length>80)throw new TypeError('A bounded scriptId is required.');
+  // The builder concatenates the contract first; Node loads the same contract.
+  const normalize=typeof normalizeScriptUiTheme==='function'?normalizeScriptUiTheme:require('./script-hub-theme.cjs').normalizeScriptUiTheme;
+  let started=false,suspended=false,pdaActive=true,pending=true,override=null,globalTheme=normalize(),effective=normalize();
+  let generation=0,overrideRevision=0,pdaRevision=0,readTask=null,lastSignature='',lastDark=null,writeQueue=Promise.resolve(),cancelPdaQuery=null;
+  const removers=[],subscribers=new Set();
+  let media=null;try{media=win.matchMedia?.('(prefers-color-scheme: dark)');}catch(_){}
+  const active=()=>started&&!suspended&&pdaActive&&doc.visibilityState!=='hidden';
+  const clone=theme=>normalize(theme);
+  const parse=value=>{if(typeof value!=='string'||value.length>8192)return null;try{const parsed=JSON.parse(value);return parsed&&typeof parsed==='object'&&!Array.isArray(parsed)&&(!Object.prototype.hasOwnProperty.call(parsed,'version')||parsed.version===1)?normalize(parsed):null;}catch(_){return null;}};
+  function loadGlobal(){
+    try{
+      const current=parse(win.localStorage?.getItem(SCRIPT_UI_THEME_KEY));if(current)return current;
+      const text=win.localStorage?.getItem('torn-script-hub:v2:preferences');
+      if(typeof text==='string'&&text.length<=32768){const old=JSON.parse(text);if(old&&typeof old==='object'&&!Array.isArray(old)&&['torn','dark','light'].includes(old.theme))return normalize({layout:'torn',palette:'torn',mode:old.theme==='light'?'light':'dark',density:old.compact===true?'compact':'comfortable',colors:{light:{accent:old.accent},dark:{accent:old.accent}}});}
+      return normalize();
+    }catch(_){return normalize();}
+  }
+  function emit(force=false){
+    if(!active()){pending=true;return;}
+    effective=clone(override||globalTheme);const signature=JSON.stringify(effective),dark=media?.matches===true;
+    if(force||signature!==lastSignature||(effective.mode==='system'&&dark!==lastDark)){
+      lastSignature=signature;lastDark=dark;onChange(clone(effective));
+      for(const listener of subscribers){try{listener(clone(effective));}catch(_){}}
+    }
+    pending=false;
+  }
+  function listen(target,name,callback){target.addEventListener(name,callback);removers.push(()=>target.removeEventListener(name,callback));}
+  async function refresh(){
+    pending=true;if(!active())return get();
+    if(readTask)return readTask;
+    const ownGeneration=generation,revision=overrideRevision;
+    readTask=(async()=>{
+      let value;try{value=await read();}catch(_){value=undefined;}
+      if(!started||generation!==ownGeneration)return get();
+      if(overrideRevision===revision&&value!==undefined)override=value===null?null:normalize(value);
+      globalTheme=loadGlobal();emit();return get();
+    })();
+    try{return await readTask;}finally{if(generation===ownGeneration)readTask=null;}
+  }
+  function get(){return clone(override||globalTheme);}
+  function publicChange(event){
+    const value=parse(event.detail);if(!value)return;
+    // Events never carry settings or credentials; only the appearance allowlist survives.
+    globalTheme=value;pending=true;if(active())emit();
+  }
+  function storageChange(event){if(event.key!==SCRIPT_UI_THEME_KEY&&event.key!==null)return;pending=true;if(active()){globalTheme=loadGlobal();emit();}}
+  function visibility(){if(active()&&pending)void refresh();}
+  function tabState(event){
+    const state=event.detail;if(!state||typeof state.isActiveTab!=='boolean'||typeof state.isWebViewVisible!=='boolean')return;
+    pdaRevision++;pdaActive=state.isActiveTab&&state.isWebViewVisible;
+    const awaitingQuery=!!cancelPdaQuery;cancelPdaQuery?.();
+    if(active()&&pending&&!awaitingQuery)void refresh();
+  }
+  function pagehide(event){if(event.persisted){suspended=true;pending=true;}else stop();}
+  function pageshow(event){if(event.persisted){suspended=false;pending=true;if(active())void refresh();}}
+  function mediaChange(){if(active())emit();else pending=true;}
+  async function start(){
+    if(started)return refresh();started=true;suspended=false;pending=true;lastSignature='';lastDark=null;
+    const ownGeneration=++generation;
+    listen(doc,SCRIPT_UI_THEME_EVENT,publicChange);listen(win,SCRIPT_UI_THEME_EVENT,publicChange);listen(win,'storage',storageChange);
+    listen(doc,'visibilitychange',visibility);listen(win,'tornpda:tabState',tabState);listen(win,'pagehide',pagehide);listen(win,'pageshow',pageshow);
+    if(media?.addEventListener)listen(media,'change',mediaChange);
+    else if(media?.addListener){media.addListener(mediaChange);removers.push(()=>media.removeListener(mediaChange));}
+    if(typeof win.PDA_getTabState==='function'){
+      const revision=pdaRevision;pdaActive=false;
+      const state=await new Promise(resolve=>{
+        const schedule=win.setTimeout?.bind(win)||setTimeout,clear=win.clearTimeout?.bind(win)||clearTimeout;
+        let settled=false,timer=null;
+        const finish=value=>{if(settled)return;settled=true;if(timer!==null)clear(timer);if(cancelPdaQuery===finish)cancelPdaQuery=null;resolve(value);};
+        cancelPdaQuery=finish;timer=schedule(()=>finish(undefined),750);
+        Promise.resolve().then(()=>started&&generation===ownGeneration?win.PDA_getTabState():undefined).then(finish,()=>finish(undefined));
+      });
+      if(started&&generation===ownGeneration&&revision===pdaRevision)pdaActive=!(state?.isActiveTab===false||state?.isWebViewVisible===false);
+    }
+    if(started&&generation===ownGeneration)return refresh();return get();
+  }
+  function stop(){started=false;suspended=false;generation++;readTask=null;cancelPdaQuery?.();for(const remove of removers.splice(0))remove();}
+  function setOverride(value){
+    const normalized=value===null?null:normalize(value);overrideRevision++;
+    const run=async()=>{await write(normalized===null?null:clone(normalized));override=normalized;globalTheme=loadGlobal();emit();return get();};
+    const task=writeQueue.then(run);writeQueue=task.catch(()=>{});return task;
+  }
+  function subscribe(listener){if(typeof listener!=='function')throw new TypeError('Theme listener must be a function');subscribers.add(listener);return()=>subscribers.delete(listener);}
+  return {start,stop,get,setOverride,refresh,subscribe};
+}
+// DOM attributes coordinate independently bundled windows; no callbacks or data cross worlds.
+function scriptUiFloatingOwner(doc,node) {
+  let owner=null;
+  for(let current=node;current&&current!==doc.body&&current!==doc.documentElement;current=current.parentElement){
+    if(doc.defaultView.getComputedStyle(current).position==='fixed')owner=current;
+  }
+  return owner;
+}
+function scriptUiFloatingWindows(doc) {
+  const nodes=new Set(doc.querySelectorAll('[data-tsui-kit="1"][data-tsui-surface="floating"],#tsh-dialog,[data-tsui-stack-window="1"]'));
+  for(const root of doc.querySelectorAll('.tsui-legacy-surface')){const owner=scriptUiFloatingOwner(doc,root);if(owner)nodes.add(owner);}
+  return Array.from(nodes)
+    .filter(node=>!node.hidden&&node.isConnected&&node.getClientRects().length)
+    .sort((a,b)=>{
+      const rank=node=>{const value=Number(node.getAttribute('data-tsui-stack'));return Number.isSafeInteger(value)&&value>=0&&value<1000000?value:0;};
+      return rank(a)-rank(b);
+    });
+}
+function focusScriptUiWindow(doc,node) {
+  const windows=scriptUiFloatingWindows(doc),index=windows.indexOf(node);
+  if(index!==-1){windows.splice(index,1);windows.push(node);}
+  windows.forEach((entry,i)=>{entry.setAttribute('data-tsui-stack',String(i));entry.style.zIndex=String(2147481000+i*2);});
+  return windows.length;
+}
+// Original, bundled vector artwork. Colors inherit theme roles; no remote assets or user data.
+function appendScriptUiHeaderArt(doc,header) {
+  const mark=doc.createElement('span');mark.className='tsui-theme-mark';mark.setAttribute('aria-hidden','true');
+  mark.innerHTML='<svg class="tsui-frost-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M16 3v26M5 9l22 14M5 23L27 9M12 6l4 4 4-4M12 26l4-4 4 4M5 14l5-1-1-5M23 24l-1-5 5-1M5 18l5 1-1 5M23 8l-1 5 5 1"/><path d="m16 11 4 2v6l-4 2-4-2v-6z"/></svg><svg class="tsui-workbench-mark" viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="4" y="5" width="24" height="22" rx="3"/><path d="M4 11h24M12 11v16M8 8h1m3 0h1m3 0h1M16 16l3 3-3 3m6 0h3"/></svg><svg class="tsui-torn-mark" viewBox="0 0 32 32" fill="currentColor"><path d="M3 26h26v3H3zm2-9h5v8H5zm7-10h8v18h-8zm10 6h5v12h-5zM14 3h4v3h-4z"/><path d="M14 10h1v2h-1zm3 0h1v2h-1zm-3 5h1v2h-1zm3 0h1v2h-1z" fill="var(--tsui-raised)"/></svg>';
+  const scene=doc.createElement('span');scene.className='tsui-theme-scene';scene.setAttribute('aria-hidden','true');
+  scene.innerHTML='<svg viewBox="0 0 300 72" preserveAspectRatio="xMaxYMid slice" fill="none" stroke="currentColor"><path d="m0 72 52-38 30 18 49-45 41 35 27-18 46 34 55-42v56z" fill="currentColor" opacity=".09" stroke="none"/><path d="m0 72 52-38 30 18 49-45 41 35 27-18 46 34 55-42M97 39l34-32 5 35 22 15m-70-2 43-48 41 35m-120-8 7 30m140-40 11 39" opacity=".45"/><path d="M260 6v18m-8-14 16 10m-16 0 16-10M224 8v8m-4-6 8 4m-8 0 8-4" opacity=".7"/></svg>';
+  header.prepend(mark);header.append(scene);
+}
+function scriptUiIdentityCss(scope) {
+  return `${scope} .tsui-theme-mark{display:none;flex:none;width:30px;height:30px;color:var(--tsui-accent);pointer-events:none}
+${scope} .tsui-theme-mark svg{display:none;width:100%;height:100%}
+${scope}[data-tsui-layout] .tsui-theme-mark{display:block}
+${scope}[data-tsui-layout=frostbite] .tsui-frost-mark,${scope}[data-tsui-layout=workbench] .tsui-workbench-mark,${scope}[data-tsui-layout=torn] .tsui-torn-mark{display:block}
+${scope} .tsui-theme-scene{display:none;position:absolute;inset:0 0 0 auto;width:min(44%,300px);overflow:hidden;color:var(--tsui-accent);opacity:.45;pointer-events:none;z-index:-1}
+${scope} .tsui-theme-scene svg{width:100%;height:100%}
+${scope}[data-tsui-layout=frostbite] .tsui-theme-scene{display:block}
+${scope}[data-tsui-layout=frostbite] .tsui-header,${scope}[data-tsui-layout=frostbite] .tsh-header{isolation:isolate}
+${scope}[data-tsui-layout=torn] .tsui-theme-mark{width:22px;height:22px}
+@media(max-width:600px){${scope} .tsui-theme-mark{width:24px;height:24px}${scope} .tsui-theme-scene{opacity:.28;width:38%}}`;
+}
+'use strict';
+
+/** Shared, framework-free native script surfaces. No network or storage is owned here.
+ * createTornScriptUI({doc,win,id,title,surface,mount,applyTheme,theme,themeClient,
+ *   ownsThemeClient:false,sections:[{id,label,node,footer,headerAction,render(host,ui)}],settings,inspector,
+ *   onVisibilityChange(active),onSelect(id),onClose(),onDestroy(),autoDestroyOnDetach:true,
+ *   readLayout(),writeLayout({version:1,desktop,mobile})}).
+ * Layout adapters are optional, may be async, and receive only a bounded geometry
+ * profile (x/y/width/height/locked/collapsed/selected). Mount never waits for IO;
+ * interaction wins over a pending read. Writes coalesce to one pending snapshot.
+ * Render callbacks run once; their optional returned cleanup runs on destroy.
+ * A section node and the public content/settings/inspector slots are escape hatches
+ * for native script UI. Scripts own drafts, refreshes, jobs, persistence and secrets.
+ * themeClient supports get/start/stop; use setTheme in its onChange callback.
+ * notice(text,{kind}), status(text), task({id,label,onCancel,onPause,onResume}),
+ * table({columns:[{key,label}],rows,limit}) are bounded text-only helpers.
+ * Tasks never cancel implicitly; visibility is reported for script-owned policies.
+ */
+function createTornScriptUI(options = {}) {
+  const doc = options.doc;
+  const win = options.win || (doc && doc.defaultView);
+  if (!doc || typeof doc.createElement !== 'function' || !win) throw new TypeError('UI kit requires a document and window');
+  if (typeof options.applyTheme !== 'function') throw new TypeError('UI kit requires applyTheme');
+  // Isolated userscript worlds share DOM, but cannot safely share JS objects.
+  // Only version, visibility and stack order cross this coordination boundary.
+  let style = doc.querySelector('style[data-tsui-style="1"]');
+  if (!style) {
+    style = doc.createElement('style'); style.setAttribute('data-tsui-style', '1');
+    (doc.head || doc.documentElement).append(style);
+  }
+  // Independently updated scripts can arrive in either order. Upgrade older
+  // shared CSS once, while leaving a future revision owned by a newer bundle.
+  const styleRevision=Number(style.getAttribute('data-tsui-style-revision'));
+  if(!Number.isSafeInteger(styleRevision)||styleRevision<3){style.textContent=scriptUiKitCss();style.setAttribute('data-tsui-style-revision','3');}
+  let launcherTray = doc.querySelector('[data-tsui-launchers="1"]');
+  if (!launcherTray) {
+    launcherTray = doc.createElement('div'); launcherTray.className = 'tsui-launchers';
+    launcherTray.setAttribute('data-tsui-launchers', '1');
+    (doc.body || doc.documentElement).append(launcherTray);
+  }
+  const cleanups = [];
+  const tasks = new Map();
+  const sections = new Map();
+  const floating = options.surface !== 'embedded';
+  // PDA capabilities are independent of viewport size; desktop touch stays desktop.
+  function pdaOpening() { return floating && (typeof PDA_storage !== 'undefined' && !!PDA_storage || typeof win.PDA_getTabState === 'function' || typeof win.PDA_httpGet === 'function'); }
+  let destroyed = false, shown = true, collapsed = false, minimized = false, maximized = false, locked = false;
+  let pdaActive = typeof win.PDA_getTabState !== 'function', pageActive = true, pdaRevision = 0, lastActive, gesture = null, selected = null, returnFocus = null;
+  let pdaTimer = null;
+  function clearPdaTimer() { if (pdaTimer !== null) { win.clearTimeout(pdaTimer); pdaTimer = null; } }
+  let currentTheme = {}, explicitDark;
+  let themeQueued = false, nextTask = 0;
+  const firstTheme=options.theme||(options.themeClient?.get?options.themeClient.get():{});
+  const initial = { x: 24, y: 40, width: firstTheme?.layout==='stock'?340:760, height: firstTheme?.layout==='stock'?760:540 };
+  let rect = { ...initial }, previousRect = null;
+  let booting = true, visibilityQueued = false, writingLayout = false, persistQueued = false, pendingLayout = null;
+  let layoutLoading = floating && typeof options.readLayout === 'function';
+  const editedGeometry = new Set(), editedSelection = new Set();
+  let currentProfile = profileName();
+  let profiles = { desktop: normalizeProfile(), mobile: normalizeProfile() };
+  function profileName() { const view = viewport(); return view.width <= 600 || view.height <= 500 ? 'mobile' : 'desktop'; }
+  function normalizeProfile(value) {
+    const raw = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const normalized = { ...initial, locked: raw.locked === true, collapsed: raw.collapsed === true, selected: typeof raw.selected === 'string' ? raw.selected.slice(0, 100) : null };
+    for (const key of ['x', 'y', 'width', 'height']) {
+      if (typeof raw[key] === 'number' && Number.isFinite(raw[key]) && raw[key] >= 0 && raw[key] <= (key === 'x' || key === 'y' ? 100000 : 4096)) normalized[key] = raw[key];
+    }
+    return normalized;
+  }
+  function snapshotProfile() { return normalizeProfile({ ...(maximized && previousRect ? previousRect : rect), locked, collapsed, selected }); }
+  function rememberLayout(geometryChanged = true) {
+    if (booting || destroyed || !floating) return;
+    if (layoutLoading) (geometryChanged ? editedGeometry : editedSelection).add(currentProfile);
+    profiles[currentProfile] = snapshotProfile();
+    if (typeof options.writeLayout !== 'function') return;
+    pendingLayout = { version: 1, desktop: { ...profiles.desktop }, mobile: { ...profiles.mobile } };
+    queuePersist();
+  }
+  function queuePersist() {
+    if (layoutLoading || persistQueued || writingLayout || !pendingLayout || destroyed || doc.visibilityState === 'hidden' || !pdaActive || !pageActive) return;
+    persistQueued = true;
+    Promise.resolve().then(async () => {
+      persistQueued = false; if (layoutLoading || destroyed || !pendingLayout || doc.visibilityState === 'hidden' || !pdaActive || !pageActive) return;
+      const value = pendingLayout; pendingLayout = null; writingLayout = true;
+      try { await options.writeLayout(value); } catch (_) { if (!destroyed) notice('Window layout could not be saved.', { kind: 'error' }); }
+      finally { writingLayout = false; queuePersist(); }
+    });
+  }
+  function applyProfile(value) {
+    const normalized = normalizeProfile(value);
+    rect = { x: normalized.x, y: normalized.y, width: normalized.width, height: normalized.height };
+    locked = normalized.locked; collapsed = maximized ? false : normalized.collapsed;
+    if (maximized) previousRect = { ...rect };
+    if (normalized.selected && sections.has(normalized.selected)) {
+      const wasBooting = booting; booting = true; select(normalized.selected); booting = wasBooting;
+    }
+    update();
+  }
+  function viewportChanged() {
+    const nextProfile = profileName();
+    if (nextProfile !== currentProfile) {
+      profiles[currentProfile] = snapshotProfile(); currentProfile = nextProfile;
+      applyProfile(profiles[currentProfile]);
+    } else fit();
+  }
+  function node(tag, className, text) {
+    const value = doc.createElement(tag);
+    if (className) value.className = className;
+    if (text !== undefined) value.textContent = String(text).slice(0, 4000);
+    return value;
+  }
+  function listen(target, type, callback, opts) {
+    target.addEventListener(type, callback, opts);
+    cleanups.push(() => target.removeEventListener(type, callback, opts));
+  }
+  function button(text, label, callback, parent) {
+    const value = node('button', '', text); value.type = 'button';
+    value.setAttribute('aria-label', label);
+    listen(value, 'click', callback); if (parent) parent.append(value);
+    return value;
+  }
+  const root = node('section', 'tsui-root');
+  root.setAttribute('data-tsui-kit', '1');
+  root.dataset.tsuiId = String(options.id || 'script-ui').slice(0, 100);
+  root.dataset.tsuiSurface = floating ? 'floating' : 'embedded';
+  root.setAttribute('aria-label', String(options.title || 'Script tool').slice(0, 200));
+  root.tabIndex = -1;
+  const dragStrip=node('div','tsui-drag-strip','⠿ drag');dragStrip.tabIndex=0;dragStrip.setAttribute('role','button');dragStrip.setAttribute('aria-label','Move '+(options.title||'Script tool'));
+  const header = node('header', 'tsui-header');
+  const title = node('div', 'tsui-title', options.title || 'Script tool');
+  title.tabIndex = 0;
+  title.setAttribute('aria-label', 'Move ' + (options.title || 'Script tool'));
+  title.title = 'Drag to move. Focus and use arrow keys to move; Shift + arrows resize. Escape cancels a drag.';
+  const controls = node('div', 'tsui-controls');
+  const headerActions=node('div','tsui-header-actions');controls.append(headerActions);
+  header.append(title, controls);
+  if(typeof appendScriptUiHeaderArt==='function')appendScriptUiHeaderArt(doc,header);
+  const body = node('div', 'tsui-body');
+  const nav = node('nav', 'tsui-nav'); nav.setAttribute('aria-label', 'Tool pages');
+  const content = node('div', 'tsui-content');
+  const settings = node('aside', 'tsui-settings'); settings.setAttribute('aria-label', 'Tool settings');
+  const inspector = node('aside', 'tsui-inspector'); inspector.setAttribute('aria-label', 'Details');
+  if (options.settings) settings.append(options.settings);
+  if (options.inspector) inspector.append(options.inspector);
+  body.append(nav, content, settings, inspector);
+  const footer = node('footer', 'tsui-footer');
+  const statusNode = node('div', 'tsui-status'); statusNode.setAttribute('role', 'status');
+  const notices = node('div', 'tsui-notices'); notices.setAttribute('aria-live', 'polite');
+  const taskList = node('div', 'tsui-tasks');
+  footer.append(statusNode, notices, taskList);
+  const sectionFooters=node('div','tsui-section-footers');
+  const resize = node('div', 'tsui-resize'); resize.setAttribute('aria-hidden', 'true');
+  root.append(dragStrip,header, body,sectionFooters, footer, resize);
+  const launcher = button(options.title || 'Script tool', 'Restore ' + (options.title || 'Script tool'), () => { restore(); focus(); });
+  launcher.className = 'tsui-launcher'; launcher.hidden = true;
+  const mount = options.mount || doc.body || doc.documentElement;
+  mount.append(root);
+  // A DOM-owned tray gives independently bundled launchers native flex sizing,
+  // wrapping and scrolling. Each host still owns its private handlers and tokens.
+  const launcherHost = node('div', 'tsui-launcher-host'); launcherHost.setAttribute('data-tsui-launcher-host', '1');
+  launcherHost.hidden = true; launcherHost.append(launcher); launcherTray.append(launcherHost);
+
+  function active() { return !destroyed && shown && !minimized && !collapsed && pageActive && doc.visibilityState !== 'hidden' && pdaActive; }
+  function visibility() {
+    // Consumers may still be moving their content into the returned shell.
+    // Initial notifications must run after construction and caller assignment.
+    if(booting){
+      if(!visibilityQueued){visibilityQueued=true;Promise.resolve().then(()=>{visibilityQueued=false;if(!destroyed)visibility();});}
+      return;
+    }
+    queuePersist();
+    const value = active();
+    if (value === lastActive) return;
+    lastActive = value;
+    if (!value) endGesture(true);
+    if (typeof options.onVisibilityChange === 'function') options.onVisibilityChange(value);
+  }
+  function viewport() {
+    return { width: Math.max(1, Math.min(win.innerWidth || 1024, win.visualViewport ? win.visualViewport.width : Infinity)), height: Math.max(1, Math.min(win.innerHeight || 768, win.visualViewport ? win.visualViewport.height : Infinity)) };
+  }
+  function fit() {
+    if (destroyed || !floating) return;
+    const view = viewport(), inset = Math.min(8, view.width / 8, view.height / 8);
+    const maxWidth = Math.max(1, view.width - inset * 2), maxHeight = Math.max(1, view.height - inset * 2);
+    if (maximized) rect = { x: inset, y: inset, width: maxWidth, height: maxHeight };
+    else {
+      rect.width = Math.min(maxWidth, Math.max(Math.min(320, maxWidth), rect.width));
+      rect.height = Math.min(maxHeight, Math.max(Math.min(180, maxHeight), rect.height));
+      rect.x = Math.max(inset, Math.min(view.width - rect.width - inset, rect.x));
+      rect.y = Math.max(inset, Math.min(view.height - (collapsed ? Math.min(92, rect.height) : rect.height) - inset, rect.y));
+    }
+    Object.assign(root.style, { left: rect.x + 'px', top: rect.y + 'px', width: rect.width + 'px', height: collapsed ? 'auto' : rect.height + 'px' });
+  }
+  function focus() {
+    if (destroyed) return;
+    if(typeof focusScriptUiWindow==='function'){
+      const count=focusScriptUiWindow(doc,root);launcherTray.style.zIndex=String(2147481001+count*2);stackLaunchers();return;
+    }
+    const windows = floatingRoots();
+    const index = windows.indexOf(root);
+    if (index !== -1) { windows.splice(index, 1); windows.push(root); }
+    windows.forEach((entry, i) => { entry.setAttribute('data-tsui-stack', String(i)); entry.style.zIndex = String(100000 + i * 2); });
+    launcherTray.style.zIndex = String(100001 + windows.length * 2);
+    stackLaunchers();
+  }
+  function floatingRoots() {
+    if(typeof scriptUiFloatingWindows==='function')return scriptUiFloatingWindows(doc);
+    return Array.from(doc.querySelectorAll('[data-tsui-kit="1"][data-tsui-surface="floating"]'))
+      .filter(entry => !entry.hidden && entry.isConnected && entry.getClientRects().length)
+      .sort((left, right) => {
+        const rank = entry => { const value = Number(entry.getAttribute('data-tsui-stack')); return Number.isSafeInteger(value) && value >= 0 && value < 1000000 ? value : 0; };
+        return rank(left) - rank(right);
+      });
+  }
+  function stackLaunchers() {
+    launcherTray.hidden = !Array.from(launcherTray.children).some(entry => !entry.hidden);
+  }
+  function update() {
+    if (destroyed) return;
+    root.hidden = !shown || minimized; launcherHost.hidden = launcher.hidden = !shown || !minimized;
+    body.hidden = collapsed; footer.hidden = collapsed;sectionFooters.hidden=collapsed;
+    if(!shown||minimized||collapsed)closeWindowOptions();
+    root.dataset.tsuiCollapsed = String(collapsed); root.dataset.tsuiLocked = String(locked);root.dataset.tsuiMaximized=String(maximized);root.dataset.tsuiPda=String(pdaOpening());
+    collapseButton.textContent = collapsed ? 'Expand' : 'Collapse'; collapseButton.setAttribute('aria-expanded', String(!collapsed));
+    lockButton.textContent = locked ? 'Unlock' : 'Lock'; lockButton.setAttribute('aria-pressed', String(locked));
+    resize.hidden = !floating || locked || maximized || collapsed;
+    fit(); visibility(); stackLaunchers();
+  }
+  function show() { if (destroyed) return; shown = true; if (pdaOpening()) maximize(false); else update(); focus(); }
+  function hide() { if (destroyed) return; shown = false; update(); }
+  function close() { if (destroyed || !shown) return; hide(); if (typeof options.onClose === 'function') options.onClose(); }
+  function collapse(value = !collapsed) { if (destroyed || collapsed === !!value) return; collapsed = !!value; update(); rememberLayout(); }
+  function minimize() { if (destroyed) return; returnFocus = doc.activeElement; minimized = true; update(); launcher.focus(); }
+  function maximize(remember = true) { if (destroyed || !floating) return; if (!maximized) previousRect = { ...rect }; maximized = true; minimized = collapsed = false; update(); if (remember) rememberLayout(); }
+  function restore() {
+    if (destroyed) return;
+    const reopening = minimized || !shown;
+    if (maximized && previousRect) rect = { ...previousRect };
+    maximized = minimized = collapsed = false; shown = true; update();
+    if (reopening && pdaOpening()) maximize(false);
+    if (returnFocus && root.contains(returnFocus)) returnFocus.focus(); else title.focus();
+    returnFocus = null;
+    rememberLayout();
+  }
+  function setLocked(value) { if (destroyed || locked === !!value) return; locked = !!value; endGesture(true); update(); rememberLayout(); }
+  function reset() { if (destroyed) return; rect = { ...initial }; maximized = minimized = collapsed = locked = false; shown = true; update(); rememberLayout(); }
+  function endGesture(cancel) {
+    if (!gesture) return;
+    const old = gesture; gesture = null;
+    if (cancel) { rect = old.start; fit(); }
+    try { if (old.target.hasPointerCapture(old.pointerId)) old.target.releasePointerCapture(old.pointerId); } catch (_) {}
+    root.classList.remove('tsui-gesturing');
+    if (!cancel) rememberLayout();
+  }
+  function beginGesture(event, kind) {
+    if (!floating || locked || maximized || event.button !== 0 || gesture || !active() || viewport().width <= 600 || event.pointerType === 'touch') return;
+    if (layoutLoading) editedGeometry.add(currentProfile);
+    focus(); gesture = { kind, pointerId: event.pointerId, target: event.currentTarget, start: { ...rect }, x: event.clientX, y: event.clientY };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch (_) {}
+    root.classList.add('tsui-gesturing'); event.preventDefault();
+  }
+  const collapseButton = button('Collapse', 'Collapse or expand', () => collapse(), controls);
+  const optionsToggle=button('⋯','Window options',()=>{const open=optionsToggle.getAttribute('aria-expanded')!=='true';optionsToggle.setAttribute('aria-expanded',String(open));windowOptions.dataset.open=String(open);if(open)windowOptions.querySelector('button')?.focus();},controls);
+  optionsToggle.className='tsui-window-options-toggle';optionsToggle.setAttribute('aria-expanded','false');
+  const windowOptions=node('div','tsui-window-options');windowOptions.setAttribute('role','group');windowOptions.setAttribute('aria-label','Window controls');controls.append(windowOptions);
+  function closeWindowOptions(){optionsToggle.setAttribute('aria-expanded','false');windowOptions.dataset.open='false';}
+  const lockButton = button('Lock', 'Lock or unlock position', () => setLocked(!locked), windowOptions);
+  button('Reset', 'Reset window position', reset, windowOptions);
+  if (floating) {
+    button('Minimize', 'Minimize window', minimize, windowOptions);
+    button('Maximize', 'Maximize or restore window', () => maximized ? restore() : maximize(), windowOptions);
+  } else { lockButton.hidden = true; controls.querySelector('[aria-label="Reset window position"]').hidden = true; }
+  button('×', 'Close window', close, controls);
+  listen(doc,'pointerdown',event=>{if(!controls.contains(event.target))closeWindowOptions();});
+  listen(title, 'pointerdown', event => beginGesture(event, 'move'));
+  listen(dragStrip,'pointerdown',event=>beginGesture(event,'move'));
+  listen(resize, 'pointerdown', event => beginGesture(event, 'resize'));
+  listen(win, 'pointermove', event => {
+    if (!gesture || event.pointerId !== gesture.pointerId) return;
+    const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
+    rect = { ...gesture.start };
+    if (gesture.kind === 'move') { rect.x += dx; rect.y += dy; } else { rect.width += dx; rect.height += dy; }
+    fit();
+  });
+  listen(win, 'pointerup', event => { if (gesture && event.pointerId === gesture.pointerId) endGesture(false); });
+  listen(win, 'pointercancel', () => endGesture(true));
+  listen(win, 'blur', () => endGesture(true));
+  listen(title, 'lostpointercapture', () => endGesture(true));
+  listen(dragStrip,'lostpointercapture',()=>endGesture(true));
+  listen(resize, 'lostpointercapture', () => endGesture(true));
+  function moveKey(event) {
+    if (!floating || locked || maximized || !/^Arrow(Left|Right|Up|Down)$/.test(event.key)) return;
+    const delta = /Left|Up/.test(event.key) ? -10 : 10;
+    const horizontal = /Left|Right/.test(event.key);
+    rect[event.shiftKey ? horizontal ? 'width' : 'height' : horizontal ? 'x' : 'y'] += delta;
+    fit(); rememberLayout(); event.preventDefault();
+  }
+  listen(title,'keydown',moveKey);listen(dragStrip,'keydown',moveKey);
+  listen(root, 'pointerdown', focus);
+  listen(root, 'focusin', focus);
+  listen(doc, 'keydown', event => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    const top = floatingRoots().at(-1);
+    if (top !== root) return;
+    if(optionsToggle.getAttribute('aria-expanded')==='true'){closeWindowOptions();optionsToggle.focus();}
+    else if (gesture) endGesture(true);
+    else if (maximized) restore();
+    else collapse();
+    event.preventDefault();
+  });
+  listen(win, 'resize', viewportChanged);
+  if (win.visualViewport) listen(win.visualViewport, 'resize', viewportChanged);
+  listen(doc, 'visibilitychange', visibility);
+  listen(win, 'pagehide', event => { if (!event.persisted) destroy(); else { pageActive = false; visibility(); } });
+  listen(win, 'pageshow', () => { pageActive = true; visibility(); });
+  listen(win, 'tornpda:tabState', event => {
+    const detail = event.detail;
+    if (!detail || typeof detail.isActiveTab !== 'boolean' || typeof detail.isWebViewVisible !== 'boolean') return;
+    clearPdaTimer(); pdaRevision++; pdaActive = detail.isActiveTab && detail.isWebViewVisible; visibility();
+  });
+  if (typeof win.PDA_getTabState === 'function') {
+    const revision = pdaRevision;
+    function settleInitialPda(detail) {
+      if (destroyed || revision !== pdaRevision) return;
+      clearPdaTimer(); pdaRevision++;
+      // Older or sleeping PDA bridges can return nothing or never settle.
+      // Fall back to ordinary document visibility after a bounded wait.
+      pdaActive = !detail || typeof detail.isActiveTab !== 'boolean' || typeof detail.isWebViewVisible !== 'boolean'
+        ? true : detail.isActiveTab && detail.isWebViewVisible;
+      visibility();
+    }
+    pdaTimer = win.setTimeout(() => settleInitialPda(null), 750);
+    Promise.resolve().then(() => win.PDA_getTabState()).then(settleInitialPda, () => settleInitialPda(null));
+  }
+  function setTheme(theme, dark) {
+    if (destroyed) return;
+    closeWindowOptions();
+    currentTheme = theme || {}; explicitDark = dark;
+    const effectiveDark = typeof dark === 'boolean' ? dark : !!(win.matchMedia && win.matchMedia('(prefers-color-scheme: dark)').matches);
+    options.applyTheme(root, currentTheme, effectiveDark);
+    options.applyTheme(launcherHost, currentTheme, effectiveDark);
+    fit();
+  }
+  if (typeof win.matchMedia === 'function') {
+    const media = win.matchMedia('(prefers-color-scheme: dark)');
+    if (media.addEventListener) listen(media, 'change', () => setTheme(currentTheme, explicitDark));
+  }
+  const client = options.themeClient;
+  function queueTheme() {
+    if (themeQueued || destroyed) return;
+    themeQueued = true;
+    // Read after every event listener has run, including a later client listener.
+    Promise.resolve().then(() => { themeQueued = false; if (!destroyed && client.get) setTheme(client.get()); });
+  }
+  if (client && typeof client.subscribe === 'function') cleanups.push(client.subscribe(theme => setTheme(theme)));
+  else if (client) {
+    listen(doc, 'torn-script-hub:ui-theme:v1:changed', queueTheme);
+    listen(win, 'torn-script-hub:ui-theme:v1:changed', queueTheme);
+  }
+  function select(id) {
+    if (destroyed || !sections.has(id)) return false;
+    const changed = selected !== id;
+    selected = id;
+    for (const [key, section] of sections) {
+      section.host.hidden = key !== id; section.button.setAttribute('aria-current', key === id ? 'page' : 'false');
+      if(section.footer)section.footer.hidden=key!==id;
+      if(section.headerButton)section.headerButton.setAttribute('aria-pressed',String(key===id));
+    }
+    if (changed && !booting) rememberLayout(false);
+    if (changed && typeof options.onSelect === 'function') options.onSelect(id);
+    return true;
+  }
+  function notice(text, config = {}) {
+    if (destroyed) return null;
+    const item = node('div', 'tsui-notice');
+    item.dataset.kind = ['success', 'warning', 'error'].includes(config.kind) ? config.kind : 'info';
+    item.append(node('span', '', text));
+    const dismiss = node('button', '', 'Dismiss'); dismiss.type = 'button'; dismiss.setAttribute('aria-label', 'Dismiss notice');
+    dismiss.addEventListener('click', () => item.remove(), { once: true }); item.append(dismiss);
+    notices.append(item);
+    while (notices.children.length > 5) notices.firstElementChild.remove();
+    return item;
+  }
+  function status(text) { if (!destroyed) statusNode.textContent = String(text || '').slice(0, 500); }
+  function task(config = {}) {
+    if (destroyed) return null;
+    const id = String(config.id || 'task-' + nextTask++).slice(0, 100);
+    if (tasks.has(id)) return tasks.get(id);
+    if (tasks.size >= 8) { notice('Finish an existing task before adding another.', { kind: 'warning' }); return null; }
+    const host = node('div', 'tsui-task');
+    const label = node('span', '', config.label || 'Task');
+    const progress = node('progress'); progress.max = 100; progress.removeAttribute('value');
+    progress.setAttribute('aria-label', String(config.label || 'Task').slice(0, 100));
+    host.append(label, progress);
+    let ended = false, paused = false;
+    const taskCleanups = [];
+    // Task controls own their listeners, so finishing work releases callback closures.
+    function taskButton(text, accessible, callback) {
+      const value = node('button', '', text); value.type = 'button'; value.setAttribute('aria-label', accessible);
+      value.addEventListener('click', callback); taskCleanups.push(() => value.removeEventListener('click', callback)); host.append(value); return value;
+    }
+    function finish() { if (ended) return; ended = true; taskCleanups.splice(0).forEach(fn => fn()); host.remove(); tasks.delete(id); }
+    if (typeof config.onCancel === 'function') taskButton('Cancel', 'Cancel ' + (config.label || 'Task'), () => { finish(); config.onCancel(); });
+    if (typeof config.onPause === 'function' && typeof config.onResume === 'function') {
+      const pause = taskButton('Pause', 'Pause or resume ' + (config.label || 'Task'), () => { paused = !paused; pause.textContent = paused ? 'Resume' : 'Pause'; if (paused) config.onPause(); else config.onResume(); });
+    }
+    const controller = { update(value = {}) { if (ended || destroyed) return; if (value.label !== undefined) label.textContent = String(value.label).slice(0, 200); if (typeof value.progress === 'number' && Number.isFinite(value.progress)) progress.value = Math.max(0, Math.min(100, value.progress)); }, finish };
+    tasks.set(id, controller); taskList.append(host); return controller;
+  }
+  function table(config = {}) {
+    const wrap = node('div', 'tsui-table-scroll'); wrap.tabIndex = 0; wrap.setAttribute('role', 'region'); wrap.setAttribute('aria-label', String(config.label || 'Data table').slice(0, 100));
+    const tableNode = node('table'), head = node('thead'), row = node('tr'), tbody = node('tbody');
+    const columns = Array.isArray(config.columns) ? config.columns.slice(0, 20) : [];
+    for (const column of columns) { const th = node('th', '', column.label || column.key); th.scope = 'col'; row.append(th); }
+    head.append(row);
+    const limit = Number.isInteger(config.limit) ? Math.max(0, Math.min(500, config.limit)) : 100;
+    for (const item of (Array.isArray(config.rows) ? config.rows : []).slice(0, limit)) {
+      const tr = node('tr'); for (const column of columns) tr.append(node('td', '', item && item[column.key] != null ? item[column.key] : '')); tbody.append(tr);
+    }
+    tableNode.append(head, tbody); wrap.append(tableNode); return wrap;
+  }
+  function destroy() {
+    if (destroyed) return;
+    endGesture(true); clearPdaTimer(); destroyed = true; pendingLayout = null; visibility();
+    for (const value of tasks.values()) value.finish(); tasks.clear();
+    cleanups.splice(0).reverse().forEach(fn => fn());
+    if (client && options.ownsThemeClient && typeof client.stop === 'function') client.stop();
+    root.remove(); launcherHost.remove();
+    if (!doc.querySelector('[data-tsui-kit="1"]')) style.remove();
+    if (!launcherTray.children.length) launcherTray.remove(); else stackLaunchers();
+    if (typeof options.onDestroy === 'function') options.onDestroy();
+  }
+  const api = { root, content, settings, inspector, nav, launcherHost, setTheme, select, show, hide, close, collapse, minimize, maximize, restore, setLocked, reset, focus, notice, status, task, table, destroy,
+    getState: () => ({ shown, collapsed, minimized, maximized, locked, destroyed, active: active(), selected, rect: { ...rect } }) };
+  for (const section of (Array.isArray(options.sections) ? options.sections : []).slice(0, 30)) {
+    const id = String(section.id || ''); if (!id || sections.has(id)) continue;
+    const host = node('div', 'tsui-page');
+    const navButton = button(section.label || id, section.label || id, () => select(id), nav);
+    if (section.node) host.append(section.node);
+    let footerHost=null,headerButton=null;
+    if(section.footer){footerHost=node('div','tsui-section-footer');footerHost.append(section.footer);sectionFooters.append(footerHost);}
+    if(typeof section.headerAction==='string'){navButton.dataset.tsuiHeaderAction='true';headerButton=button(section.headerAction.slice(0,4),section.label||id,()=>select(id),headerActions);headerButton.setAttribute('aria-pressed','false');}
+    content.append(host); sections.set(id, { host, button: navButton,footer:footerHost,headerButton });
+    if (typeof section.render === 'function') { const cleanup = section.render(host, api); if (typeof cleanup === 'function') cleanups.push(cleanup); }
+  }
+  if (sections.size) select(sections.keys().next().value);
+  if (client && typeof client.start === 'function' && options.ownsThemeClient) client.start();
+  setTheme(options.theme || (client && client.get ? client.get() : {}), options.dark);
+  if (options.autoDestroyOnDetach !== false && typeof win.MutationObserver === 'function') {
+    const observer = new win.MutationObserver(() => { if (!root.isConnected) destroy(); });
+    observer.observe(doc.documentElement, { childList: true, subtree: true }); cleanups.push(() => observer.disconnect());
+  }
+  if (pdaOpening()) maximize(false); else update();
+  focus();
+  booting = false;
+  if (floating && typeof options.readLayout === 'function') {
+    let timer;
+    const deadline = new Promise((_, reject) => { timer = win.setTimeout(() => reject(new Error('Layout read timed out')), 1500); });
+    cleanups.push(() => win.clearTimeout(timer));
+    Promise.race([Promise.resolve().then(() => options.readLayout()), deadline]).then(value => {
+      if (destroyed || !value || typeof value !== 'object' || value.version !== 1) return;
+      const restored = { desktop: normalizeProfile(value.desktop), mobile: normalizeProfile(value.mobile) };
+      profiles[currentProfile] = snapshotProfile();
+      for (const name of ['desktop', 'mobile']) {
+        if (editedGeometry.has(name)) restored[name] = profiles[name];
+        else if (editedSelection.has(name)) restored[name].selected = profiles[name].selected;
+      }
+      profiles = restored; applyProfile(profiles[currentProfile]);
+      if (pendingLayout) pendingLayout = { version: 1, desktop: { ...profiles.desktop }, mobile: { ...profiles.mobile } };
+    }).catch(() => { if (!destroyed) notice('Saved window layout could not be loaded.', { kind: 'warning' }); })
+      .finally(() => { win.clearTimeout(timer); layoutLoading = false; editedGeometry.clear(); editedSelection.clear(); queuePersist(); });
+  }
+  return api;
+}
+
+function scriptUiKitCss() {
+  return (typeof scriptUiIdentityCss==='function'?scriptUiIdentityCss('.tsui-root'):'')+`
+.tsui-root,.tsui-launcher-host{font:calc(14px * var(--tsui-font-scale,1))/1.45 system-ui,sans-serif;color:var(--tsui-text,#e5eaf2);color-scheme:light;box-sizing:border-box}.tsui-root[data-tsui-mode=dark],.tsui-launcher-host[data-tsui-mode=dark]{color-scheme:dark}
+.tsui-root *,.tsui-launcher-host *{box-sizing:border-box}.tsui-root[hidden],.tsui-root [hidden],.tsui-launchers[hidden],.tsui-launcher-host[hidden],.tsui-launcher-host [hidden]{display:none!important}
+.tsui-root{background:var(--tsui-background,#171d28);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,12px);overflow:hidden;min-width:0;display:flex;flex-direction:column;isolation:isolate}
+.tsui-root[data-tsui-surface=floating]{position:fixed;box-shadow:0 18px 60px #0007;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
+.tsui-root[data-tsui-surface=embedded]{position:relative;width:100%;min-height:220px;max-height:80dvh}
+.tsui-header{position:relative;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:var(--tsui-space,10px);background:var(--tsui-raised,#242d3c);border-bottom:1px solid var(--tsui-border,#506076);flex:none}
+.tsui-title{font-weight:750;flex:1;min-width:90px;cursor:move;touch-action:none;padding:6px}.tsui-controls{display:flex;flex-wrap:wrap;gap:4px}
+.tsui-drag-strip,.tsui-header-actions,.tsui-root .tsui-window-options-toggle{display:none}.tsui-window-options{display:contents}.tsui-section-footers{flex:none;max-height:44%;overflow:auto}.tsui-section-footers:empty,.tsui-section-footers:not(:has(.tsui-section-footer:not([hidden]))){display:none}.tsui-section-footer{border-top:1px solid var(--tsui-border);background:var(--tsui-raised);padding:10px}
+.tsui-root button,.tsui-launcher{font:inherit;cursor:pointer;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:var(--tsui-radius,6px);padding:6px 10px;min-height:var(--tsui-control-height,34px)}
+.tsui-root button:not(:disabled):hover{background:var(--tsui-selection,#38455b)}.tsui-root :focus-visible,.tsui-launcher:focus-visible{outline:2px solid var(--tsui-focus,#8fbcff);outline-offset:2px}
+.tsui-root :is(button,input,select,textarea):disabled{opacity:.55;cursor:default}
+.tsui-root .tsui-primary,.tsui-root .tsui-primary:not(:disabled):hover{background:var(--tsui-accent,#96b9ff);color:var(--tsui-on-accent,#101828);border-color:var(--tsui-accent,#96b9ff);font-weight:600}
+.tsui-root :is(.tsui-controls,.tsui-nav) button:focus-visible{outline-offset:-3px}
+.tsui-root input,.tsui-root select,.tsui-root textarea{font:inherit;color:inherit;background:var(--tsui-surface,#242d3c);border:1px solid var(--tsui-border,#506076);border-radius:4px;padding:8px;max-width:100%}
+.tsui-body{display:grid;grid-template-columns:140px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto auto;min-height:0;flex:1;overflow:auto}.tsui-root[data-tsui-layout=frostbite] .tsui-nav{background:var(--tsui-surface,#242d3c)}.tsui-nav{display:flex;flex-direction:column;gap:6px;padding:10px;border-right:1px solid var(--tsui-border,#506076);grid-row:1/-1}
+.tsui-nav:empty,.tsui-settings:empty,.tsui-inspector:empty{display:none}.tsui-body:not(:has(.tsui-nav button)){grid-template-columns:minmax(0,1fr)}
+.tsui-nav button{text-align:left}.tsui-nav button[aria-current=page]{border-color:var(--tsui-accent,#96b9ff);background:var(--tsui-selection,#38455b);font-weight:bold}
+.tsui-content{min-width:0;padding:16px;overflow:auto;scrollbar-gutter:stable;grid-column:2}.tsui-body:not(:has(.tsui-nav button)) .tsui-content{grid-column:1}.tsui-settings,.tsui-inspector{padding:12px;min-width:0;grid-column:2;border-top:1px solid var(--tsui-border,#506076)}
+.tsui-footer{padding:8px 16px;border-top:1px solid var(--tsui-border,#506076);max-height:34%;overflow:auto;flex:none}.tsui-status:empty,.tsui-notices:empty,.tsui-tasks:empty{display:none}.tsui-footer:not(:has(.tsui-status:not(:empty),.tsui-notice,.tsui-task)){display:none}
+.tsui-notice,.tsui-task{display:flex;align-items:center;gap:8px;margin:4px 0}.tsui-notice span,.tsui-task span{flex:1;overflow-wrap:anywhere}.tsui-notice[data-kind=error]{color:var(--tsui-error,#ff9e9e)}.tsui-notice[data-kind=warning]{color:var(--tsui-warning,#f4ce83)}.tsui-notice[data-kind=success]{color:var(--tsui-success,#a4dfb6)}.tsui-task progress{width:90px}
+.tsui-resize{position:absolute;right:0;bottom:0;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 55%,var(--tsui-border,#506076) 56%,transparent 65%)}.tsui-gesturing{user-select:none}
+.tsui-launchers{position:fixed;bottom:max(12px,env(safe-area-inset-bottom));right:max(12px,env(safe-area-inset-right));width:max-content;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);display:flex;flex-direction:column;align-items:stretch;gap:12px;overflow:auto;box-sizing:border-box;padding:2px}
+.tsui-launcher-host{position:relative;max-width:100%;flex:none}.tsui-launcher{max-width:100%;overflow-wrap:anywhere;white-space:normal;width:100%}
+.tsui-table-scroll{max-width:100%;overflow:auto}.tsui-root table{border-collapse:collapse;width:100%}.tsui-root th,.tsui-root td{text-align:left;border-bottom:1px solid var(--tsui-border,#506076);padding:8px;overflow-wrap:anywhere}
+.tsui-root[data-tsui-layout=workbench] .tsui-body,.tsui-root[data-tsui-layout=torn] .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto}.tsui-root[data-tsui-layout=workbench] .tsui-content,.tsui-root[data-tsui-layout=torn] .tsui-content{grid-column:1}
+.tsui-root[data-tsui-layout=workbench] .tsui-nav,.tsui-root[data-tsui-layout=torn] .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);grid-row:auto}
+.tsui-root[data-tsui-layout=workbench] .tsui-nav{padding-bottom:0;gap:2px}.tsui-root[data-tsui-layout=workbench] .tsui-nav button{border-bottom-left-radius:0;border-bottom-right-radius:0}.tsui-root[data-tsui-layout=workbench] .tsui-settings,.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:1}
+.tsui-root[data-tsui-layout=frostbite] .tsui-header{background:linear-gradient(115deg,var(--tsui-surface),var(--tsui-raised));min-height:70px;padding:12px 16px}.tsui-root[data-tsui-layout=frostbite] .tsui-nav{background:var(--tsui-background)}.tsui-root[data-tsui-layout=frostbite] .tsui-nav button[aria-current=page]{box-shadow:inset 3px 0 0 var(--tsui-accent)}
+.tsui-root[data-tsui-layout=workbench] .tsui-header{background:var(--tsui-background);padding:8px 12px}.tsui-root[data-tsui-layout=workbench] .tsui-title{font-family:Consolas,"SFMono-Regular",monospace;font-size:.95em}.tsui-root[data-tsui-layout=workbench] .tsui-nav{background:var(--tsui-background);gap:0;padding-top:0}.tsui-root[data-tsui-layout=workbench] .tsui-nav button{border-top:2px solid var(--tsui-background);border-bottom:0;color:var(--tsui-muted);background:var(--tsui-background);padding:9px 14px}.tsui-root[data-tsui-layout=workbench] .tsui-nav button[aria-current=page]{border-top-color:var(--tsui-accent);background:var(--tsui-surface);color:var(--tsui-text)}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{background:var(--tsui-background)}
+.tsui-root[data-tsui-layout=torn]{box-shadow:inset 0 0 0 2px var(--tsui-surface),0 18px 60px #0007}.tsui-root[data-tsui-layout=torn] .tsui-header{padding:5px 8px;background:linear-gradient(var(--tsui-raised),var(--tsui-surface));border-top:2px solid var(--tsui-accent);box-shadow:inset 0 1px 0 var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] .tsui-title{font-family:Arial,Helvetica,sans-serif;font-size:.92em;letter-spacing:.025em;text-transform:uppercase}.tsui-root[data-tsui-layout=torn] .tsui-nav{padding:5px;gap:4px;background:var(--tsui-raised);box-shadow:inset 0 1px 0 var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] .tsui-nav button{padding:5px 10px;font-size:.9em;font-weight:700}.tsui-root[data-tsui-layout=torn] .tsui-content{padding:10px;background:var(--tsui-surface)}.tsui-root[data-tsui-layout=torn] :is(th,td){padding:6px 8px}.tsui-root[data-tsui-layout=torn] th{background:linear-gradient(var(--tsui-raised),var(--tsui-surface));font-size:.9em}.tsui-root[data-tsui-layout=torn] tbody tr:nth-child(even){background:var(--tsui-raised)}.tsui-root[data-tsui-layout=torn] .tsui-settings,.tsui-root[data-tsui-layout=torn] .tsui-inspector{grid-column:1}
+@media(min-width:850px){.tsui-root[data-tsui-layout=workbench] .tsui-body:has(.tsui-inspector:not(:empty)){grid-template-columns:minmax(0,1fr) 180px}.tsui-root[data-tsui-layout=workbench] .tsui-nav{grid-column:1/-1}.tsui-root[data-tsui-layout=workbench] .tsui-inspector{grid-column:2;grid-row:2/4;border-left:1px solid var(--tsui-border,#506076)}}
+@media(max-width:600px),(pointer:coarse){.tsui-root button,.tsui-launcher{min-height:44px}.tsui-root input,.tsui-root select,.tsui-root textarea{font-size:16px}.tsui-header{gap:4px;padding:6px}.tsui-controls{width:100%;overflow:auto;flex-wrap:nowrap}.tsui-controls button{flex:1;padding:4px;font-size:12px}.tsui-root .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto auto auto;align-content:start}.tsui-root .tsui-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--tsui-border,#506076);padding:6px;grid-row:auto}.tsui-root .tsui-content{padding:10px;grid-column:1;overflow:visible}.tsui-root .tsui-settings,.tsui-root .tsui-inspector{grid-column:1;grid-row:auto}.tsui-resize{display:none}.tsui-title{touch-action:auto;cursor:default}.tsui-task{flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce){.tsui-root *{animation:none!important;transition:none!important}}
+.tsui-root[data-tsui-layout=stock]{font-family:Arial,Helvetica,sans-serif;font-size:calc(13px * var(--tsui-font-scale,1))}
+.tsui-root[data-tsui-layout=stock] .tsui-theme-mark{display:none}
+.tsui-root[data-tsui-layout=stock][data-tsui-surface=floating]:not([data-tsui-maximized=true]) .tsui-drag-strip{display:block;background:var(--tsui-selection);color:var(--tsui-muted);font:10px/18px Consolas,monospace;letter-spacing:2px;text-align:center;cursor:move;touch-action:none;border-bottom:1px solid var(--tsui-border);flex:none}
+.tsui-root[data-tsui-layout=stock] .tsui-header{padding:7px 10px;gap:6px;flex-wrap:nowrap;background:var(--tsui-raised);z-index:3}
+.tsui-root[data-tsui-layout=stock] .tsui-title{font-size:1em;font-weight:600;color:var(--tsui-accent);padding:3px 0;min-width:60px;overflow-wrap:anywhere}
+.tsui-root[data-tsui-layout=stock] .tsui-controls{width:auto;flex-wrap:nowrap;overflow:visible;gap:4px;flex:none}
+.tsui-root[data-tsui-layout=stock] .tsui-header-actions{display:flex;gap:4px}.tsui-root[data-tsui-layout=stock] .tsui-header-actions:empty{display:none}
+.tsui-root[data-tsui-layout=stock] .tsui-controls>button,.tsui-root[data-tsui-layout=stock] .tsui-header-actions>button{width:30px;min-height:30px;padding:3px;border-radius:3px;color:var(--tsui-accent)}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options-toggle{display:block}
+.tsui-root[data-tsui-layout=stock] .tsui-controls>[aria-label="Collapse or expand"]{font-size:0}.tsui-root[data-tsui-layout=stock] .tsui-controls>[aria-label="Collapse or expand"]:before{content:'▴';font-size:16px}
+.tsui-root[data-tsui-layout=stock][data-tsui-collapsed=true] .tsui-controls>[aria-label="Collapse or expand"]:before{content:'▾'}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options{display:none;position:absolute;right:8px;top:calc(100% + 3px);width:190px;max-height:min(250px,60dvh);overflow:auto;padding:6px;background:var(--tsui-surface);border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);box-shadow:0 6px 20px #0006}
+.tsui-root[data-tsui-layout=stock] .tsui-window-options[data-open=true]{display:flex;flex-direction:column;gap:4px}.tsui-root[data-tsui-layout=stock] .tsui-window-options button{text-align:left}
+.tsui-root[data-tsui-layout=stock] .tsui-body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto auto;overflow:hidden}
+.tsui-root[data-tsui-layout=stock] .tsui-content{grid-column:1;padding:12px;overflow:auto;scrollbar-gutter:auto}
+.tsui-root[data-tsui-layout=stock] .tsui-nav{flex-direction:row;flex-wrap:wrap;grid-row:auto;border-right:0;border-bottom:1px solid var(--tsui-border);padding:0 10px;gap:16px;background:var(--tsui-surface)}
+.tsui-root[data-tsui-layout=stock] .tsui-nav button{background:transparent;border:0;border-bottom:2px solid transparent;border-radius:0;padding:9px 2px;color:var(--tsui-muted);font-size:.95em}
+.tsui-root[data-tsui-layout=stock] .tsui-nav button[aria-current=page]{border-bottom-color:var(--tsui-accent);color:var(--tsui-accent)}
+.tsui-root[data-tsui-layout=stock] .tsui-nav [data-tsui-header-action=true]{display:none}.tsui-root[data-tsui-layout=stock] .tsui-settings,.tsui-root[data-tsui-layout=stock] .tsui-inspector{grid-column:1}
+.tsui-root[data-tsui-layout=stock] input,.tsui-root[data-tsui-layout=stock] select{background:var(--tsui-background)}
+.tsui-root[data-tsui-layout=stock][data-tsui-pda=true] .tsui-section-footers{padding-bottom:max(48px,env(safe-area-inset-bottom));background:var(--tsui-raised)}
+@media(max-width:600px),(pointer:coarse){.tsui-root[data-tsui-layout=stock] .tsui-controls>button,.tsui-root[data-tsui-layout=stock] .tsui-header-actions>button{width:44px;min-height:44px}.tsui-root[data-tsui-layout=stock] .tsui-body{grid-template-rows:auto minmax(0,1fr) auto auto;align-content:stretch}.tsui-root[data-tsui-layout=stock] .tsui-content{overflow:auto}.tsui-root[data-tsui-layout=stock] .tsui-nav button{min-height:44px}.tsui-root[data-tsui-layout=stock] .tsui-title{font-size:13px}}
+`;
+}
+// Appearance-only adoption for explicitly declared legacy roots. This bridge
+// shares the existing menu registration identity and never moves script content.
+function createScriptUiAppearanceAdapter(options) {
+  const {doc,win,id,read=()=>null,write=()=>{},getInstance=()=>null,onChange=()=>{}}=options;
+  const safeId=value=>typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$/.test(value);
+  if(!safeId(id))throw new TypeError('A bounded script id is required.');
+  const normalize=options.normalize||(typeof normalizeScriptUiTheme==='function'?normalizeScriptUiTheme:require('./script-hub-theme.cjs').normalizeScriptUiTheme);
+  const apply=options.apply||(typeof applyScriptUiTheme==='function'?applyScriptUiTheme:require('./script-hub-theme.cjs').applyScriptUiTheme);
+  const css=options.css||(typeof scriptUiThemeCss==='function'?scriptUiThemeCss:require('./script-hub-theme.cjs').scriptUiThemeCss);
+  const createClient=options.createClient||(typeof createScriptUiThemeClient==='function'?createScriptUiThemeClient:require('./script-hub-theme-client.cjs').createScriptUiThemeClient);
+  const selectors=(Array.isArray(options.selectors)?options.selectors:[]).filter(value=>typeof value==='string'&&value.length>0&&value.length<=240).slice(0,12);
+  const commandEvent='torn-script-hub:v1:appearance',resultEvent=commandEvent+'-result';
+  let started=false,disposed=false,suspended=false,pdaActive=true,ready=false,generation=0,frame=null,observer=null,style=null;
+  let saved=null,readFailed=false,pending=0,queue=Promise.resolve();
+  const roots=new Map(),listeners=[],seen=new Set();
+  const active=()=>started&&!suspended&&pdaActive&&doc.visibilityState!=='hidden';
+  const stateTheme=()=>saved===null?client.get():normalize(saved);
+  function revision(){
+    const text=JSON.stringify(saved);let first=2166136261,second=5381;
+    for(let i=0;i<text.length;i++){first=Math.imul(first^text.charCodeAt(i),16777619);second=Math.imul(second,33)^text.charCodeAt(i);}
+    return 'ui-v1:'+(first>>>0).toString(16).padStart(8,'0')+(second>>>0).toString(16).padStart(8,'0');
+  }
+  async function readSaved(){try{const raw=await read();saved=raw===null||raw===undefined?null:normalize(raw);readFailed=false;return saved;}catch(error){readFailed=true;throw error;}}
+  const client=createClient({doc,win,scriptId:id,read:readSaved,write:async value=>{const theme=value===null?null:normalize(value);await write(theme);saved=theme;},onChange:theme=>{ready=true;if(active()){schedule();try{onChange(normalize(theme));}catch(_){}}}});
+  function response(command,status){
+    if(!active()||getInstance()!==command.instance)return;
+    const value={id,instance:command.instance,request:command.request,page:'ui-appearance',status,data:{theme:stateTheme(),inherit:saved===null,revision:revision()}};
+    try{const EventClass=win.CustomEvent||globalThis.CustomEvent;doc.dispatchEvent(new EventClass(resultEvent,{detail:JSON.stringify(value)}));}catch(_){}
+  }
+  function receive(event){
+    if(!active()||!ready||typeof event.detail!=='string'||event.detail.length>16384)return;
+    let command;try{command=JSON.parse(event.detail);}catch(_){return;}
+    if(!command||command.id!==id||!safeId(command.instance)||command.instance!==getInstance()||!safeId(command.request)||command.page!=='ui-appearance'||!['read','save'].includes(command.method))return;
+    if(command.method==='save'&&(typeof command.revision!=='string'||command.revision.length>128||!Object.prototype.hasOwnProperty.call(command,'theme')||(command.theme!==null&&(typeof command.theme!=='object'||Array.isArray(command.theme)))))return;
+    const key=command.instance+':'+command.request;if(seen.has(key))return;
+    if(pending>=5){response(command,'error');return;}
+    seen.add(key);if(seen.size>30)seen.delete(seen.values().next().value);pending++;
+    const ownGeneration=generation;
+    const run=async()=>{
+      try{
+        if(!active()||generation!==ownGeneration||getInstance()!==command.instance)return;
+        await client.refresh();
+        if(!active()||generation!==ownGeneration||getInstance()!==command.instance)return;
+        if(readFailed)throw new Error('Appearance read unavailable.');
+        if(command.method==='save'){
+          if(command.revision!==revision()){response(command,'conflict');return;}
+          await client.setOverride(command.theme===null?null:normalize(command.theme));
+        }
+        if(generation===ownGeneration)response(command,'ok');
+      }catch(_){if(generation===ownGeneration)response(command,'error');}
+      finally{if(generation===ownGeneration)pending--;}
+    };
+    queue=queue.then(run,run);
+  }
+  const aliases={
+    '--ocm-bg':'background','--ocm-bg-card':'surface','--ocm-bg-hover':'raised','--ocm-text':'text','--ocm-text-card':'text',
+    '--ocm-text-dim':'muted','--ocm-text-muted':'muted','--ocm-text-faint':'muted','--ocm-border':'border','--ocm-border-soft':'border','--ocm-link':'accent',
+    '--ocm-cpr-good':'success','--ocm-cpr-warn':'warning','--ocm-cpr-crit':'error',
+    '--ground':'background','--surface':'surface','--raise':'raised','--line':'border','--text':'text','--dim':'muted','--muted':'muted','--faint':'muted',
+    '--accent':'accent','--accent-dim':'accent','--warn':'warning','--bad':'error','--info':'focus',
+    '--twpc-bg':'background','--twpc-surface':'surface','--twpc-text':'text','--twpc-muted':'muted','--twpc-line':'border','--twpc-accent':'accent'
+  };
+  function restore(node,record){
+    for(const [key,entry]of record.styles){
+      // A script may update its own inline properties while the bridge is active.
+      if(node.style.getPropertyValue(key)!==entry.last||node.style.getPropertyPriority(key)!==entry.lastPriority)continue;
+      if(entry.value)node.style.setProperty(key,entry.value,entry.priority);else node.style.removeProperty(key);
+    }
+    for(const [key,entry]of record.attributes)if(node.getAttribute(key)===entry.last){if(entry.value===null)node.removeAttribute(key);else node.setAttribute(key,entry.value);}
+    if(!record.hadClass)node.classList.remove('tsui-legacy-surface');
+  }
+  function releaseRoots(){for(const [node,record]of roots)restore(node,record);roots.clear();}
+  function applyRoot(node,theme){
+    let record=roots.get(node);if(!record){record={styles:new Map(),attributes:new Map(),hadClass:node.classList.contains('tsui-legacy-surface')};roots.set(node,record);}
+    const styles=new Map(),attributes=new Map();
+    const resolved=apply({style:{setProperty:(key,value)=>styles.set(key,value)},setAttribute:(key,value)=>attributes.set(key,value)},theme,win.matchMedia?.('(prefers-color-scheme: dark)').matches===true);
+    attributes.set('data-tsui-owner',id);
+    for(const [key,role]of Object.entries(aliases))styles.set(key,resolved.colors[role]);
+    for(const [key,value]of styles){
+      if(!record.styles.has(key))record.styles.set(key,{value:node.style.getPropertyValue(key),priority:node.style.getPropertyPriority(key)});
+      node.style.setProperty(key,value);Object.assign(record.styles.get(key),{last:value,lastPriority:''});
+    }
+    for(const [key,value]of attributes){if(!record.attributes.has(key))record.attributes.set(key,{value:node.getAttribute(key)});node.setAttribute(key,value);record.attributes.get(key).last=value;}
+    node.classList.add('tsui-legacy-surface');
+  }
+  function render(){
+    frame=null;if(!active()||!ready)return;
+    const found=new Set();for(const selector of selectors){let nodes;try{nodes=doc.querySelectorAll(selector);}catch(_){continue;}for(let i=0;i<nodes.length&&found.size<48;i++)found.add(nodes[i]);if(found.size>=48)break;}
+    for(const [node,record]of roots)if(!found.has(node)||node.isConnected===false){restore(node,record);roots.delete(node);}
+    const theme=client.get();for(const node of found)applyRoot(node,theme);
+    if(found.size&&!style){style=doc.createElement('style');style.setAttribute('data-tsui-appearance-owner',id);style.textContent=css()+'\n.tsui-legacy-surface{background-color:var(--tsui-background);color:var(--tsui-text);border-color:var(--tsui-border)}';(doc.head||doc.documentElement).appendChild(style);}
+    if(!observer&&selectors.length&&typeof win.MutationObserver==='function'){observer=new win.MutationObserver(schedule);observer.observe(doc.documentElement,{childList:true,subtree:true});}
+  }
+  function schedule(){if(!active()||!ready||frame!==null)return;frame=win.requestAnimationFrame(render);}
+  function pause(){if(frame!==null)win.cancelAnimationFrame(frame);frame=null;observer?.disconnect();observer=null;}
+  function activity(){if(active())schedule();else pause();}
+  function pda(event){const state=event.detail;if(typeof state?.isActiveTab!=='boolean'||typeof state?.isWebViewVisible!=='boolean')return;pdaActive=state.isActiveTab&&state.isWebViewVisible;activity();}
+  function route(){pause();if(active())releaseRoots();schedule();}
+  function pagehide(event){if(event.persisted){suspended=true;pause();}else stop();}
+  function pageshow(event){if(event.persisted){suspended=false;activity();}}
+  function listen(target,name,callback){target.addEventListener(name,callback);listeners.push(()=>target.removeEventListener(name,callback));}
+  async function start(){
+    if(disposed)return client.get();if(started)return client.get();started=true;suspended=false;pdaActive=true;ready=false;generation++;
+    listen(doc,commandEvent,receive);listen(doc,'visibilitychange',activity);listen(win,'tornpda:tabState',pda);listen(win,'hashchange',route);listen(win,'pagehide',pagehide);listen(win,'pageshow',pageshow);
+    return client.start();
+  }
+  function stop(){started=false;generation++;client.stop();pause();releaseRoots();style?.remove();style=null;for(const remove of listeners.splice(0))remove();seen.clear();pending=0;queue=Promise.resolve();}
+  function dispose(){if(disposed)return;stop();disposed=true;}
+  return {start,stop,dispose,client};
+}
+// Bundled into each participating script; callbacks stay in that script's scope.
+function registerTornScriptMenu(doc, win, metadata, callbacks, features = {}) {
+  const prefix = 'torn-script-hub:v1:';
+  const instance = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID() : 'menu-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  let attached = false, disposed = false;
+  const seen = new Set();
+  const requests = new Map();
+  const preparedSecrets = new Map();
+  const credentialContexts = new Map();
+  let changeTimer = null;
+  let credentialIdentity = null;
+  let pairedHub = null;
+  let pdaActive = true, active = doc.visibilityState !== 'hidden', drainingChanges = false, activityGeneration = 0;
+  const providerRevisions = new Map(), changedProviders = new Map();
+  const sharedProviders = [...new Set((Array.isArray(features.sharedProviders) ? features.sharedProviders : ['torn']).filter(value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(value)))].slice(0,20);
+  function usable() { return attached && !disposed && active && doc.visibilityState !== 'hidden'; }
+  function hook(name) {
+    try { const result = features[name]?.(); if(result && typeof result.then==='function')result.catch(()=>{}); } catch (_) {}
+  }
+  function send(name, value) {
+    try { doc.dispatchEvent(new CustomEvent(prefix + name, { detail: JSON.stringify(value) })); } catch (_) {}
+  }
+  function announce() { send('register', { ...metadata, credentialScope:features.credentialScope==='script'?'script':'main', credentialProviders:features.credentialClient?sharedProviders:[], capabilities:[...new Set([...(metadata.capabilities||[]),...(features.credentialContext?['hub-keys-v2']:[])])], instance, ...(credentialIdentity ? {credentialIdentity} : {}) }); }
+  const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9-]{1,80}$/.test(value);
+  const safeField = value => typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,79}$/.test(value)&&!['__proto__','constructor','prototype'].includes(value);
+  function decode(event, limit = 65536) {
+    try { return typeof event.detail === 'string' && event.detail.length <= limit ? JSON.parse(event.detail) : null; } catch (_) { return null; }
+  }
+  function publicSchema(schema) {
+    if(typeof normalizeHubPage==='function')return normalizeHubPage(schema);
+    const value={id:schema.id,title:schema.title,description:schema.description||'',sections:[],actions:[]};
+    for(const section of schema.sections||[]){
+      const fields=[];
+      for(const source of section.fields||[]){
+        const field={};for(const key of ['id','type','label','description','required','readOnly','min','max','step','minLength','maxLength','options','visibleWhen','format','unit'])if(source[key]!==undefined)field[key]=source[key];
+        if(!['password','secret'].includes(source.type)&&source.default!==undefined)field.default=source.default;fields.push(field);
+      }
+      value.sections.push({id:section.id,title:section.title,fields});
+    }
+    value.actions=(schema.actions||[]).map(action=>({id:action.id,label:action.label}));
+    for (const section of value.sections || []) for (const field of section.fields || []) {
+      if (['password','secret'].includes(field.type)) { delete field.default; delete field.value; }
+    }
+    return value;
+  }
+  function publicValues(schema, state) {
+    const values = {};
+    for (const section of schema.sections || []) for (const field of section.fields || []) {
+      if (['password','secret'].includes(field.type) || !safeField(field.id)) continue;
+      const value = state?.values?.[field.id];
+      if (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) || (typeof value === 'string' && value.length <= 32768)) values[field.id] = value;
+    }
+    if(encodeURIComponent(JSON.stringify(values)).replace(/%[A-F\d]{2}/g,'_').length>32768)throw new Error('Settings exceed transport limit.');
+    return {values,revision:typeof state?.revision === 'string' ? state.revision.slice(0,128) : ''};
+  }
+  async function rpc(event) {
+    const command = decode(event, 49152);
+    if (!command || command.id !== metadata.id || command.instance !== instance || !safeId(command.request)
+        || !metadata.pages?.some(page => page.id === command.page) || !['describe','read','save','prepare-secret'].includes(command.method)
+        || typeof features.describePage !== 'function' || typeof features.readSettings !== 'function' || !usable()) return;
+    const key = 'rpc-' + command.request;
+    if (seen.has(key)) return;
+    seen.add(key); if (seen.size > 30) seen.delete(seen.values().next().value);
+    const reply = (status, data) => {
+      if (!attached || disposed) return;
+      const output = {id:metadata.id,instance,request:command.request,page:command.page,status,...(data ? {data} : {})};
+      if (JSON.stringify(output).length <= 98304) send('rpc-result', output);
+      else send('rpc-result', {id:metadata.id,instance,request:command.request,page:command.page,status:'error'});
+    };
+    try {
+      const schema = publicSchema(await features.describePage(command.page));
+      if (command.method === 'describe') { reply('ok', schema); return; }
+      if(command.method==='prepare-secret'){
+        if(!features.credentialClient||typeof features.saveSecrets!=='function'||preparedSecrets.size>=10){reply('error');return;}
+        const request=await features.credentialClient.createRequest('script-settings',instance,'secret-'+command.request,{pageId:command.page});
+        if(!request||!usable()){reply('error');return;}
+        const timer=setTimeout(()=>preparedSecrets.delete(request.requestId),30000);
+        preparedSecrets.set(request.requestId,{request,timer});reply('ok',request);return;
+      }
+      const current = publicValues(schema, await features.readSettings(command.page));
+      if (command.method === 'read') { reply('ok', current); return; }
+      if (typeof features.saveSettings !== 'function' || !command.values || typeof command.values !== 'object' || Array.isArray(command.values)) { reply('error'); return; }
+      const fields = (schema.sections || []).flatMap(section => section.fields || []).filter(field => !['password','secret'].includes(field.type) && !field.readOnly);
+      if (Object.keys(command.values).some(id => !fields.some(field => field.id === id))) { reply('error'); return; }
+      if(encodeURIComponent(JSON.stringify(command.values)).replace(/%[A-F\d]{2}/g,'_').length>32768){reply('error');return;}
+      if (command.revision !== current.revision) { reply('conflict'); return; }
+      const result = await features.saveSettings(command.page, command.values, command.revision);
+      reply('ok', publicValues(schema, result || await features.readSettings(command.page)));
+    } catch (_) { reply('error'); }
+  }
+  async function onCredentialInfo(event) {
+    const info = decode(event, 8192);
+    if (!info?.identity?.publicJwk || !features.credentialClient || !usable()) return;
+    const token=activityGeneration;
+    try {
+      if (!await features.credentialClient.pinHub(info.identity.publicJwk)) return;
+      const identity=await features.credentialClient.publicIdentity();
+      if(!usable()||token!==activityGeneration)return;
+      if(identity&&credentialIdentity?.fingerprint!==identity.fingerprint){credentialIdentity=identity;announce();}
+      const peer=JSON.stringify([info.identity.publicJwk.x,info.identity.publicJwk.y]);
+      const initial=pairedHub!==peer;pairedHub=peer;
+      const providers=Array.isArray(info.providers)?info.providers.slice(0,20):[];
+      for(const providerId of sharedProviders){
+        const record=providers.find(item=>item?.id===providerId&&Number.isSafeInteger(item.revision)&&item.revision>=0&&typeof item.configured==='boolean');
+        const revision=record?JSON.stringify([record.revision,record.configured]):null;
+        if(initial||(revision!==null&&providerRevisions.get(providerId)!==revision))queueCredentialChange(providerId);
+        if(revision!==null)providerRevisions.set(providerId,revision);
+      }
+    } catch (_) {}
+  }
+  async function onCredentialReply(event) {
+    const reply = decode(event, 131072);
+    if (!reply || reply.scriptId !== metadata.id || reply.instance !== instance || !usable()) return;
+    const item = requests.get(reply.requestId);
+    if (!item) return;
+    requests.delete(reply.requestId); clearTimeout(item.timer);
+    try{
+      let value=await features.credentialClient.consumeReply(reply,item.request);
+      if(item.request.pageId==='credential-context-v2' && value!==null){
+        const context=JSON.parse(value);
+        if(context?.version!==2||context.managed!==true||typeof context.fallback!=='boolean'||!(context.value===null||typeof context.value==='string'&&context.value.length<=4096)||
+          !(context.keyId==='global'||/^key-[a-f0-9]{24}$/.test(context.keyId)))throw new Error('Unavailable');
+        if(!usable())throw new Error('Unavailable');
+        if(!await features.credentialClient.rememberManaged(reply.providerId)){
+          send('credential-policy',{scriptId:metadata.id,instance,providerId:reply.providerId,status:'failed'});
+          features.onCredentialPolicyFailure?.(reply.providerId);throw new Error('Unavailable');
+        }
+        if(!usable())throw new Error('Unavailable');
+        features.onHubManagementChange?.(reply.providerId,true);
+        send('credential-policy',{scriptId:metadata.id,instance,providerId:reply.providerId,status:'saved'});
+        credentialContexts.set(reply.providerId,context);value=context.value;
+        features.onCredentialContext?.(reply.providerId,{keyId:context.keyId,fallback:context.fallback});
+      }else if(value===null)credentialContexts.delete(reply.providerId);
+      item.resolve(usable()?value:null);
+    }catch(_){credentialContexts.delete(reply.providerId);item.resolve(null);}
+  }
+  async function onSecretSettings(event){
+    const message=decode(event,131072),request=message?.request;
+    if(!request||request.scriptId!==metadata.id||request.instance!==instance||request.providerId!=='script-settings'||!usable())return;
+    const item=preparedSecrets.get(request.requestId);if(!item||item.request.pageId!==request.pageId)return;
+    preparedSecrets.delete(request.requestId);clearTimeout(item.timer);
+    let status='error';
+    try{
+      const value=await features.credentialClient.consumeReply(message.envelope,item.request);
+      if(value===null||!usable())return;
+      const values=JSON.parse(value),schema=await features.describePage(request.pageId);
+      const fields=(schema.sections||[]).flatMap(section=>section.fields||[]).filter(field=>['password','secret'].includes(field.type)&&!field.readOnly);
+      if(!values||typeof values!=='object'||Array.isArray(values)||Object.keys(values).some(id=>{const field=fields.find(field=>field.id===id),value=values[id];return !field||typeof value!=='string'||value.length>32768||(field.minLength!==undefined&&value.length<field.minLength)||(field.maxLength!==undefined&&value.length>field.maxLength);}))throw new Error();
+      if(!usable())return;
+      await features.saveSecrets(request.pageId,values);status='ok';
+    }catch(_){}
+    if(usable())send('secret-result',{id:metadata.id,instance,page:request.pageId,request:request.requestId,status});
+  }
+  function queueCredentialChange(providerId){
+    if(!features.credentialClient||!sharedProviders.includes(providerId))return;
+    changedProviders.set(providerId,(changedProviders.get(providerId)||0)+1);
+    if(!usable()||changeTimer!==null||drainingChanges)return;
+    changeTimer=setTimeout(drainCredentialChanges,250);
+  }
+  async function drainCredentialChanges(){
+    changeTimer=null;if(!usable()||drainingChanges)return;
+    drainingChanges=true;const token=activityGeneration;
+    try{
+      const providers=[...changedProviders.keys()];changedProviders.clear();
+      for(const providerId of providers){
+        if(!usable()||token!==activityGeneration)break;
+        const value=await requestSharedCredential(providerId);
+        if(usable()&&token===activityGeneration&&!changedProviders.has(providerId)&&typeof features.onSharedCredentialChange==='function')try{features.onSharedCredentialChange(providerId,value);}catch(_){}
+      }
+    }finally{drainingChanges=false;if(usable()&&changedProviders.size&&changeTimer===null)changeTimer=setTimeout(drainCredentialChanges,250);}
+  }
+  function onCredentialChanged(event){
+    const change=decode(event,1024);
+    if(!features.credentialClient||typeof features.onSharedCredentialChange!=='function'||!change||!safeId(change.providerId)||(change.scriptId&&change.scriptId!==metadata.id))return;
+    queueCredentialChange(change.providerId);
+  }
+  async function requestSharedCredential(providerId) {
+    if (!usable() || !features.credentialClient || !sharedProviders.includes(providerId) || requests.size >= 10) return null;
+    const requestId = 'key-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    try {
+      const request = await features.credentialClient.createRequest(providerId,instance,requestId,features.credentialContext?{pageId:'credential-context-v2'}:{});
+      if (!request || !usable()) return null;
+      return await new Promise(resolve => {
+        const timer = setTimeout(() => {requests.delete(requestId);resolve(null);},2000);
+        requests.set(requestId,{resolve,timer,request}); send('credential-request',request);
+      });
+    } catch (_) { return null; }
+  }
+  function clearCredentialWork(){
+    for(const item of requests.values()){clearTimeout(item.timer);item.resolve(null);}requests.clear();
+    for(const item of preparedSecrets.values())clearTimeout(item.timer);preparedSecrets.clear();
+    clearTimeout(changeTimer);changeTimer=null;
+  }
+  function updateActivity(){
+    const next=doc.visibilityState!=='hidden'&&pdaActive;
+    if(next===active)return;active=next;activityGeneration++;
+    if(!active)clearCredentialWork();
+    else if(attached){providerRevisions.clear();for(const providerId of sharedProviders)changedProviders.set(providerId,1);send('credential-discover',{});}
+  }
+  function onPdaActivity(event){const info=event.detail;pdaActive=info?.isActiveTab===true&&info?.isWebViewVisible===true;updateActivity();}
+  function takeover(event) {
+    try {
+      if (typeof event.detail !== 'string' || event.detail.length > 16000) return;
+      const next = JSON.parse(event.detail);
+      if (next?.id === metadata.id && typeof next.instance === 'string' && next.instance !== instance) dispose();
+    } catch (_) {}
+  }
+  function activate(event) {
+    let command;
+    try {
+      if (typeof event.detail !== 'string' || event.detail.length > 1024) return;
+      command = JSON.parse(event.detail);
+    } catch (_) { return; }
+    if (!command || command.id !== metadata.id || command.instance !== instance || typeof command.action !== 'string'
+        || !Object.prototype.hasOwnProperty.call(callbacks, command.action)
+        || !metadata.actions.some(action => action.id === command.action)
+        || typeof command.request !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(command.request)) return;
+    if (seen.has(command.request)) return;
+    seen.add(command.request);
+    if (seen.size > 30) seen.delete(seen.values().next().value);
+    const report = status => send('result', { id: metadata.id, action: command.action, request: command.request, instance, status });
+    const statusFor = value => value === false ? 'not-ready' : value === 'navigate' ? 'navigate' : 'opened';
+    try {
+      const result = callbacks[command.action]();
+      if (result && typeof result.then === 'function') result.then(value => report(statusFor(value)), () => report('error'));
+      else report(statusFor(result));
+    } catch (_) { report('error'); }
+  }
+  function detach() {
+    if (!attached) return;
+    attached = false;
+    activityGeneration++;
+    doc.removeEventListener(prefix + 'discover', announce);
+    doc.removeEventListener(prefix + 'activate', activate);
+    doc.removeEventListener(prefix + 'register', takeover);
+    doc.removeEventListener(prefix + 'rpc', rpc);
+    doc.removeEventListener(prefix + 'credential-info', onCredentialInfo);
+    doc.removeEventListener(prefix + 'credential-reply', onCredentialReply);
+    doc.removeEventListener(prefix + 'credential-changed',onCredentialChanged);
+    doc.removeEventListener(prefix + 'secret-settings',onSecretSettings);
+    credentialContexts.clear();
+    clearCredentialWork();
+    send('unregister', { id: metadata.id, instance });
+    hook('onDetach');
+  }
+  function attach() {
+    if (attached || disposed) return;
+    attached = true;
+    active=doc.visibilityState!=='hidden'&&pdaActive;
+    doc.addEventListener(prefix + 'discover', announce);
+    doc.addEventListener(prefix + 'activate', activate);
+    doc.addEventListener(prefix + 'register', takeover);
+    if (metadata.pages?.length) doc.addEventListener(prefix + 'rpc', rpc);
+    if (features.credentialClient) {
+      doc.addEventListener(prefix + 'credential-info', onCredentialInfo);
+      doc.addEventListener(prefix + 'credential-reply', onCredentialReply);
+      doc.addEventListener(prefix + 'credential-changed',onCredentialChanged);
+      if(typeof features.saveSecrets==='function')doc.addEventListener(prefix + 'secret-settings',onSecretSettings);
+    }
+    announce();
+    hook('onAttach');
+    if(features.credentialClient&&usable()){providerRevisions.clear();send('credential-discover',{});}
+  }
+  win.addEventListener('pagehide', detach);
+  win.addEventListener('pageshow', attach);
+  doc.addEventListener('visibilitychange',updateActivity);
+  win.addEventListener('tornpda:tabState',onPdaActivity);
+  if(typeof win.PDA_getTabState==='function')Promise.resolve().then(()=>win.PDA_getTabState()).then(info=>{if(!disposed)onPdaActivity({detail:info});}).catch(()=>{});
+  function dispose() {
+    if(disposed)return;
+    disposed = true;
+    detach();
+    win.removeEventListener('pagehide', detach);
+    win.removeEventListener('pageshow', attach);
+    doc.removeEventListener('visibilitychange',updateActivity);
+    win.removeEventListener('tornpda:tabState',onPdaActivity);
+    seen.clear();
+    features.credentialClient?.destroy();
+    changedProviders.clear();providerRevisions.clear();hook('onDispose');
+  }
+  attach();
+  dispose.requestSharedCredential = requestSharedCredential;
+  dispose.instance = instance;
+  if (features.credentialClient) {
+    Promise.resolve().then(() => features.credentialClient.ready()).then(async ready => {
+      if(disposed)return;
+      features.onCredentialPolicyReady?.(ready,providerId=>features.credentialClient.isManaged?.(providerId)===true);
+      if (!ready || !usable()) return;
+      credentialIdentity = await features.credentialClient.publicIdentity();
+      if (usable() && credentialIdentity) {announce();send('credential-discover',{});}
+    }).catch(() => {});
+  }
+  return dispose;
+}
+function hubReveal(selector) {
+  const root = document.querySelector(selector); if (!root) return false;
+  root.hidden = false; root.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  root.querySelector('button, [tabindex="0"], input:not([type="password"])')?.focus({ preventScroll: true });
+  return true;
+}
+
+
+const hubMenuAdapter = registerTornScriptMenu(document, window, {
+  "id": "war-payout-report",
+  "name": "War Payout Report",
+  "icon": "war",
+  "version": "2.12.1-local",
+  "url": "https://www.torn.com/factions.php?step=your&type=1",
+  "actions": [
+    {
+      "id": "open",
+      "label": "Open report"
+    }
+  ],
+  "category": "Tools",
+  "capabilities": [
+    "appearance"
+  ]
+}, {
+  "open": () => { if (!document.body) return false; openPanel(); return true; }
+});
+
+const hubAppearanceKey="torn-script-hub:ui-override:v1:war-payout-report";
+const hubAppearance=createScriptUiAppearanceAdapter({doc:document,win:window,id:"war-payout-report",selectors:["#twpr-panel"],getInstance:()=>hubMenuAdapter.instance,
+read:()=>typeof GM_getValue==='function'?GM_getValue(hubAppearanceKey,null):typeof GM!=='undefined'&&typeof GM.getValue==='function'?GM.getValue(hubAppearanceKey,null):JSON.parse(localStorage.getItem(hubAppearanceKey)||'null'),
+write:value=>{if(typeof GM_setValue==='function')return GM_setValue(hubAppearanceKey,value);if(typeof GM!=='undefined'&&typeof GM.setValue==='function')return GM.setValue(hubAppearanceKey,value);localStorage.setItem(hubAppearanceKey,JSON.stringify(value));}});
+hubAppearance.start().catch(()=>{});
+// SCRIPT HUB ADAPTER END
 })();
