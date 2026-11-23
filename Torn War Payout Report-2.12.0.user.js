@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Report
 // @namespace    https://github.com/iSatomi/torn-war-payout-report
-// @version      2.12.8
+// @version      2.12.21-local
 // @description  Per-member ranked war breakdown: hits, losses (all attackers + enemy-only), defends held, stalemates, assists and respect — plus a FACTION DRUG ANALYZER that ties Xanax taken from the armoury to hits actually landed, per war, and a MULTI-WAR SWEEP that runs the same check across every war at once to surface repeat offenders. Loops faction/attacks across the war window (handles the 100-record cap), classifies every hit, and exports as an aligned table, Discord block, TSV, CSV or a standalone HTML report.
 // @author       iSatomi [3580191]
 // @license      GPL-3.0
@@ -875,6 +875,7 @@
             oppName: p.war.oppName,
             start: p.war.start,
             hitsSrc: p.hitsSrc,
+            armouryPartial: !!p.partial,
             drawn: p.drugs ? p.drugs.totalDrawn || 0 : 0,
             hits: p.drugs ? p.drugs.totalHits || 0 : 0,
             entries: p.drugs ? p.drugs.entries || 0 : 0,
@@ -1800,7 +1801,7 @@
         document.head.appendChild(s);
     }
 
-    let state = { ctx: null, wars: [], report: null, war: null, drugs: null, odResults: null, sweep: null, sweepOd: null };
+    let state = { ctx: null, wars: [], report: null, war: null, drugs: null, odResults: null, sweep: null, sweepOd: null, sweepRunning: false };
 
     /* --------------------- color settings --------------------- */
     const COLORS = [
@@ -3046,6 +3047,7 @@
         }
         sweep.totalWasted = sweep.list.reduce((t, r) => t + (r.wasted || 0), 0);
         sweep.totalExcused = sweep.list.reduce((t, r) => t + (r.excused || 0), 0);
+        sweep.flaggedAny = sweep.list.filter(r => r.warsFlaggedNet > 0);
         sweep.repeats = sweep.list.filter(r => r.repeat);
         sweep.odMembers = sweep.list.filter(r => r.odWars && r.odWars.length);
         sweep.list.sort((a, b) => (b.wasted || 0) - (a.wasted || 0)
@@ -3220,7 +3222,7 @@
      */
     function odCellSweep(r) {
         const o = state.sweepOd && state.sweepOd[r.id];
-        if (!o) return '<span style="color:#4e5468" title="Not checked — tick “Check overdoses automatically” and sweep again">·</span>';
+        if (!o) return '<span style="color:#4e5468" title="' + (state.sweepOd ? 'Not selected for the overdose check' : 'Overdose checks were not run') + '">·</span>';
         if (o.ods > 0) {
             // Name the wars. "1 overdose" is not actionable; "overdosed during
             // Bravo Company" is, and the war window is the honest resolution —
@@ -3230,7 +3232,7 @@
                 + (x.ods > 1 ? ' ×' + x.ods : '')).join(', ');
             return `<span style="color:#ff8080;font-weight:700" title="Overdosed during ${where || o.wars + ' war(s)'} — that ended their war, so those Xanax are excused rather than wasted">💊 ${where || o.ods}</span>`;
         }
-        if (o.unknown) return `<span style="color:#ffd479" title="${o.unknown} of ${o.checked} war(s) could not be determined — Torn returned only a lifetime total">?</span>`;
+        if (o.unknown) return `<span style="color:#ffd479" title="${o.unknown} of ${o.checked} war(s) could not be determined: no usable reading">?</span>`;
         return '<span style="color:#7fe3a0" title="Checked across every flagged war — no overdose">—</span>';
     }
 
@@ -3242,12 +3244,42 @@
         return '#ff8080';
     }
 
+    function sweepHitSummary(s) {
+        const count = s.wars.length;
+        const known = count - s.unknownWars.length;
+        const complete = known > 0 && known === count;
+        const coverage = fmt(known) + ' of ' + fmt(count) + ' war' + (count === 1 ? '' : 's') + ' reported';
+        const value = known > 0 ? fmt(s.totalHits) : '?';
+        const description = complete ? value + ' war hits' :
+            (known > 0 ? value + ' confirmed war hits' : 'War hits unknown') + ' (' + coverage + ')';
+        return { known, complete, coverage, value, description };
+    }
+
+    // Only wars with published hits feed the waste calculation.
+    function sweepWasteSummary(s, hits = sweepHitSummary(s)) {
+        const present = hits.known > 0;
+        const rounded = present ? s.totalWasted.toFixed(0) : '?';
+        const description = !present ? 'Xanax waste unknown (' + hits.coverage + ')' :
+            rounded + ' Xanax wasted' + (hits.complete ? '' : ' in wars with hit data (' + hits.coverage + ')');
+        return { rounded, description,
+            value: present ? fmt(s.totalWasted) : '?',
+            color: !present ? '#8b90a6' : s.totalWasted ? '#ff8080' : '#7fe3a0' };
+    }
+
     function renderSweep() {
         const box = $('#twpr-sweep-body');
         if (!box) return;
         const s = state.sweep;
+        const partialWars = s?.wars.filter(w => w.armouryPartial) || [];
+        for (const id of ['#twpr-sweep-copy', '#twpr-sweep-dl']) {
+            const btn = $(id);
+            if (btn) btn.disabled = state.sweepRunning || partialWars.length > 0;
+        }
+        const runningBox = state.sweepRunning
+            ? '<div class="twpr-warnbox" role="status"><b>Sweep in progress.</b> Copy and Download are unavailable until it finishes.' + (s ? ' The rows below are from the previous sweep.' : '') + '</div>'
+            : '';
         if (!s) {
-            box.innerHTML = '';
+            box.innerHTML = runningBox;
             const filterRow = $('#twpr-sweep-filters');
             if (filterRow) filterRow.style.display = 'none';
             const count = $('#twpr-sweep-count');
@@ -3264,15 +3296,17 @@
         const everyone = s.list.filter(r => r.totalDrawn > 0 || r.totalHits > 0);
         const rows = sweepVisible(s);
 
+        const hits = sweepHitSummary(s);
+        const waste = sweepWasteSummary(s, hits);
         const kpis = `
           <div class="twpr-kpis">
             <div class="twpr-kpi"><div class="k">Wars swept</div><div class="v">${fmt(s.wars.length)}</div>
               <div class="s">${s.unknownWars.length ? fmt(s.unknownWars.length) + ' without hit data' : 'all with hit data'}</div></div>
-            <div class="twpr-kpi"><div class="k">Xanax wasted</div>
-              <div class="v" style="color:${s.totalWasted ? '#ff8080' : '#7fe3a0'}">${fmt(s.totalWasted)}</div>
-              <div class="s">of ${fmt(s.totalUsed)} swallowed · ${fmt(Math.round(s.totalWasted * ENERGY_PER_XANAX))} energy</div></div>
-            <div class="twpr-kpi"><div class="k">Hits landed</div><div class="v" style="color:#7fe3a0">${fmt(s.totalHits)}</div>
-              <div class="s">official war reports</div></div>
+            <div class="twpr-kpi"><div class="k">${hits.complete ? 'Xanax wasted' : 'Measured waste'}</div>
+              <div class="v" style="color:${waste.color}">${waste.value}</div>
+              <div class="s">${hits.complete ? 'of ' + fmt(s.totalUsed) + ' swallowed \u00b7 ' + fmt(Math.round(s.totalWasted * ENERGY_PER_XANAX)) + ' energy' : hits.coverage}</div></div>
+            <div class="twpr-kpi"><div class="k">${hits.complete ? 'Hits landed' : 'Confirmed war hits'}</div><div class="v" style="color:#7fe3a0">${hits.value}</div>
+              <div class="s">${hits.complete ? 'official war reports' : hits.coverage}</div></div>
             <div class="twpr-kpi"><div class="k">Wasted a war</div>
               <div class="v" style="color:${s.flaggedAny.length ? '#ffd479' : '#7fe3a0'}">${fmt(s.flaggedAny.length)}</div>
               <div class="s">took Xanax, landed 0 hits</div></div>
@@ -3294,11 +3328,12 @@
                 : '');
 
         const caveats = [];
+        if (state.sweepOd) caveats.push(escHtml(sweepOdCoverage()));
         if (s.unknownWars.length) {
             caveats.push(`<b>${fmt(s.unknownWars.length)} war${s.unknownWars.length === 1 ? '' : 's'}</b> had no hit data
               (${s.unknownWars.map(w => escHtml(w.oppName)).join(', ')}) — no complete hit report was available.
               Their Xanax still counts, but <b>nobody can be flagged in them</b>, so <b>?</b> in the hits slot means
-              unknown, not idle.`);
+              unknown, not idle. An asterisk in the waste columns means the value covers only wars with hit data.`);
         }
         if (s.emptyWars.length) {
             caveats.push(`<b>${fmt(s.emptyWars.length)} war${s.emptyWars.length === 1 ? '' : 's'}</b> returned no armoury
@@ -3391,17 +3426,24 @@
               <tbody>${rows.map(r => {
                 // "?" not "0" — see hitsKnown in buildSweep.
                 const unk = `<span class="twpr-wcell none" title="No complete hit report is available for this member. This is unknown, not zero.">?</span>`;
+                const incomplete = r.warsKnown < r.warsSeen;
+                const marker = incomplete && r.warsKnown > 0 ? '*' : '';
+                const coverage = marker ? ' - measured in ' + r.warsKnown + ' of ' + r.warsSeen + ' wars with hit data' : '';
+                const flags = r.warsFlaggedNet ?? r.warsFlagged;
+                const flagValue = !r.warsKnown ? '?' : flags ? flags + ' of ' + r.warsSeen + marker : marker ? '0*' : '-';
+                const wasteValue = r.wasted == null ? '?' : r.wasted < 0.05 ? (marker ? '0*' : '-') : r.wasted.toFixed(1) + marker;
                 return `<tr>
                 <td><span class="twpr-name">${escHtml(r.name)}</span> <span class="twpr-id">[${escHtml(r.id || '?')}]</span></td>
-                <td class="${(r.warsFlaggedNet ?? r.warsFlagged) ? (r.repeat ? 'twpr-repeat' : 'twpr-flag') : 'twpr-ok'}"
-                    title="${r.warsFlagged
-                      ? `Took Xanax and landed nothing in ${r.warsFlagged} of the ${r.warsSeen} war(s) they appear in${r.warsExcused ? ` — ${r.warsExcused} explained by an overdose` : ''}`
-                      : 'Never took Xanax without landing hits'}">${(r.warsFlaggedNet ?? r.warsFlagged)
-                        ? `${r.warsFlaggedNet ?? r.warsFlagged} of ${r.warsSeen}` : '—'}${r.warsExcused ? ' <span style="color:#9fc7ff;font-size:10px">+' + r.warsExcused + ' OD</span>' : ''}</td>
-                <td style="color:${wasteColor(r)};font-weight:${(r.wasted || 0) >= 1 ? 700 : 400}"
-                    title="${r.wasted == null ? 'No hit data yet — waste cannot be measured'
-                      : r.wasted < 0.05 ? 'Converted everything they drew into hits'
-                      : `${Math.round(r.wasted * ENERGY_PER_XANAX).toLocaleString()} energy drawn but never spent on a war hit${r.worstWar ? ` — worst vs ${escHtml(r.worstWar.opp)}: ${fmt(r.worstWar.drawn)} Xanax for ${fmt(r.worstWar.hits)} hits` : ''}`}">${r.wasted == null ? '?' : r.wasted < 0.05 ? '—' : r.wasted.toFixed(1)}</td>
+                <td class="${flags ? (r.repeat ? 'twpr-repeat' : 'twpr-flag') : incomplete ? '' : 'twpr-ok'}"
+                    title="${!r.warsKnown ? 'No hit data - zero-hit Xanax wars cannot be measured'
+                      : (r.warsFlagged ? 'Took Xanax and landed nothing in ' + r.warsFlagged + ' war(s)'
+                        + (r.warsExcused ? ' - ' + r.warsExcused + ' explained by an overdose' : '')
+                        : 'No zero-hit Xanax wars recorded') + coverage}">${flagValue}${r.warsExcused ? ' <span style="color:#9fc7ff;font-size:10px">+' + r.warsExcused + ' OD</span>' : ''}</td>
+                <td style="color:${marker && r.wasted < 0.05 ? '#ffd479' : wasteColor(r)};font-weight:${(r.wasted || 0) >= 1 ? 700 : 400}"
+                    title="${r.wasted == null ? 'No hit data yet - waste cannot be measured'
+                      : (r.wasted < 0.05 ? 'No unexcused Xanax waste measured'
+                        : fmt(Math.round(r.wasted * ENERGY_PER_XANAX)) + ' energy from swallowed Xanax not converted into war hits'
+                          + (r.worstWar ? ' - worst vs ' + escHtml(r.worstWar.opp) + ': ' + fmt(r.worstWar.drawn) + ' Xanax for ' + fmt(r.worstWar.hits) + ' hits' : '')) + coverage}">${wasteValue}</td>
                 <td style="color:${(r.excused || 0) >= 0.05 ? '#9fc7ff' : '#4e5468'}"
                     title="${(r.excused || 0) >= 0.05
                       ? `${r.excused.toFixed(1)} Xanax not counted as waste because they overdosed`
@@ -3425,10 +3467,17 @@
         markTab('sweep', true, repeats > 0);
         const cnt = $('#twpr-sweep-count');
         if (cnt) cnt.textContent = `${fmt(rows.length)} of ${fmt(everyone.length)} shown`;
-        box.innerHTML = kpis + repeatBox + caveatBox + legend + table + shownNote;
+        const partialBox = partialWars.length
+            ? `<div class="twpr-warnbox" role="status"><strong>Incomplete armoury scan.</strong>
+                 Affected wars: ${partialWars.map(w => escHtml(w.oppName)).join(', ')}.
+                 Xanax totals, rates and flags are provisional. Run the sweep again before relying on them.
+                 Copy and Download are unavailable until the armoury scan completes.</div>`
+            : '';
+        box.innerHTML = runningBox + partialBox + kpis + repeatBox + caveatBox + legend + table + shownNote;
     }
 
     async function onSweepRun() {
+        if (state.sweepRunning) return;
         const key = $('#twpr-key').value.trim();
         if (!key) { setStatus('Enter your API key first.', true); return; }
         if (!state.ctx || !state.wars || !state.wars.length) { setStatus('Load wars first.', true); return; }
@@ -3450,27 +3499,30 @@
             return;
         }
         const btn = $('#twpr-sweep-run');
+        const autoOd = !!$('#twpr-sweep-autood')?.checked;
+        state.sweepRunning = true;
         if (btn) btn.disabled = true;
         try {
+            renderSweep();
             const perWar = await sweepWars(key, state.ctx, plan.windows, opts, (i, n, war, msg) => {
                 setStatus(`Sweeping war ${i}/${n} — vs ${war.oppName}: ${msg}`);
             });
-            state.sweep = buildSweep(perWar);
-            state.sweep.meta = { leadDays: opts.leadDays, tailHours: opts.tailHours,
-                                 useCache: opts.useCache, at: Date.now() };
-            state.sweepOd = null;
-            renderSweep();
+            const nextSweep = buildSweep(perWar);
+            nextSweep.meta = { leadDays: opts.leadDays, tailHours: opts.tailHours,
+                               useCache: opts.useCache, at: Date.now() };
+            let nextOd = null;
 
             // Only the flagged are checked, and only in wars that published
             // hits — see sweepOverdoses. Readings are cached permanently, so
             // this is nearly free after the first run.
-            if ($('#twpr-sweep-autood') && $('#twpr-sweep-autood').checked) {
-                state.sweepOd = await sweepOverdoses(key, perWar, (war, i, n, name) => {
+            if (autoOd) {
+                nextOd = await sweepOverdoses(key, perWar, (war, i, n, name) => {
                     setStatus(`Checking overdoses — vs ${war.oppName}: ${i}/${n} (${name})`);
                 });
-                applyOdExcuses(state.sweep, state.sweepOd);
-                renderSweep();
+                applyOdExcuses(nextSweep, nextOd);
             }
+            state.sweep = nextSweep;
+            state.sweepOd = nextOd;
             const reused = perWar.filter(p => p.fromCache).length;
             const saved = perWar.filter(p => p.cachedNow).length;
             const odFound = state.sweepOd
@@ -3479,12 +3531,14 @@
             setStatus(`Swept ${fmt(wars.length)} war(s)${reused ? ` — ${reused} reused from cache` : ''}` +
                       `${saved ? `, ${saved} newly cached (re-sweeping them is now free)` : ''}. ` +
                       `${fmt(state.sweep.repeats.length)} repeat offender(s), ${fmt(state.sweep.flaggedAny.length)} flagged at least once.` +
-                      (state.sweepOd ? ` ${odFound} member(s) overdosed.` : '') +
+                      (state.sweepOd ? (odFound ? ' ' + odFound + ' member(s) overdosed.' : '') + ' ' + sweepOdCoverage() : '') +
                       (partials ? ` ${partials} war(s) pulled partially and were NOT cached — re-run to fill in.` : ''), partials > 0);
         } catch (e) {
-            setStatus(e.message || 'Sweep failed.', true);
+            setStatus((e.message || 'Sweep failed.') + (state.sweep ? ' Still showing the previous sweep.' : ''), true);
         } finally {
+            state.sweepRunning = false;
             if (btn) btn.disabled = false;
+            renderSweep();
         }
     }
 
@@ -3498,6 +3552,19 @@
      * us — the personalstats snapshot is daily, so the war window is the
      * resolution, and claiming an exact minute would be inventing precision.
      */
+    function sweepOdCoverage() {
+        if (!state.sweepOd) return 'Overdose checks were not run.';
+        let checked = 0, unknown = 0, found = false;
+        for (const result of Object.values(state.sweepOd)) {
+            checked += result.checked; unknown += result.unknown; found ||= result.ods > 0;
+        }
+        if (!checked) return 'Overdose check: no eligible member-war checks.';
+        if (unknown) return 'Overdose check incomplete: ' + unknown + ' of ' + checked +
+            ' targeted member-war checks could not be determined.' + (found ? '' : ' No overdoses confirmed.');
+        return 'Overdose check: ' + checked + ' targeted member-war ' + (checked === 1 ? 'check' : 'checks') +
+            ' resolved.' + (found ? '' : ' No overdoses found among those checked.');
+    }
+
     function sweepOdRollCall(s) {
         if (!s || !s.odMembers || !s.odMembers.length) return [];
         return s.odMembers.slice()
@@ -3537,9 +3604,8 @@
         out.push(`Waste model: 1 Xanax = ${ENERGY_PER_XANAX} energy, 1 hit = ${ENERGY_PER_HIT} energy, so break-even is ${HITS_PER_XANAX} hits per Xanax.`);
         out.push('Waste is charged on Xanax SWALLOWED only — withdrawals to inventory are listed separately and never counted as waste.');
         out.push(`Filter: ${stripTags(sweepFilterLabel(rows.length, s.list.length))}`);
-        out.push(state.sweepOd
-            ? 'Overdose check: run. A member with no reading is marked unknown, never clean.'
-            : 'Overdose check: NOT run — an empty OD column means unchecked, not clean.');
+        out.push(sweepOdCoverage());
+        out.push('OD count: confirmed overdose wars only. Blank means unchecked or unknown, not zero.');
         return out;
     }
 
@@ -3562,13 +3628,15 @@
         }
         // Metadata first, one quoted cell per row, then a blank line. Excel and
         // Sheets both read those as plain text rows and leave the table intact.
-        const lines = sweepSettingsLines().map(l => csvCell(l));
+        const lines = sweepSettingsLines().map(l => csvCell(l.startsWith('Hits: ')
+            ? l + ' Blank waste cells mean no hit data for the member. Numeric waste values are measured subtotals from wars with hit data; WastedWars counts flags before overdose adjustments.'
+            : l));
         lines.push('');
         lines.push(head.map(csvCell).join(','));
         for (const r of visible) {
             // Blank, never 0, where hits are unknown — a spreadsheet cell reading
             // 0 is an assertion, and an empty one is an honest absence.
-            const row = [r.name, r.id || '', r.warsFlagged, r.warsSeen,
+            const row = [r.name, r.id || '', r.warsKnown > 0 ? r.warsFlagged : '', r.warsSeen,
                          r.totalDrawn,
                          r.hitsKnown ? r.totalHits : '',
                          r.avgHits == null ? '' : r.avgHits.toFixed(1),
@@ -3578,7 +3646,7 @@
                          r.wasted == null ? '' : Math.round(r.wasted * ENERGY_PER_XANAX),
                          r.efficiency == null ? '' : (r.efficiency * 100).toFixed(0),
                          (r.excused || 0) >= 0.05 ? r.excused.toFixed(2) : '',
-                         r.odWars ? r.odWars.length : '',
+                         r.odWars?.length || (state.sweepOd?.[r.id] && !state.sweepOd[r.id].unknown ? 0 : ''),
                          // Blank when unchecked — an empty cell is an absence,
                          // where "none" would be a claim nobody verified.
                          !state.sweepOd ? '' : (r.odWars || []).map(x =>
@@ -3594,6 +3662,20 @@
         return { text: lines.join('\r\n'), rows: visible.length };
     }
 
+    function sweepDiscordWasteCell(r) {
+        if (r.wasted == null) return '?';
+        const partial = r.warsKnown < r.warsSeen;
+        const value = r.wasted < 0.05 ? (partial ? '0' : '-') : r.wasted.toFixed(1);
+        return value + (partial ? '*' : '');
+    }
+
+    function sweepDiscordWasteLegend(rows) {
+        if (!rows.some(r => r.warsKnown < r.warsSeen)) return '';
+        const tick = String.fromCharCode(96);
+        return '_Wasted: ' + tick + '*' + tick + ' = waste subtotal from wars with hit data; '
+            + tick + '?' + tick + ' = no hit data._\n';
+    }
+
     // ASCII only inside the block: Discord's monospace font renders emoji at
     // double width, which shears every column to their right out of alignment.
     function buildSweepDiscord() {
@@ -3607,7 +3689,7 @@
         const headers = ['Player', 'Wasted', 'Xanax', 'Hits', 'Hits/Xan'];
         const body = rows.map(r => [
             r.name,
-            r.wasted == null ? '?' : r.wasted < 0.05 ? '-' : r.wasted.toFixed(1),
+            sweepDiscordWasteCell(r),
             // Swallowed — the key below says "charged on Xanax swallowed only",
             // and this column printing drawn made the table contradict its own
             // caption. A "+" marks members who also withdrew stock.
@@ -3621,15 +3703,16 @@
 
         const span = `${s.wars.length} war${s.wars.length === 1 ? '' : 's'}`;
         const head = `**Multi-war drug sweep — ${span}**\n`
-            + `${fmt(s.totalUsed)} Xanax swallowed${s.totalUnaccounted ? ` (+${fmt(s.totalUnaccounted)} withdrawn as stock, not charged)` : ''}, ${fmt(s.totalHits)} war hits`
+            + `${fmt(s.totalUsed)} Xanax swallowed${s.totalUnaccounted ? ` (+${fmt(s.totalUnaccounted)} withdrawn as stock, not charged)` : ''}, ${sweepHitSummary(s).description}`
             + (s.totalUsed && !s.unknownWars.length ? ` (${(s.totalHits / s.totalUsed).toFixed(2)} hits per Xanax swallowed)` : '') + '.\n'
             + (s.repeats.length
                 ? `:warning: ${s.repeats.length} member${s.repeats.length === 1 ? '' : 's'} took stock and landed nothing in 2+ wars.\n`
-                : (s.flaggedAny.length ? `${s.flaggedAny.length} flagged in a single war; no repeat offenders.\n` : 'Nobody was flagged.\n'))
+                : (s.flaggedAny.length ? `${s.flaggedAny.length} flagged in a single war; no repeat offenders.\n` : s.list.some(r => r.warsExcused > 0) ? 'No flags remain after overdose adjustments.\n' : 'Nobody was flagged.\n'))
             + (s.unknownWars.length ? `_${s.unknownWars.length} war(s) had no hit data yet and cannot flag anyone._\n` : '')
             // Say what the block IS. A filtered table pasted without this reads
             // as the whole faction, and names an innocent majority by omission.
             + `_Wasted = Xanax whose energy never became a hit (1 Xanax = ${ENERGY_PER_XANAX} E = ${HITS_PER_XANAX} hits), charged on Xanax swallowed only; a ${String.fromCharCode(96)}+${String.fromCharCode(96)} means they also withdrew stock (not charged). Hits/Xan: ${HITS_PER_XANAX} is break-even._\n`
+            + sweepDiscordWasteLegend(rows)
             + `_${stripTags(sweepFilterLabel(rows.length, s.list.length))}${state.sweepOd ? '' : ' Overdoses not checked.'}_\n`;
 
         // Who overdosed, and where. This is the half the table cannot show:
@@ -3643,26 +3726,27 @@
                       + (x.ods > 1 ? ' (x' + x.ods + ')' : '')).join(', ')
                   + (r.excused >= 0.05 ? ' [' + r.excused.toFixed(1) + ' Xanax excused]' : '')).join('\n')
               + (roll.length > 15 ? '\n\u2026 +' + (roll.length - 15) + ' more' : '') + '\n'
-            : (state.sweepOd ? '\n_Overdose check run: nobody overdosed during these wars._\n' : '');
+            : '';
 
         // 2000 chars is a hard cap, so chunk on ROW boundaries and repeat the
         // header — a table split mid-row is worse than two tables.
         const LIMIT = 1900;
         const chunks = [];
-        let cur = [], curLen = head.length + 8;
+        const rule = w.map(n => '-'.repeat(n)).join('  ');
+        const tableOverhead = line(headers).length + rule.length + 9;
+        let cur = [], curLen = head.length + tableOverhead;
         for (const r of body) {
             const l = line(r);
             if (curLen + l.length + 1 > LIMIT && cur.length) {
-                chunks.push(cur); cur = []; curLen = 8 + line(headers).length + w.reduce((a, b) => a + b, 0);
+                chunks.push(cur); cur = []; curLen = tableOverhead;
             }
             cur.push(l); curLen += l.length + 1;
         }
         if (cur.length) chunks.push(cur);
 
-        const rule = w.map(n => '-'.repeat(n)).join('  ');
         const text = chunks.map((c, i) =>
             (i === 0 ? head : '') + '```\n' + [line(headers), rule, ...c].join('\n') + '\n```'
-        ).join('\n\n');
+        ).join('\n\n') + odBlock + (state.sweepOd ? '\n_' + sweepOdCoverage() + '_\n' : '');
         return { text, rows: rows.length, messages: chunks.length };
     }
 
@@ -3688,7 +3772,7 @@
                 if (p.flagged) flagged++;
             }
             return { ...w, used, hits, wasted, flagged, took, withdrew,
-                     hitsPerXan: used > 0 ? hits / used : null };
+                     hitsPerXan: w.hitsSrc !== 'none' && used > 0 ? hits / used : null };
         });
     }
 
@@ -3740,12 +3824,12 @@
         const headers = ['Player', 'Wast', 'Excu', 'OD', 'Xan', 'Hits', 'H/X', ...keys];
         const body = rows.map(r => [
             r.name,
-            r.wasted == null ? '?' : r.wasted < 0.05 ? '-' : r.wasted.toFixed(1),
+            sweepDiscordWasteCell(r),
             (r.excused || 0) >= 0.05 ? r.excused.toFixed(1) : '-',
-            !state.sweepOd ? '?' : (r.odWars && r.odWars.length) ? String(r.odWars.length) : '-',
+            r.odWars?.length ? String(r.odWars.length) : !state.sweepOd?.[r.id] ? '.' : state.sweepOd[r.id].unknown ? '?' : '-',
             String(r.totalUsed),
             r.hitsKnown ? String(r.totalHits) : '?',
-            r.hitsPerXan == null ? '-' : r.hitsPerXan.toFixed(1),
+            r.hitsPerXan == null ? (r.warsKnown === r.warsSeen ? '-' : '?') : r.hitsPerXan.toFixed(1),
             ...wars.map(w => cell(r, w)),
         ]);
         const w = headers.map((_, i) => Math.max(...[headers, ...body].map(row => row[i].length)));
@@ -3760,8 +3844,8 @@
             + (x.hitsSrc === 'none' ? ' ?' : '')).join(' | ');
 
         const head = '**Multi-war drug sweep — ' + s.wars.length + ' war' + (s.wars.length === 1 ? '' : 's') + '**\n'
-            + fmt(s.totalUsed) + ' Xanax swallowed, ' + fmt(s.totalHits) + ' war hits, **'
-            + s.totalWasted.toFixed(0) + ' Xanax wasted**'
+            + fmt(s.totalUsed) + ' Xanax swallowed, ' + sweepHitSummary(s).description + ', **'
+            + sweepWasteSummary(s).description + '**'
             + ((s.totalExcused || 0) >= 0.5
                 ? ' (a further ' + s.totalExcused.toFixed(0) + ' excused — those members overdosed)' : '')
             + '.\n'
@@ -3772,9 +3856,11 @@
             + TICK + '!' + TICK + ' = swallowed Xanax, landed nothing. '
             + TICK + 'od' + TICK + ' = overdosed, so that war is excused. '
             + TICK + '-' + TICK + ' = not in that war. ' + TICK + '/?' + TICK + ' = hit data unavailable._\n'
+            + '_OD: . = not checked; ? = unknown; - = none found in the checks performed._\n'
             + '_Wars: ' + legend + '_\n'
             + '_Wasted = energy that never became a hit (1 Xanax = ' + ENERGY_PER_XANAX + ' E = '
-            + HITS_PER_XANAX + ' hits), charged on Xanax swallowed only. H/X: ' + HITS_PER_XANAX + ' is break-even._\n'
+            + HITS_PER_XANAX + ' hits), charged on Xanax swallowed only. H/X: ' + HITS_PER_XANAX + ' is break-even; ? = incomplete hit data, - = no Xanax swallowed._\n'
+            + sweepDiscordWasteLegend(rows)
             + '_' + stripTags(sweepFilterLabel(rows.length, s.list.length))
             + (state.sweepOd ? '' : ' Overdoses not checked.') + '_\n';
 
@@ -3789,7 +3875,7 @@
                       + (x.ods > 1 ? ' (x' + x.ods + ')' : '')).join(', ')
                   + (r.excused >= 0.05 ? ' [' + r.excused.toFixed(1) + ' Xanax excused]' : '')).join('\n')
               + (roll.length > 15 ? '\n\u2026 +' + (roll.length - 15) + ' more' : '') + '\n'
-            : (state.sweepOd ? '\n_Overdose check run: nobody overdosed during these wars._\n' : '');
+            : '';
 
         // 2000 chars is a hard cap, so chunk on ROW boundaries and repeat the
         // header — a table split mid-row is worse than two tables.
@@ -3807,7 +3893,7 @@
 
         const text = chunks.map((c, i) =>
             (i === 0 ? head : '') + FENCE + '\n' + [line(headers), rule, ...c].join('\n') + '\n' + FENCE
-        ).join('\n\n') + odBlock;
+        ).join('\n\n') + odBlock + (state.sweepOd ? '\n_' + sweepOdCoverage() + '_\n' : '');
         return { text, rows: rows.length, messages: chunks.length };
     }
 
@@ -3879,6 +3965,7 @@
                 flagged: r.warsFlaggedNet != null ? r.warsFlaggedNet : r.warsFlagged,
                 excusedWars: r.warsExcused || 0,
                 repeat: !!r.repeat,
+                odEvidence: !state.sweepOd?.[r.id] ? 'unchecked' : state.sweepOd[r.id].unknown ? 'unknown' : 'resolved',
                 odWars: (r.odWars || []).map(x => ({
                     opp: x.opp, ods: x.ods,
                     date: x.start ? new Date(x.start * 1000).toISOString().slice(0, 10) : '',
@@ -3893,6 +3980,8 @@
 
         data.generated = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 
+        const hits = sweepHitSummary(s);
+        const waste = sweepWasteSummary(s, hits);
         const totals = {
             used: s.totalUsed, hits: s.totalHits, wasted: s.totalWasted,
             excused: s.totalExcused || 0, unaccounted: s.totalUnaccounted,
@@ -4053,8 +4142,9 @@
             '  +\'<span style="color:\'+(p.h?"#7fe3a0":"#ff8080")+\'">\'+fmt(p.h)+\'</span>\'',
             '  +(p.f?\'<span class="mk">!</span>\':"")+plus+\'</td>\'}',
             'function odCell(r){',
-            ' if(!D.odChecked)return \'<td class="none" title="Overdoses were not checked — this is not the same as clean">\\u00b7</td>\';',
-            ' if(!r.odWars.length)return \'<td style="color:#7fe3a0" title="Checked — no overdose">clean</td>\';',
+            ' if(r.odEvidence==="unchecked")return \'<td class="none" title="Overdoses were not checked — this is not the same as clean">\\u00b7</td>\';',
+            ' if(!r.odWars.length&&r.odEvidence==="unknown")return \'<td title="No usable reading" style="color:#ffd479">?</td>\';',
+            ' if(!r.odWars.length)return \'<td style="color:#7fe3a0" title="No overdose found in the targeted checks performed">none found</td>\';',
             ' var w=r.odWars.map(function(x){return x.opp+(x.date?" "+x.date.slice(5):"")',
             '  +(x.ods>1?" \\u00d7"+x.ods:"")}).join(", ");',
             ' return \'<td style="color:#ff8080;font-weight:700" title="Overdosed during \'+esc(w)+\'">\'+esc(w)+\'</td>\'}',
@@ -4073,13 +4163,16 @@
             '  :"<b>Filtered copy \u2014 not the full roster.</b> ")',
             '  +label(rows.length,D.members.length)',
             '  +" Generated "+D.generated+".";',
-            ' $("tbody").innerHTML=rows.map(function(r){return "<tr>"',
+            ' $("tbody").innerHTML=rows.map(function(r){',
+            '  var incomplete=r.warsKnown<r.warsSeen,marker=incomplete&&r.warsKnown>0?"*":"";',
+            '  var title=!r.warsKnown?\' title="No hit data for this member; waste is unknown."\':marker?\' title="Measured in \'+fmt(r.warsKnown)+" of "+fmt(r.warsSeen)+\' wars with hit data"\':"";',
+            '  return "<tr>"',
             '  +\'<td><span class="nm">\'+esc(r.name)+\'</span> <span class="id">[\'+esc(r.id||"?")+\']</span></td>\'',
-            '  +\'<td style="color:\'+(r.flagged?(r.repeat?"#ff7a7a":"#ffb37a"):"#7fe3a0")+\'">\'',
-            '   +(r.flagged?r.flagged+" of "+r.warsSeen:"\\u2014")',
+            '  +\'<td\'+title+\' style="color:\'+(r.flagged?(r.repeat?"#ff7a7a":"#ffb37a"):incomplete?"#8b90a6":"#7fe3a0")+\'">\'',
+            '   +(!r.warsKnown?"?":r.flagged?r.flagged+" of "+r.warsSeen+marker:marker?"0*":"\\u2014")',
             '   +(r.excusedWars?\' <span style="color:#9fc7ff;font-size:10px">+\'+r.excusedWars+" OD</span>":"")+"</td>"',
-            '  +\'<td style="color:\'+wasteCol(r.wasted)+\';font-weight:700">\'',
-            '   +(r.wasted==null?"?":r.wasted<0.05?"\\u2014":r.wasted.toFixed(1))+"</td>"',
+            '  +\'<td\'+title+\' style="color:\'+(marker&&r.wasted<0.05?"#8b90a6":wasteCol(r.wasted))+\';font-weight:700">\'',
+            '   +(r.wasted==null?"?":r.wasted<0.05?(marker?"0*":"\\u2014"):r.wasted.toFixed(1)+marker)+"</td>"',
             '  +\'<td style="color:\'+(r.excused>=0.05?"#9fc7ff":"#4e5468")+\'">\'',
             '   +(r.excused>=0.05?r.excused.toFixed(1):"\\u2014")+"</td>"',
             '  +\'<td style="color:#ffd479">\'+fmt(r.used)+"</td>"',
@@ -4126,7 +4219,7 @@
             + '<td style="color:' + (w.withdrew ? '#7f8aa3' : '#4e5468') + '">'
             + (w.withdrew ? fmt(w.withdrew) : '—') + '</td>'
             + '<td style="color:#7fe3a0">' + (w.hitsSrc === 'none' ? '?' : fmt(w.hits)) + '</td>'
-            + '<td>' + (w.hitsSrc === 'none' || w.hitsPerXan == null ? '—' : w.hitsPerXan.toFixed(1)) + '</td>'
+            + '<td>' + (w.hitsSrc === 'none' ? '?' : w.hitsPerXan == null ? '—' : w.hitsPerXan.toFixed(1)) + '</td>'
             + '<td style="color:' + (w.wasted > 0 ? '#ff8080' : '#7fe3a0') + ';font-weight:700">'
             + (w.hitsSrc === 'none' ? '—' : w.wasted.toFixed(1)) + '</td>'
             + '<td style="color:' + (w.flagged ? '#ff8080' : '#7fe3a0') + '">'
@@ -4145,11 +4238,8 @@
               + '<div class="note">An overdose hospitalises you for hours and ends your war. The Xanax '
               + 'swallowed beforehand was not squandered — the member was prevented from spending that '
               + 'energy — so it is excused rather than wasted. Torn records overdoses daily, so the war '
-              + 'is the finest resolution available; a precise time would be invented.</div>'
-            : (state.sweepOd
-                ? '<h2>Overdoses</h2><div class="note">Checked — nobody overdosed during these wars.</div>'
-                : '<h2>Overdoses</h2><div class="note">Not checked. The OD column shows a dot for every '
-                  + 'member, which means unchecked — not clean.</div>');
+              + 'is the finest resolution available; a precise time would be invented. ' + e(sweepOdCoverage()) + '</div>'
+            : '<h2>Overdoses</h2><div class="note">' + e(sweepOdCoverage()) + '</div>';
 
         const warHeads = wars.map((w, i) =>
             '<th data-k="" style="color:' + hue(i) + '">' + e(String(w.oppName).slice(0, 11))
@@ -4165,12 +4255,12 @@
 + '<div class="pline" id="pline"></div>'
 + '<div class="kpis">'
 + kpi('Xanax swallowed', fmt(s.totalUsed), 'from the faction armoury', '#ffd479')
-+ kpi('Wasted', s.totalWasted.toFixed(0),
-     fmt(Math.round(s.totalWasted * ENERGY_PER_XANAX)) + ' energy that bought no hits',
-     s.totalWasted > 0 ? '#ff8080' : '#7fe3a0')
++ kpi(hits.complete ? 'Wasted' : 'Measured waste', waste.rounded,
+     hits.complete ? fmt(Math.round(s.totalWasted * ENERGY_PER_XANAX)) + ' energy that bought no hits' : hits.coverage, waste.color)
 + kpi('Excused', (s.totalExcused || 0).toFixed(0), 'overdosed — not counted as waste',
      (s.totalExcused || 0) > 0 ? '#9fc7ff' : '#8b90a6')
-+ kpi('War hits', fmt(s.totalHits), 'from official war reports', '#7fe3a0')
++ kpi(hits.complete ? 'War hits' : 'Confirmed war hits', hits.value,
+     hits.complete ? 'from official war reports' : hits.coverage, '#7fe3a0')
 + kpi('Repeat offenders', fmt(s.repeats.length), 'landed nothing in 2+ wars',
      s.repeats.length ? '#ff8080' : '#7fe3a0')
 + kpi('Unaccounted', fmt(s.totalUnaccounted), 'withdrawn, never seen again',
@@ -4181,7 +4271,7 @@
 + '<th>Withdrawn<br>not charged</th><th>Hits</th>'
 + '<th>Hits/Xan</th><th>Wasted</th><th>Landed nothing</th></tr></thead><tbody>'
 + warRows + '</tbody></table></div>'
-+ '<div class="note">Without a complete hit report, waste cannot be measured for that war and nobody can be '
++ '<div class="note">Hits/Xan: use "?" for missing hit data and a dash when no Xanax swallowed. Without a complete hit report, waste cannot be measured for that war and nobody can be '
 + 'flagged in it — those cells read “—”, which is not the same as zero.</div>'
 + odSection
 + '<h2>By member</h2>'
@@ -4215,6 +4305,8 @@
 + warHeads + '</tr></thead><tbody id="tbody"></tbody></table></div>'
 + '<div class="note"><b>Click any column heading to sort.</b> This file contains <b>every</b> member of the '
 + 'sweep — the filter above only changes what is displayed, so nothing is hidden from whoever you send it to.'
++ '<br><b>?</b> means no hit data for that member. An asterisk in the waste columns means the value '
++ 'covers only wars with hit data.'
 + '<br><b>Wasted</b> is energy that left the armoury and never became a war hit: a Xanax is '
 + ENERGY_PER_XANAX + ' energy and a hit costs ' + ENERGY_PER_HIT + ', so one Xanax is worth '
 + HITS_PER_XANAX + ' hits. It is charged on Xanax <b>swallowed</b> only — anything withdrawn into a '
@@ -4252,7 +4344,11 @@
     }
 
     function onSweepCopy() {
+        if (state.sweepRunning) return; // Leave progress visible and ignore direct/touch activation.
         if (!state.sweep) { setStatus('Run a sweep first.', true); return; }
+        if (state.sweep.wars.some(w => w.armouryPartial)) {
+            setStatus('Incomplete armoury scan. Run the sweep again before exporting.', true); return;
+        }
         const { out, kind } = sweepExportBuild();
         if (!out || !out.text) { setStatus('Nothing to copy in this filter.', true); return; }
         // Copying a whole HTML document to the clipboard helps nobody — that
@@ -4263,7 +4359,11 @@
     }
 
     function onSweepDownload() {
+        if (state.sweepRunning) return; // Leave progress visible and ignore direct/touch activation.
         if (!state.sweep) { setStatus('Run a sweep first.', true); return; }
+        if (state.sweep.wars.some(w => w.armouryPartial)) {
+            setStatus('Incomplete armoury scan. Run the sweep again before exporting.', true); return;
+        }
         const { out, ext, mime, kind } = sweepExportBuild();
         if (!out || !out.text) { setStatus('Nothing to export in this filter.', true); return; }
         const name = `drug-sweep-${state.sweep.wars.length}-wars-${new Date().toISOString().slice(0, 10)}` + ext;
@@ -4313,27 +4413,28 @@
             renderDrugs();
 
             const vals = Object.values(state.odResults);
-            const found = vals.filter(o => (o.mode === 'delta' || o.mode === 'baseline') && o.ods > 0).length;
-            const clear = vals.filter(o => (o.mode === 'delta' || o.mode === 'baseline') && o.ods === 0).length;
-            const unknown = vals.filter(o => o.mode === 'lifetime' || o.mode === 'error').length;
-
-            let msg;
-            if (found) msg = `${found} overdose${found === 1 ? '' : 's'} found — that explains the missing hits.`;
-            else if (clear && !unknown) msg = `No overdoses. All ${clear} checked members were clean across the war.`;
-            else msg = 'No overdose found.';
-            if (unknown) {
-                msg += ` ${unknown} member${unknown === 1 ? '' : 's'} couldn't be determined — Torn only gave a lifetime total, ` +
-                       `so today's counts were stored as a baseline. Run this again after the next war for a real before/after.`;
-            }
+            const changes = vals.filter(o => o.mode === 'delta' && o.ods > 0).length;
+            const clear = vals.filter(o => o.mode === 'delta' && o.ods === 0).length;
+            const comparison = vals.filter(o => o.mode === 'baseline');
+            const comparisonChanges = comparison.filter(o => o.ods > 0).length;
+            const lifetimeOnly = vals.filter(o => o.mode === 'lifetime').length;
+            const failed = vals.filter(o => o.mode === 'error').length;
+            const uncertain = comparison.length + lifetimeOnly + failed;
+            const msg = [];
+            if (changes) msg.push(`${changes} member(s) showed an overdose increase across the war window.`);
+            if (clear) msg.push(uncertain || changes
+                ? `${clear} checked without an overdose increase.`
+                : `No overdoses found among the ${clear} checked member(s).`);
+            if (comparison.length) msg.push(`${comparison.length} member(s) compared with an earlier reading (${comparisonChanges} with an increase), not a war-window check.`);
+            if (lifetimeOnly) msg.push(`${lifetimeOnly} member(s) had a lifetime total only. That does not date an overdose to this war.`);
+            if (failed) msg.push(`${failed} member lookup${failed === 1 ? '' : 's'} failed. No new baseline count for those members.`);
             const st = state.odResults.__stats;
-            if (st && st.hits) {
-                msg += ` (${st.hits} reading${st.hits === 1 ? '' : 's'} served from cache, ${st.calls} fetched — ` +
-                       `a past day's overdose count never changes, so it is only ever read once.)`;
-            }
+            if (st && st.hits) msg.push(`(${st.hits} reading(s) served from cache, ${st.calls} fetched.)`);
+
             // Ride along in the war's cache entry so reopening it shows the OD
             // column straight away instead of asking Torn the same question.
             if (!report.__partial && war.end > 0) await cacheSave(war, null, null, false, null, null, results);
-            if (current()) setStatus(msg, unknown > 0 && !found);
+            if (current()) setStatus(msg.join(' '), uncertain > 0);
         } catch (e) {
             if (current()) setStatus(e.message || 'Overdose check failed.', true);
         } finally {
