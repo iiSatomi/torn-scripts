@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Suite Codex
 // @namespace    torn_oc_suite_rebuild
-// @version      3.37.0-codex24
+// @version      3.37.0-codex37
 // @description  Full Organised Crime management for Torn faction leaders — fill slots by CPR, track loaned items and armory gaps, and see exactly who got paid what.
 // @author       iSatomi (3580191)
 // @license      GPL-3.0
@@ -1959,11 +1959,11 @@
     let filled = 0;
     const membersTouched = new Set();
     for (const [uid, crimes] of Object.entries(tsData || {})) {
-      if (!crimes || typeof crimes !== 'object') continue;
+      if (!crimes || typeof crimes !== 'object' || Array.isArray(crimes)) continue;
       for (const [crime, roles] of Object.entries(crimes)) {
-        if (!roles || typeof roles !== 'object') continue;
-        for (const [role, cpr] of Object.entries(roles)) {
-          if (cpr == null) continue;
+        for (const [role, raw] of tsRoleEntries(roles)) {
+          const cpr = readCheckpointPassRate(raw);
+          if (cpr === null) continue;
           const key = `${crime.toLowerCase()}|${role.toLowerCase()}`;
           if (!arc[uid]) arc[uid] = { name: mInfo[uid]?.name || exNames[uid] || `#${uid}`, slots: {} };
           else if (mInfo[uid]?.name) arc[uid].name = mInfo[uid].name;
@@ -3936,9 +3936,11 @@
     .ocm-last5-wrap { margin: 4px 0; }
     .ocm-last5-row-header {
       display: flex;
+      position: relative;
+      flex-wrap: wrap;
       align-items: center;
-      gap: 8px;
-      padding: 5px 10px;
+      gap: 4px 8px;
+      padding: 5px 24px 5px 10px;
       background: #1a1a1a;
       border-radius: 3px;
       cursor: pointer;
@@ -3946,6 +3948,13 @@
       color: var(--ocm-text-dim);
     }
     .ocm-last5-row-header:hover { background: var(--ocm-bg-card); }
+    .ocm-last5-identity { display: flex; align-items: center; gap: 5px; flex: 1 1 105px; min-width: 0; }
+    .ocm-last5-identity > div { min-width: 0; }
+    .ocm-last5-name { display: block; font-weight: bold; color: var(--ocm-text); overflow-wrap: anywhere; }
+    .ocm-last5-outcome { display: block; font-size: 10px; font-weight: bold; }
+    .ocm-last5-facts { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; gap: 3px 6px; min-width: 0; }
+    .ocm-last5-facts > span { min-width: 0; overflow-wrap: anywhere; }
+    .ocm-last5-arrow { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); color: var(--ocm-text-faint); font-size: 10px; }
     .ocm-last5-detail, .ocm-oh-run-detail {
       padding: 8px 10px;
       background: var(--ocm-bg);
@@ -5318,7 +5327,7 @@ function initOcMobileUi(root) {
         if (!currentMemberIds.has(uid)) exMemberIds.add(uid);
 
         // Record CPR for fallback lookup
-        const cpr = slot.checkpoint_pass_rate;
+        const cpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
         if (cpr != null && oc.name) {
           const roleRaw  = slot.position_info?.label || slot.position || '';
           const roleNorm = roleRaw.replace(/\s*#\d+$/, '').toLowerCase().trim();
@@ -7425,41 +7434,54 @@ function initOcMobileUi(root) {
         memberStats[uid].participated++;
         if (s === 'successful') memberStats[uid].success++;
         else if (s === 'failure') memberStats[uid].failure++;
-        const cpr = slot.checkpoint_pass_rate ?? null;
+        const cpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
         if (cpr != null) { memberStats[uid].cprSum += cpr; memberStats[uid].cprCount++; }
       }
     }
 
     const memberRows = Object.entries(memberStats)
-      .map(([uid, s]) => ({ uid, ...s, avgCpr: s.cprCount > 0 ? s.cprSum / s.cprCount : null, rate: (s.success + s.failure) > 0 ? s.success / (s.success + s.failure) : 0 }))
+      .map(([uid, s]) => ({ uid, ...s, avgCpr: s.cprCount > 0 ? s.cprSum / s.cprCount : null, rate: outcomeRate(s.success, s.failure) }))
       .sort((a, b) => b.participated - a.participated);
 
     const scenarioRows = Object.entries(scenarioStats)
-      .map(([name, s]) => ({ name, ...s, rate: (s.success + s.failure) > 0 ? s.success / (s.success + s.failure) : 0 }))
+      .map(([name, s]) => ({ name, ...s, rate: outcomeRate(s.success, s.failure) }))
       .sort((a, b) => b.total - a.total);
 
-    function rateCls(r) { return r >= 0.85 ? 'ocm-rate-high' : r >= 0.65 ? 'ocm-rate-mid' : 'ocm-rate-low'; }
-    function pct(r)     { return `${Math.round(r * 100)}%`; }
+    function outcomeRate(success, failure) { return success + failure > 0 ? success / (success + failure) : null; }
+    const noOutcome = ' title="No successful or failed runs; expired runs do not count toward this rate."';
+    function rateCls(r) { return r === null ? '' : r >= 0.85 ? 'ocm-rate-high' : r >= 0.65 ? 'ocm-rate-mid' : 'ocm-rate-low'; }
+    function pct(r)     { return r === null ? 'N/A' : `${Math.round(r * 100)}%`; }
 
-    const overallRate = (successes.length + failures.length) > 0 ? successes.length / (successes.length + failures.length) : 0;
+    const overallRate = outcomeRate(successes.length, failures.length);
 
-    // --- Last 5 completed OCs (sorted most-recent first)
+    // --- Last 5 ended OCs: expiry is the end time only when the outcome is Expired.
+    function last5EndTime(oc) {
+      const raw = normStatus(oc.status) === 'expired' ? oc.expired_at : oc.executed_at;
+      const ts = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : 0;
+      return Number.isSafeInteger(ts) && ts > 0 && ts <= 8640000000000 ? ts : 0;
+    }
     const last5 = [...completed]
-      .sort((a, b) => (b.executed_at || 0) - (a.executed_at || 0))
+      .sort((a, b) => last5EndTime(b) - last5EndTime(a))
       .slice(0, 5);
 
     const last5Html = last5.map((oc, idx) => {
       const s        = normStatus(oc.status);
-      const icon     = s === 'successful' ? '✅' : '❌';
-      const col      = s === 'successful' ? 'var(--ocm-cpr-good)' : 'var(--ocm-cpr-crit)';
+      const outcome = s === 'successful' ? 'Success' : s === 'expired' ? 'Expired' : 'Failure';
+      const icon     = s === 'successful' ? '\u2705' : s === 'expired' ? '\u23F3' : '\u274C';
+      const col      = s === 'successful' ? 'var(--ocm-cpr-good)' : s === 'expired' ? 'var(--ocm-text-muted)' : 'var(--ocm-cpr-crit)';
       const ocSlots  = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots || []);
-      const filled   = ocSlots.filter(sl => sl.user?.id).map(sl => ({ sl, cpr: readCheckpointPassRate(sl.checkpoint_pass_rate) }));
+      const filled   = ocSlots.filter(sl => sl.user?.id).map(sl => {
+        const cpr = readCheckpointPassRate(sl.checkpoint_pass_rate);
+        // Torn returns a placeholder zero for expired crimes, not a recorded CPR.
+        return { sl, cpr: s === 'expired' && cpr === 0 ? null : cpr };
+      });
       const knownCprs = filled.map(entry => entry.cpr).filter(cpr => cpr != null);
       const avgCpr   = knownCprs.length > 0
         ? (knownCprs.reduce((sum, cpr) => sum + cpr, 0) / knownCprs.length).toFixed(1)
         : null;
-      const execDate = oc.executed_at
-        ? new Date(oc.executed_at * 1000).toLocaleDateString('en-GB', { timeZone:'UTC', day:'2-digit', month:'short', year:'2-digit' })
+      const endTime  = last5EndTime(oc);
+      const endDate  = endTime
+        ? new Date(endTime * 1000).toLocaleDateString('en-GB', { timeZone:'UTC', day:'2-digit', month:'short', year:'2-digit' })
         : '–';
       const rewards    = oc.rewards;
       const money      = rewards?.money ?? null;
@@ -7492,14 +7514,19 @@ function initOcMobileUi(root) {
 
       return `
         <div class="ocm-last5-row-header" data-idx="${idx}" style="border-left:3px solid ${col}">
-          <span style="color:${col};font-size:13px">${icon}</span>
-          <span style="font-weight:bold;color:var(--ocm-text);flex:1">${esc(oc.name || 'Unknown')}</span>
-          <span style="color:var(--ocm-text-muted);font-size:10px">D${oc.difficulty ?? '?'}</span>
-          <span style="color:var(--ocm-text-muted);font-size:10px">${execDate}</span>
-          ${avgCpr ? `<span style="font-size:10px;color:var(--ocm-text-dim)">CPR: <strong class="${cprClass(Number(avgCpr))}">${avgCpr}%</strong></span>` : ''}
-          ${paidBadge}
-          ${rewardParts.length ? `<span style="font-size:10px;color:var(--ocm-text-dim)">${rewardParts.join(' ')}</span>` : ''}
-          <span style="color:var(--ocm-text-faint);font-size:10px">▼</span>
+          <div class="ocm-last5-identity">
+            <span aria-hidden="true" style="font-size:13px">${icon}</span>
+            <div><span class="ocm-last5-name">${esc(oc.name || 'Unknown')}</span>
+              <span class="ocm-last5-outcome" style="color:${col}">${outcome}</span></div>
+          </div>
+          <div class="ocm-last5-facts">
+            <span style="color:var(--ocm-text-muted);font-size:10px">D${oc.difficulty ?? '?'}</span>
+            <span title="${s === 'expired' ? 'Expiry date' : 'Execution date'} (UTC)" style="color:var(--ocm-text-muted);font-size:10px">${endDate}</span>
+            ${avgCpr ? `<span style="font-size:10px;color:var(--ocm-text-dim)">CPR: <strong class="${cprClass(Number(avgCpr))}">${avgCpr}%</strong></span>` : ''}
+            ${paidBadge}
+            ${rewardParts.length ? `<span style="font-size:10px;color:var(--ocm-text-dim)">${rewardParts.join(' ')}</span>` : ''}
+          </div>
+          <span class="ocm-last5-arrow" aria-hidden="true">\u25BC</span>
         </div>
         <div class="ocm-last5-detail" id="ocm-last5-detail-${idx}">
           <table>
@@ -7513,7 +7540,7 @@ function initOcMobileUi(root) {
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;align-items:stretch">
         <div style="background:var(--ocm-bg-card);border:1px solid var(--ocm-border-soft);border-radius:6px;padding:8px 14px;text-align:center;min-width:90px">
           <div style="font-size:9px;color:var(--ocm-text-muted);text-transform:uppercase;letter-spacing:.5px">Success Rate</div>
-          <div style="font-size:22px;font-weight:bold" class="${rateCls(overallRate)}">${pct(overallRate)}</div>
+          <div style="font-size:22px;font-weight:bold" class="${rateCls(overallRate)}"${overallRate === null ? noOutcome : ''}>${pct(overallRate)}</div>
           <div style="font-size:10px;color:var(--ocm-text-faint)">${successes.length}S / ${failures.length}F / ${expired.length}E</div>
         </div>
         <div style="background:var(--ocm-bg-card);border:1px solid var(--ocm-border-soft);border-radius:6px;padding:8px 14px;text-align:center;min-width:80px">
@@ -7538,11 +7565,11 @@ function initOcMobileUi(root) {
           <table class="ocm-analytics-table">
             <thead><tr><th>OC</th><th class="td-right">Ran</th><th class="td-right">Success%</th><th class="td-right ocm-sfe-col">S/F/E</th></tr></thead>
             <tbody>${scenarioRows.map(r => {
-              const activeRate = (r.success + r.failure) > 0 ? r.success / (r.success + r.failure) : 0;
+              const activeRate = r.rate;
               return `<tr>
                 <td title="${esc(r.name)}">${esc(r.name)}</td>
                 <td class="td-right">${r.total}</td>
-                <td class="td-right ${rateCls(activeRate)}">${pct(activeRate)}</td>
+                <td class="td-right ${rateCls(activeRate)}"${activeRate === null ? noOutcome : ''}>${pct(activeRate)}</td>
                 <td class="td-right ocm-sfe-col" style="font-size:10px">
                   <span class="ocm-stat-pill pill-success">${r.success}</span>
                   <span class="ocm-stat-pill pill-failure">${r.failure}</span>
@@ -7560,7 +7587,7 @@ function initOcMobileUi(root) {
               <tr${r.isEx ? ' style="opacity:.5"' : ''}>
                 <td><a href="/profiles.php?XID=${r.uid}" target="_blank" style="color:${r.isEx?'#888':'#ccc'};text-decoration:none">${esc(r.name)}</a>${r.isEx?'<span style="font-size:9px;color:var(--ocm-text-faint);margin-left:3px">(left)</span>':''}</td>
                 <td class="td-right">${r.participated}</td>
-                <td class="td-right ${rateCls(r.rate)}">${pct(r.rate)}</td>
+                <td class="td-right ${rateCls(r.rate)}"${r.rate === null ? noOutcome : ''}>${pct(r.rate)}</td>
                 <td class="td-right ${r.avgCpr != null ? cprClass(r.avgCpr) : ''}">${r.avgCpr != null ? r.avgCpr.toFixed(1)+'%' : '–'}</td>
               </tr>`).join('')}
             </tbody>
@@ -7635,7 +7662,7 @@ function initOcMobileUi(root) {
         if (!detail) return;
         const isOpen = detail.style.display === 'block';
         detail.style.display = isOpen ? 'none' : 'block';
-        const arrow = header.querySelector('span:last-child');
+        const arrow = header.querySelector('.ocm-last5-arrow');
         if (arrow) arrow.textContent = isOpen ? '▼' : '▲';
       });
     });
@@ -7734,10 +7761,15 @@ function initOcMobileUi(root) {
       // TornStats reports current CPR, not a recorded run or outcome.
       const runs      = entries.filter(e => !e.tsSourced);
       const total     = runs.length;
-      const outcomes  = runs.filter(e => ['successful', 'failure', 'expired'].includes(e.outcome));
+      const outcomes  = runs.filter(e => e.outcome === 'successful' || e.outcome === 'failure');
       const successes = outcomes.filter(e => e.outcome === 'successful').length;
       const rate      = outcomes.length > 0 ? Math.round(successes / outcomes.length * 100) : null;
-      const cprs      = runs.map(e => readCheckpointPassRate(e.cpr)).filter(cpr => cpr != null);
+      // Torn reports a placeholder zero for expired slots, including older records in the archive.
+      const memberEntryCpr = e => {
+        const cpr = readCheckpointPassRate(e.cpr);
+        return !e.tsSourced && e.outcome === 'expired' && cpr === 0 ? null : cpr;
+      };
+      const cprs      = runs.map(memberEntryCpr).filter(cpr => cpr != null);
       const avgCpr    = cprs.length > 0 ? (cprs.reduce((a, b) => a + b, 0) / cprs.length).toFixed(1) : null;
 
       // Most-played role
@@ -7772,7 +7804,7 @@ function initOcMobileUi(root) {
         const dateStr   = e.executedAt
           ? new Date(e.executedAt * 1000).toLocaleDateString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: '2-digit' })
           : '—';
-        const cpr       = readCheckpointPassRate(e.cpr);
+        const cpr       = memberEntryCpr(e);
         const cprStr    = cpr != null ? `${cpr}%` : '—';
         const cprCls    = cpr != null ? cprClass(cpr) : '';
         const wStr      = e.weight != null ? `${e.weight.toFixed(0)}%` : '—';
@@ -7902,6 +7934,7 @@ function initOcMobileUi(root) {
           mhSearch.value  = name;
           mhDropdown.classList.remove('visible');
           renderMemberHistory(uid);
+          GM_setValue(GMK.MH_LAST, name);
         });
       });
     }
@@ -8004,8 +8037,8 @@ function initOcMobileUi(root) {
       const total     = runs.length;
       const successes = runs.filter(r => r.outcome === 'successful').length;
       const failures  = runs.filter(r => r.outcome === 'failure').length;
-      const rate      = (successes + failures) > 0 ? Math.round(successes / (successes + failures) * 100) : 0;
-      const rateCol   = rate >= 85 ? 'var(--ocm-cpr-good)' : rate >= 65 ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)';
+      const rate      = (successes + failures) > 0 ? Math.round(successes / (successes + failures) * 100) : null;
+      const rateCol   = rate == null ? 'var(--ocm-text-muted)' : rate >= 85 ? 'var(--ocm-cpr-good)' : rate >= 65 ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)';
       // Avg CPR across all runs
       const allCprs   = runs.filter(r => r.avgCpr != null).map(r => r.avgCpr);
       const overallAvgCpr = allCprs.length > 0 ? (allCprs.reduce((a, b) => a + b, 0) / allCprs.length).toFixed(1) : null;
@@ -8023,7 +8056,7 @@ function initOcMobileUi(root) {
         </div>
         <div class="ocm-mh-sum-item">
           <span class="ocm-mh-sum-label">Success Rate</span>
-          <span class="ocm-mh-sum-value" style="color:${rateCol}">${rate}%</span>
+          <span class="ocm-mh-sum-value" style="color:${rateCol}"${rate == null ? ' title="No successful or failed runs to calculate a rate."' : ''}>${rate == null ? 'N/A' : rate + '%'}</span>
         </div>
         <div class="ocm-mh-sum-item">
           <span class="ocm-mh-sum-label">W / F / E</span>
@@ -8126,6 +8159,7 @@ function initOcMobileUi(root) {
           ohSearch.value = ocHistoryIndex[opt.dataset.key]?.display || '';
           ohDropdown.classList.remove('visible');
           renderOcHistory(opt.dataset.key);
+          GM_setValue(GMK.OH_LAST, ohSearch.value);
         });
       });
     }
@@ -8278,7 +8312,7 @@ function initOcMobileUi(root) {
           const ocSlots = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots || []);
           for (const slot of ocSlots) {
             if (!slot.user?.id) continue;
-            const cpr = slot.checkpoint_pass_rate ?? null;
+            const cpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
             if (cpr === null) continue;
             if (cpr < 60)       cprBuckets['0–60']++;
             else if (cpr < 70)  cprBuckets['60–70']++;
@@ -8297,7 +8331,7 @@ function initOcMobileUi(root) {
         svgBarV('ocm-chart-members',
           topMembers.map(r => r.name),
           topMembers.map(r => r.participated),
-          topMembers.map(r => r.rate >= 0.85 ? 'var(--ocm-cpr-good)' : r.rate >= 0.65 ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)'),
+          topMembers.map(r => r.rate === null ? 'var(--ocm-text-muted)' : r.rate >= 0.85 ? 'var(--ocm-cpr-good)' : r.rate >= 0.65 ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-crit)'),
         );
       }
 
@@ -8785,9 +8819,16 @@ function initOcMobileUi(root) {
       });
   }
 
+  function tsRoleEntries(roles) {
+    return roles && typeof roles === 'object' && !Array.isArray(roles) ? Object.entries(roles) : [];
+  }
+
   function tsLowestCpr(obj) {
     let min = null;
-    for (const roles of Object.values(obj)) for (const v of Object.values(roles)) if (min === null || v < min) min = v;
+    for (const roles of Object.values(obj)) for (const [, raw] of tsRoleEntries(roles)) {
+      const cpr = readCheckpointPassRate(raw);
+      if (cpr !== null && (min === null || cpr < min)) min = cpr;
+    }
     return min;
   }
 
@@ -8826,9 +8867,11 @@ function initOcMobileUi(root) {
     if (arcMember?.slots) {
       let fuzzy = null;
       for (const rec of Object.values(arcMember.slots)) {
+        if (!rec || typeof rec !== 'object') continue;
+        const cpr = readCheckpointPassRate(rec.cpr);
+        if (cpr === null) continue;
         const rOc   = String(rec.ocName || '').toLowerCase().trim().replace(/\s+v\d+$/i, '');
         const rRole = String(rec.role   || '').toLowerCase().trim().replace(/\s*#\d+$/, '');
-        if (rec.cpr == null) continue;
         const ocMatch = rOc === normOc || rOc.includes(normOc) || normOc.includes(rOc);
         if (!ocMatch) continue;
         if (rRole === normRole) {
@@ -8836,8 +8879,8 @@ function initOcMobileUi(root) {
           // estimate, so it doesn't count as history here. Collected rather than
           // returned so TornStats can still be compared against it below; keep the
           // highest observed run for this role.
-          if (rec.executedAt && (histExact == null || rec.cpr > histExact.cpr)) {
-            histExact = { cpr: rec.cpr, exact: true, source: 'own', observed: true, at: rec.executedAt };
+          if (rec.executedAt && (histExact == null || cpr > histExact.cpr)) {
+            histExact = { cpr, exact: true, source: 'own', observed: true, at: rec.executedAt };
           }
         } else {
           // Same crime, DIFFERENT role — only a proxy. Keep the LOWEST, never the
@@ -8846,8 +8889,8 @@ function initOcMobileUi(root) {
           // over a TornStats-backfilled one at equal footing.
           if (!fuzzy
               || (rec.executedAt && !fuzzy.executedAt)
-              || (!!rec.executedAt === !!fuzzy.executedAt && rec.cpr < fuzzy.cpr)) {
-            fuzzy = rec;
+              || (!!rec.executedAt === !!fuzzy.executedAt && cpr < fuzzy.cpr)) {
+            fuzzy = { cpr, executedAt: rec.executedAt };
           }
         }
       }
@@ -8878,8 +8921,10 @@ function initOcMobileUi(root) {
       for (const [crime, roles] of Object.entries(memberData)) {
         const nc = crime.toLowerCase().trim().replace(/\s+v\d+$/i, '');
         if (nc === normOc || nc.includes(normOc) || normOc.includes(nc)) {
-          for (const [role, cpr] of Object.entries(roles)) {
+          for (const [role, raw] of tsRoleEntries(roles)) {
             if (role.toLowerCase().trim() === normRole) {
+              const cpr = readCheckpointPassRate(raw);
+              if (cpr === null) continue;
               if (tsExact == null || cpr > tsExact.cpr) {
                 tsExact = { cpr, exact: true, source: 'ts', observed: false, at: null };
               }
@@ -8923,7 +8968,7 @@ function initOcMobileUi(root) {
       for (const [crime, roles] of Object.entries(memberData)) {
         const nc = crime.toLowerCase().trim().replace(/\s+v\d+$/i, '');
         if (nc === normOc || nc.includes(normOc) || normOc.includes(nc)) {
-          const vals = Object.values(roles);
+          const vals = tsRoleEntries(roles).map(([, raw]) => readCheckpointPassRate(raw)).filter(cpr => cpr !== null);
           if (vals.length) return { cpr: Math.min(...vals), exact: false, source: 'ts', observed: false, at: null };
         }
       }
