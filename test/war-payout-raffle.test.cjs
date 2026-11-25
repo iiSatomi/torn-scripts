@@ -240,3 +240,21 @@ test('repeated draws require the acknowledged latest draw ID in append order',as
   await a.append(fourth,{previousDrawId:third.id});
   assert.equal(store.state.writes,4);
 });
+
+test('archive does not reveal an unverified append, and refresh recovers a commit after an unreadable receipt',async()=>{
+ const first=record(),second=R.draw(snapshot(),settings(),cryptoCandidates(4),()=>300001);
+ let stored=JSON.stringify({version:1,records:[first]}),mode='drop',readable=true;
+ const env={
+  GM_getValue(){if(!readable)throw new Error('Fixture cannot read');return stored;},
+  GM_setValue(_key,value){if(mode==='drop')return;stored=value;readable=false;},
+  locks:{request(_key,_options,work){return work();}}
+ };
+ const archive=R.createArchive(env);await archive.load();
+ for(const result of ['drop','uncertain']){
+  mode=result;
+  await assert.rejects(archive.append(second,{previousDrawId:first.id}),error=>error.raffleSaveUncertain===true&&/Refresh saved draws/.test(error.message));
+  assert.deepEqual(archive.list(),[first]);
+ }
+ readable=true;assert.equal(await archive.refresh(),true);
+ assert.deepEqual(archive.list(),[first,second]);
+});

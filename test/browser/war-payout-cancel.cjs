@@ -6,7 +6,7 @@ async function main(){
  try{
   const page=await browser.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));await page.route('**/*',r=>r.fulfill({status:200,contentType:'text/html',body:'<!doctype html><html><body><section class="money___fixture"><form><input id="add-money-to-balance" type="radio"></form><ul><li class="listItem___fixture"><div class="userInfoWrap___fixture"><a href="/profiles.php?XID=1">Synthetic member</a><a href="/factions.php?step=profile&ID=10">Faction</a></div><div class="editBalanceWrap___fixture">$10.25<span><input class="input-money" data-testid="legacy-money-input" value="10.25"><input class="input-money" data-testid="legacy-money-input" type="hidden" value="10.25"></span><button aria-label="Edit balance">Edit</button></div></li></ul></section></body></html>'}));
   await page.goto('https://www.torn.com/factions.php?step=your&type=1#/tab=controls');
-  const files=['lib/war-payout-credits.cjs','lib/war-payout-native.js','lib/war-payout-credit-ui.js'];
+  const files=['lib/war-payout-credits.cjs','lib/war-payout-native.js','lib/war-payout-sheet.js','lib/war-payout-credit-ui.js'];
   const source=files.map(file=>fs.readFileSync(path.resolve(__dirname,'../..',file),'utf8').replace(/^module\.exports[^\n]*$/gm,'')).join('\n');
   await page.evaluate(source=>{
    const editor=document.querySelector('[class*=editBalanceWrap]'),button=editor.querySelector('button'),input=editor.querySelector('input:not([type=hidden])'),hidden=editor.querySelector('input[type=hidden]');let model=input.value;

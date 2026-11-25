@@ -33,7 +33,12 @@ const adapt=(source,id)=>('(function(){const PDA_storage=window.__pdaStorageFact
    await assertFitted(width,height);
    assert.equal(await page.locator('#twpc-dialog').getAttribute('data-tsui-layout'),'stock');
    assert.equal(await page.locator('#twpc-review').evaluate(node=>{const r=node.getBoundingClientRect();return node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true,'PDA footer action clears floating launchers and quick-item overlays');
-   assert.equal(await page.locator('#twpc-csv').evaluate(node=>{const r=node.getBoundingClientRect();return node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true,'PDA export clears the Hub launcher');
+   const formats=page.locator('#twpc-more-export > summary');
+   await formats.scrollIntoViewIfNeeded();
+   assert.equal(await formats.evaluate(node=>{const r=node.getBoundingClientRect();return node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true,'PDA export disclosure clears floating controls');
+   await formats.tap();
+   await page.locator('#twpc-csv').scrollIntoViewIfNeeded();
+   assert.equal(await page.locator('#twpc-csv').evaluate(node=>{const r=node.getBoundingClientRect();return node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2));}),true,'PDA export clears the Hub launcher after expanding formats');
    if(width===412){const artifacts=path.join(__dirname,'artifacts/current');fs.mkdirSync(artifacts,{recursive:true});await page.locator('#twpc-dialog').screenshot({path:path.join(artifacts,'stock-payout-pda-412.png')});}
    assert.equal(await page.locator('#twpc-dialog').evaluate(node=>node.contains(document.activeElement)),true,'closing Hub does not steal tool focus');
    await page.click('#twpc-close');await page.tap('#tsh-launcher');await page.tap('[data-script="war-payout-calculator"] .tsh-primary');await assertFitted(width,height);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Calculator
 // @namespace    isatomi.torn.war-payout-calculator
-// @version      1.8.2
+// @version      1.8.3
 // @updateURL    https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.meta.js
 // @downloadURL  https://raw.githubusercontent.com/iiSatomi/torn-scripts/main/Torn_War_Payout_Calculator.user.js
 // @description  Standalone Script Hub war payouts, saved reports, cache estimates and secure weighted raffles.
@@ -32,7 +32,7 @@
 (function () {
 'use strict';
 if (window.top !== window.self) return;
-const WAR_PAYOUT_RELEASE_VERSION = "1.8.2";
+const WAR_PAYOUT_RELEASE_VERSION = "1.8.3";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -2151,6 +2151,13 @@ const WarPayoutCredits = (() => {
     const sum = entries.reduce((value, entry) => value + BigInt(entry.amount), 0n);
     if (sum !== BigInt(total)) fail('Member amounts do not match payout total.');
   }
+  // Validate writes, not historical reads: old revisions may already carry a mixed basis.
+  function checkBasis(entries, rates) {
+    for (const entry of entries) {
+      const calculated = categories.reduce((sum,key) => sum + BigInt(entry[key]) * BigInt(rates[key]), 0n);
+      if (calculated !== BigInt(entry.amount)) fail('Member amounts do not match the recorded counts and rates. Review the calculation.');
+    }
+  }
   function cleanRun(input) {
     const scope = cleanScope(input?.scope), result = cleanResult(input?.result), entries = cleanEntries(input?.entries, false);
     if (input.mode !== 'actual' || input.coverage !== 'unverified') fail('Invalid locked payout record.');
@@ -2289,8 +2296,18 @@ const WarPayoutCredits = (() => {
             const entry = entries.find(item => item.id === prior.id);
             if (!entry || ((prior.status === 'credited' || prior.status === 'needs-review' || prior.status === 'crediting') && entry.amount !== prior.amount)) fail('Existing payout records must be preserved.');
             if (blocked() && changed) fail('Reconcile uncertain payouts before revising amounts.');
-            if (entry.amount === prior.amount) Object.assign(entry, copy(prior));
-            else entry.status = entry.amount === 0 ? 'skipped' : prior.status;
+            if (entry.amount === prior.amount) {
+              const historical = prior.status === 'credited' || prior.status === 'needs-review' || prior.status === 'crediting';
+              if (!changed) Object.assign(entry, copy(prior));
+              else if (historical) {
+                const differentBasis = categories.some(key => entry[key] !== prior[key] || (prior[key] > 0 && result.rates[key] !== old.result.rates[key]));
+                if (differentBasis) fail('This revision changes the counts or rates for a recorded payout. Keep its original basis before revising this run.');
+                Object.assign(entry, copy(prior));
+              } else {
+                // Keep the decision, but use the revised basis for payouts not sent.
+                entry.status = prior.status;
+              }
+            } else entry.status = entry.amount === 0 ? 'skipped' : prior.status;
           }
           version = old.version + (changed ? 1 : 0);
           if (!Number.isSafeInteger(version)) fail('Payout revision limit reached.');
@@ -2302,6 +2319,7 @@ const WarPayoutCredits = (() => {
         } else if (ledger.records.length >= MAX_RUNS) {
           fail('Payout run limit reached. Existing receipts must be retained.');
         }
+        if (!old || version !== old.version) checkBasis(entries, result.rates);
         const run = {scope, version, mode: 'actual', coverage: 'unverified', result, entries};
         if (old) ledger.records[ledger.records.indexOf(old)] = run;
         else ledger.records.push(run);
@@ -2508,18 +2526,20 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
   const C=WarPayoutCredits;
   const doc=dialog.ownerDocument,win=doc.defaultView;
   const store=C.createStore(env);
-  let controller=null,owner=false,active=false,disposed=false,releaseOwner=null,ownerGeneration=0,acquiring=false;
-  let exportUrl=null,exportTimer=null;
+  let controller=null,owner=false,active=false,disposed=false,releaseOwner=null,ownerGeneration=0,acquiring=false,lockedHtmlRevision=0,lockedPngRevision=0,rememberedRun=null;
+  let exportUrl=null,exportTimer=null,ledgerJob=null,ledgerStatusSnapshot=null;
   const money=value=>'$'+Number(value).toLocaleString('en-US');
   const el=(tag,text)=>{const value=doc.createElement(tag);if(text!==undefined)value.textContent=text;return value;};
   const panel=el('div');panel.id='twpc-credit-panel';panel.className='twpc-content';panel.hidden=true;
   panel.innerHTML=`<section><p>One click credits one member\u2019s faction balance.</p><p id="twpc-credit-note" role="status"></p></section>
   <section><label class="twpc-checkbox"><input id="twpc-credit-reviewed" type="checkbox">I checked the amounts and the available-log draft.</label><div class="twpc-actions"><button id="twpc-credit-lock" class="twpc-primary">Lock payouts</button></div></section>
   <section><p id="twpc-credit-summary" aria-live="polite"></p><button id="twpc-credit-next" class="twpc-primary" disabled>Credit next member</button><div class="twpc-table-scroll" style="margin-top:8px"><table id="twpc-credit-members"><thead><tr><th>Member</th><th>War hits</th><th>Enemy losses</th><th>Credit</th><th>Status</th><th>Action</th></tr></thead><tbody></tbody></table></div></section>
-  <details id="twpc-credit-recovery"><summary>Saved runs / recovery</summary><label for="twpc-credit-saved">Saved payout run<select id="twpc-credit-saved"><option value="">No saved runs</option></select></label><p id="twpc-credit-run"></p><div class="twpc-actions"><button id="twpc-credit-own">Reload saved runs</button><button id="twpc-credit-export" disabled>Export ledger</button></div><p>Only ended wars with actual profit can be locked. Amounts stay fixed. If a credit needs review, check Torn\u2019s balance/history before marking it credited or unpaid. Never retry an uncertain credit without checking.</p></details>`;
+  <details id="twpc-credit-recovery"><summary>Saved runs / recovery</summary><label for="twpc-credit-saved">Saved payout run<select id="twpc-credit-saved"><option value="">No saved runs</option></select></label><p id="twpc-credit-run"></p><div class="twpc-actions"><button id="twpc-credit-own">Reload saved runs</button></div><div id="twpc-locked-posting" class="twpc-posting" role="group" aria-labelledby="twpc-locked-posting-title"><h4 id="twpc-locked-posting-title">Share a locked payout sheet</h4><p class="twpc-locked-posting-help">Amounts are fixed. Check the credit statuses before sharing; locked does not mean paid.</p><div class="twpc-posting-image-copy"><button id="twpc-credit-copy-forum-png" type="button" class="twpc-primary" aria-describedby="twpc-locked-copy-help twpc-credit-forum-copy-status" disabled>Copy forum image</button><p id="twpc-locked-copy-help">Copies the styled image without saving a file. Tap again when it is ready.</p><p id="twpc-credit-forum-copy-status" class="twpc-copy-image-status" role="status"></p></div><div class="twpc-actions"><button id="twpc-credit-sheet-forum-png" type="button" aria-describedby="twpc-credit-png-download-status" disabled>Download locked forum PNG instead</button></div><details id="twpc-locked-more-formats"><summary>Other sheet formats</summary><div class="twpc-actions"><button id="twpc-credit-sheet" type="button" disabled>Download locked sheet</button><button id="twpc-credit-sheet-png" type="button" aria-describedby="twpc-credit-png-download-status" disabled>Download locked PNG</button></div></details><p id="twpc-credit-png-download-status" role="status"></p></div><div id="twpc-locked-records" role="group" aria-labelledby="twpc-locked-records-title"><h4 id="twpc-locked-records-title">Private recovery file</h4><p id="twpc-locked-records-help">Ledger JSON contains member IDs, amounts and credit states. Keep it out of the forum post.</p><button id="twpc-credit-export" type="button" aria-describedby="twpc-locked-records-help twpc-credit-export-status" disabled>Export ledger JSON</button><p id="twpc-credit-export-status" role="status"></p></div><p>Only ended wars with actual profit can be locked. Amounts stay fixed. If a credit needs review, check Torn\u2019s balance/history before marking it credited or unpaid. Never retry an uncertain credit without checking.</p></details>`;
   dialog.append(panel);
   const find=name=>panel.querySelector('#twpc-credit-'+name);
   function note(message){find('note').textContent=message;}
+  function lockedPngNote(message){find('png-download-status').textContent=message;}
+  function retireLockedPng(){lockedPngRevision++;lockedPngNote('');}
   const statuses={pending:'Pending',crediting:'Crediting',credited:'Credited','needs-review':'Needs review',skipped:'Skipped'};
   function current(){return controller?.snapshot()||null;}
   function available(run,entry){return owner&&active&&awake()&&doc.hasFocus()&&!!nativeAdapter.inspect(run.scope,entry).ready;}
@@ -2535,7 +2555,9 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
     saved.disabled=!owner||!!run?.busy;
     find('own').disabled=owner||acquiring;
     find('lock').disabled=!owner||!active||!awake()||!find('reviewed').checked||!!run?.busy;
-    find('export').disabled=!run;find('next').disabled=true;
+    find('export').disabled=!canExportLedger(run);retireChangedLedger(run);find('sheet').disabled=find('sheet-png').disabled=find('sheet-forum-png').disabled=!run||!active||!!run.busy||!run.entries.length;find('next').disabled=true;
+    find('copy-forum-png').disabled=!owner||find('sheet-forum-png').disabled;
+    lockedForumClipboard?.retireIfStale();
     if(!run){find('run').textContent='No locked run. Review the current calculator amounts to start.';find('summary').textContent='';find('next').textContent='Credit next member';if(owner)note('Review the actual-profit calculation and lock its member amounts.');onLayout();return;}
     find('run').textContent=`Faction ${run.scope.factionId} · war #${run.scope.warId} · locked version ${run.version}.`;
     const entries=run.entries,credited=entries.filter(entry=>entry.status==='credited'),pending=entries.filter(entry=>entry.status==='pending');
@@ -2560,7 +2582,7 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
     }
     onLayout();
   }
-  async function change(work){try{await work();render();}catch(error){render();note(error.message||'Could not update the credit ledger.');}}
+  async function change(work){retireLedger();lockedHtmlRevision++;retireLockedPng();lockedForumClipboard?.invalidate();try{await work();render();}catch(error){render();note(error.message||'Could not update the credit ledger.');}}
   async function credit(memberId,event){
     if(!event.isTrusted||event.detail>1||!owner||!active||!awake())return;
     const run=current(),entry=run?.entries.find(value=>value.id===memberId);
@@ -2570,29 +2592,39 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
     const isCurrent=()=>attemptGeneration===ownerGeneration&&owner&&active&&!disposed;
     await change(()=>controller.credit(memberId,{trusted:true,available:()=>isCurrent()&&available(run,entry),submit:operation=>nativeAdapter.submit({...operation,isCurrent})}));
   }
-  async function acquire(){
-    if(disposed||!active||!awake()||owner||acquiring)return;
+  function acquire(){
+    if(disposed||!active||!awake()||!doc.hasFocus()||owner||acquiring)return;
     if(typeof win.navigator.locks?.request!=='function'){note('This browser cannot establish single-tab ownership. Credit submission stays disabled.');render();return;}
-    const token=++ownerGeneration;acquiring=true;note('Loading the saved credit ledger…');
+    const token=++ownerGeneration;acquiring=true;note('Loading the saved credit ledger.');render();
+    const valid=()=>token===ownerGeneration&&active&&!disposed&&awake()&&doc.hasFocus();
     win.navigator.locks.request('torn-war-payout-credit-owner-v1',{mode:'exclusive',ifAvailable:true},async lock=>{
-      acquiring=false;
-      if(!lock){note('Another tab owns member crediting. Close its payout tab, then retry ownership here.');render();return;}
-      if(token!==ownerGeneration||!active||disposed)return;
-      owner=true;controller=C.createController({store,onChange:render});
-      try{await controller.init();}catch(error){owner=false;note(error.message||'Credit ledger storage is unavailable.');render();return;}
-      if(token!==ownerGeneration||!active||disposed){await controller.stop();owner=false;return;}
-      render();await new Promise(resolve=>{releaseOwner=resolve;});releaseOwner=null;owner=false;
-    }).catch(()=>{acquiring=false;owner=false;note('Could not acquire credit ownership. Submission remains disabled.');render();});
+      if(!valid())return;
+      if(!lock){note('Another tab owns member crediting. Close its payout tab, then retry ownership here.');return;}
+      const local=C.createController({store,onChange:render});
+      controller=local;
+      try{await local.init();}catch(error){note(error.message||'Credit ledger storage is unavailable.');return;}
+      if(!valid()){await local.stop();return;}
+      if(rememberedRun&&local.listRuns().some(run=>run.key===rememberedRun))local.select(rememberedRun);
+      await new Promise(resolve=>{releaseOwner=resolve;owner=true;render();});
+      releaseOwner=null;owner=false;
+    }).catch(()=>{owner=false;note('Could not acquire credit ownership. Submission remains disabled.');}).finally(()=>{
+      acquiring=false;render();
+      // A foreground event can arrive before stop finishes releasing our own lock.
+      // Retry only on that new lifecycle, never against another tab's held lock.
+      if(token!==ownerGeneration&&active&&!disposed&&awake())acquire();
+    });
   }
   async function lock(){
     if(!owner||!find('reviewed').checked)return;
     await change(async()=>{const draft=readDraft();if(!draft)throw new Error('Load an ended war and valid actual-profit calculation first.');await controller.lock(draft);find('reviewed').checked=false;});
   }
   function pause(){
-    active=false;ownerGeneration++;owner=false;
+    retireLedger();lockedHtmlRevision++;retireLockedPng();lockedForumClipboard?.invalidate();active=false;ownerGeneration++;owner=false;
     clearExport();
-    const stopped=controller?.stop();
-    Promise.resolve(stopped).catch(()=>note('A stopped credit could not be saved. Review Torn\u2019s balance/history before continuing.')).finally(()=>{releaseOwner?.();});
+    const run=current(),release=releaseOwner;
+    if(run&&release)rememberedRun=run.scope.factionId+':'+run.scope.warId;
+    const stopped=release?controller?.stop():null;
+    Promise.resolve(stopped).catch(()=>note('A stopped credit could not be saved. Review Torn\u2019s balance/history before continuing.')).finally(()=>{release?.();});
     render();
   }
   function show(){active=true;panel.hidden=false;render();acquire();}
@@ -2602,16 +2634,78 @@ function createWarPayoutCreditUI({dialog,env,readDraft,awake,onMessage,onLayout=
   find('own').addEventListener('click',()=>{if(awake()){active=true;acquire();}});
   find('saved').addEventListener('change',()=>change(()=>controller.select(find('saved').value)));
   function clearExport(){clearTimeout(exportTimer);exportTimer=null;if(exportUrl)URL.revokeObjectURL(exportUrl);exportUrl=null;}
-  find('export').addEventListener('click',async()=>{
-    const run=current();if(!run)return;
-    const text=JSON.stringify(run,null,2),fileName='war-credit-ledger-'+run.scope.warId+'.json';
+  for(const [id,png,compact] of [['sheet',false,false],['sheet-png',true,false],['sheet-forum-png',true,true]])find(id).addEventListener('click',async event=>{
+    const run=current();if(!event.isTrusted||!active||!awake()||!isOpen()||!run||run.busy||find(id).disabled)return;
+    const exact=JSON.stringify(run),revision=png?lockedPngRevision:++lockedHtmlRevision;
+    const stillCurrent=()=>!disposed&&active&&awake()&&isOpen()&&JSON.stringify(current())===exact&&(png?lockedPngRevision:lockedHtmlRevision)===revision;
     try{
-      if(env.flutter_inappwebview?.callHandler){await env.__PDA_platformReadyPromise;let binary='';for(const byte of new TextEncoder().encode(text))binary+=String.fromCharCode(byte);await env.flutter_inappwebview.callHandler('shareFile',{base64Data:btoa(binary),fileName});return;}
-      clearExport();exportUrl=URL.createObjectURL(new Blob([text],{type:'application/json'}));const link=el('a');link.href=exportUrl;link.download=fileName;panel.append(link);link.click();link.remove();exportTimer=setTimeout(clearExport,1000);
-    }catch(_){note('Could not export the credit ledger. No member credit was submitted.');}
+      const html=WarPayoutSheet.build({scope:run.scope,result:run.result,rows:run.entries,kind:'locked'});
+      const saved=await (png?WarPayoutSheetPng:WarPayoutSheet).deliver({doc,env,html,fileName:'war-payout-'+run.scope.warId+'-locked'+(compact?'-forum.png':png?'.png':'.html'),stillCurrent,compact});
+      if(saved&&stillCurrent())(png?lockedPngNote:note)(png?WarPayoutSheetPng.outcome(saved,true):saved==='native'?'Locked sheet handed to the PDA share menu. Choose where to save or share it.':'Locked payout sheet prepared. Review it before sharing.');
+    }catch(error){if(stillCurrent())(png?lockedPngNote:note)(png?WarPayoutSheetPng.message(error):'Could not hand off the locked HTML sheet. Try Download locked sheet again, or download it on desktop. The ledger is unchanged.');}
   });
-  const blur=()=>{if(active)pause();};win.addEventListener('blur',blur);
-  return {panel,show,hide,pause,refresh:render,resetReview(){find('reviewed').checked=false;},isActive:()=>active&&owner&&!disposed&&isOpen(),destroy(){pause();disposed=true;win.removeEventListener('blur',blur);panel.remove();}};
+  function canExportLedger(run){
+    return !!run&&!run.busy&&!disposed&&owner&&active&&awake()&&isOpen();
+  }
+  function ledgerStatus(message='',snapshot=null){
+    find('export-status').textContent=message;
+    ledgerStatusSnapshot=snapshot;
+  }
+  function retireLedger(){
+    if(ledgerJob){
+      ledgerJob.retired=true;
+      if(!ledgerJob.sent){ledgerJob=null;find('export').removeAttribute('aria-busy');}
+    }
+    ledgerStatus();
+  }
+  function ledgerIsCurrent(job,run=current()){
+    return ledgerJob===job&&!job.retired&&canExportLedger(run)&&ownerGeneration===job.generation&&JSON.stringify(run,null,2)===job.text;
+  }
+  function retireChangedLedger(run){
+    if(ledgerJob&&!ledgerJob.retired&&!ledgerIsCurrent(ledgerJob,run)){retireLedger();return;}
+    if(ledgerStatusSnapshot&&(!canExportLedger(run)||JSON.stringify(run,null,2)!==ledgerStatusSnapshot))ledgerStatus();
+  }
+  find('export').addEventListener('click',async event=>{
+    const run=current();
+    if(!event.isTrusted||ledgerJob||!canExportLedger(run))return;
+    const button=find('export'),text=JSON.stringify(run,null,2),fileName='war-credit-ledger-'+run.scope.warId+'.json';
+    const job={text,generation:ownerGeneration,retired:false,sent:false};
+    ledgerJob=job;ledgerStatus();button.setAttribute('aria-busy','true');
+    const manager=String(env.GM_info?.scriptHandler??'').trim();
+    const pda=!!(env.flutter_inappwebview||env.__PDA_platformReadyPromise||env.PDA_storage||env.PDA_getTabState||env.PDA_httpGet||env.__tornpda)||manager==='Torn PDA';
+    try{
+      if(pda){
+        await env.__PDA_platformReadyPromise;
+        if(!ledgerIsCurrent(job))return;
+        const bridge=env.flutter_inappwebview;
+        if(typeof bridge?.callHandler!=='function')throw new Error('Unavailable PDA bridge');
+        let binary='';for(const byte of new TextEncoder().encode(text))binary+=String.fromCharCode(byte);
+        job.sent=true;
+        const reply=await bridge.callHandler('shareFile',{base64Data:btoa(binary),fileName});
+        if(!ledgerIsCurrent(job))return;
+        if(reply?.status!=='success')throw new Error('Missing PDA acknowledgement');
+        ledgerStatus('Ledger handed to the PDA share menu. Choose where to save it.',text);
+      }else{
+        if(!ledgerIsCurrent(job))return;
+        clearExport();exportUrl=URL.createObjectURL(new Blob([text],{type:'application/json'}));
+        const link=el('a');link.href=exportUrl;link.download=fileName;panel.append(link);
+        try{link.click();}finally{link.remove();exportTimer=setTimeout(clearExport,1000);}
+        if(ledgerIsCurrent(job))ledgerStatus('Ledger download started.',text);
+      }
+    }catch(_){
+      if(ledgerIsCurrent(job))ledgerStatus(pda?'Could not hand off the ledger. Try Export ledger JSON again, or download it on desktop.':'Could not start the ledger download. Try Export ledger JSON again.',text);
+    }finally{
+      if(ledgerJob===job){ledgerJob=null;button.removeAttribute('aria-busy');}
+    }
+  });
+  const lockedForumClipboard=WarPayoutSheetPng.createClipboard({doc,button:find('copy-forum-png'),locked:true,note:message=>{find('forum-copy-status').textContent=message;},readNote:()=>find('forum-copy-status').textContent,readSource(){
+    const run=current();if(!owner||!active||!awake()||!isOpen()||!run||run.busy)return null;
+    const exact=JSON.stringify(run);
+    return {current:()=>!disposed&&owner&&active&&awake()&&isOpen()&&JSON.stringify(current())===exact,
+      html:()=>WarPayoutSheet.build({scope:run.scope,result:run.result,rows:run.entries,kind:'locked'})};
+  }});
+  const blur=()=>{if(active){pause();active=true;}};const focus=()=>{if(active&&awake()&&isOpen()){render();acquire();}};win.addEventListener('blur',blur);win.addEventListener('focus',focus);
+  return {panel,show,hide,pause,refresh:render,resetReview(){find('reviewed').checked=false;},isActive:()=>active&&owner&&!disposed&&isOpen(),destroy(){pause();disposed=true;win.removeEventListener('blur',blur);win.removeEventListener('focus',focus);panel.remove();}};
 }
 
 'use strict';
@@ -2788,24 +2882,150 @@ const WarPayoutRaffle = (() => {
           if(base.records.length>=MAX_DRAWS)fail('Raffle archive is full (50 draw limit).');
           const next={version:1,records:[...base.records,record]},encoded=encode(next);
           checkActive(active);
-          await save(encoded);
+          // Verify under the same archive lock; some managers silently drop writes.
+          try{
+            await save(encoded);
+            if(encode(archive(await fetchValue(get)))!==encoded)throw Error();
+          }catch(_){
+            const error=new Error('Could not verify the saved raffle. Use Refresh saved draws before drawing again.');
+            error.raffleSaveUncertain=true;throw error;
+          }
           state=next;return copy(record);
         });
       });
       writes=operation.catch(()=>{});return operation;
     }
-    return {load,append,list};
+    async function refresh(active=()=>true){
+      // Keep an initial load/migration ahead of explicit read-only reads.
+      if(loading)await loading.catch(()=>{});
+      const operation=async()=>{
+        if(!isActive(active))return false;
+        const next=await read(false);
+        if(!isActive(active))return false;
+        // Publish inside the same lock used by append, not from an older result outside it.
+        state=next;return true;
+      };
+      return typeof locks?.request==='function'?locks.request(KEY,{mode:'shared'},operation):operation();
+    }
+    return {load,append,list,refresh};
+  }
+  function firstPickLabel(tickets,total){
+    if(!total||tickets===0)return '0.00%';
+    if(tickets===total)return '100.00%';
+    const rounded=(100*tickets/total).toFixed(2);
+    return rounded==='0.00'?'<0.01%':rounded==='100.00'?'>99.99%':rounded+'%';
   }
   function oddsCsv(input){
     const cell=value=>{let text=String(value);if(/^[\s]*[=+@-]/.test(text))text="'"+text;return '"'+text.replace(/"/g,'""')+'"';};
-    const rows=[['Player ID','Player','Tickets','First-pick chance (%)']];
+    const rows=[['Player ID','Player','Tickets','First-pick chance (%)','Total pool tickets','First-pick odds label']];
     integer(input?.total,'Total tickets');
     if(!Array.isArray(input.entries)||input.entries.length>MAX_ROWS)fail('Invalid odds entries.');
-    for(const entry of input.entries)rows.push([entry.id,entry.name,entry.tickets,input.total?(entry.tickets/input.total*100).toFixed(6):'0.000000']);
+    for(const entry of input.entries)rows.push([entry.id,entry.name,entry.tickets,input.total?(entry.tickets/input.total*100).toFixed(6):'0.000000',String(input.total),firstPickLabel(entry.tickets,input.total)]);
     return rows.map(row=>row.map(cell).join(',')).join('\r\n');
   }
-  return {pool,randomBelow,draw,createArchive,oddsCsv};
+  return {pool,randomBelow,draw,createArchive,oddsCsv,firstPickLabel};
 })();
+
+function raffleSavedChance({tickets,poolTickets}){
+  const rounded=(100*tickets/poolTickets).toFixed(2);
+  return rounded==='0.00'?'<0.01%':rounded==='100.00'&&tickets!==poolTickets?'>99.99%':rounded+'%';
+}
+
+function createSavedRaffleAudience({doc,win,panel,button,appearance,isActive}){
+  const modal=doc.createElement('dialog');modal.className='twpc-audience';
+  modal.setAttribute('aria-labelledby','twpc-audience-title');modal.setAttribute('aria-describedby','twpc-audience-description');
+  modal.innerHTML='<header class="twpc-audience-head"><div><p class="twpc-audience-war"></p><h2 id="twpc-audience-title" tabindex="-1">Saved raffle replay</h2></div><button type="button" data-replay-close>Close replay</button></header><p id="twpc-audience-description">Previously saved winners. This replay does not run a new draw or share anything.</p><div class="twpc-audience-controls"><button type="button" data-replay-skip>Skip motion</button><button type="button" data-replay-again hidden>Replay again</button><p role="status" data-replay-status></p></div><div class="twpc-audience-track" aria-hidden="true"><span></span><span></span><span></span><b data-replay-track></b></div><div class="twpc-audience-scroll" role="region" tabindex="0" aria-label="Saved winners"><ol data-replay-winners role="list"></ol></div>';
+  panel.append(modal);
+  const find=selector=>modal.querySelector(selector),title=find('h2'),closeButton=find('[data-replay-close]'),skip=find('[data-replay-skip]'),again=find('[data-replay-again]'),
+    status=find('[data-replay-status]'),track=find('[data-replay-track]'),list=find('[data-replay-winners]'),scroll=find('.twpc-audience-scroll');
+  const motion=win.matchMedia?.('(prefers-reduced-motion: reduce)');
+  const badges={trophy:'\u{1f3c6}',star:'\u{2b50}'};
+  let active=null,timer=null,current=null;
+  function projection(saved){
+    if(!saved?.winners?.length)return null;
+    const winners=saved.winners.map(({rank,name,tickets,poolTickets})=>({rank,name,tickets,poolTickets}));
+    return {signature:JSON.stringify([saved.id,saved.scope.warId,winners]),warId:saved.scope.warId,winners};
+  }
+  function clearTimer(){if(timer!==null)win.clearTimeout(timer);timer=null;}
+  function close(refocus=false){
+    clearTimer();
+    if(!active&&!modal.open)return;
+    active=null;modal.removeAttribute('data-rolling');
+    if(modal.open)modal.close();
+    list.replaceChildren();status.textContent='';track.textContent='';find('.twpc-audience-war').textContent='';
+    if(refocus&&isActive()&&!button.disabled&&button.isConnected)button.focus({preventScroll:true});
+  }
+  const owns=job=>active===job&&modal.open&&isActive()&&current?.signature===job.saved.signature;
+  function appendThrough(job,end,animated=false){
+    const follow=animated&&scroll.scrollHeight-scroll.clientHeight-scroll.scrollTop<12;
+    const nodes=doc.createDocumentFragment();
+    while(job.revealed<end){
+      const winner=job.saved.winners[job.revealed++],row=doc.createElement('li');
+      row.value=winner.rank;
+      if(animated&&end-job.revealed<6)row.classList.add('twpc-audience-new');
+      const rank=doc.createElement('span');rank.className='twpc-audience-rank';rank.textContent='Rank '+winner.rank;
+      const body=doc.createElement('div'),name=doc.createElement('strong');name.textContent=winner.name;
+      if(job.badge){const badge=doc.createElement('span');badge.className='twpc-raffle-badge';badge.textContent=job.badge;badge.setAttribute('aria-hidden','true');body.append(badge);}
+      body.append(name);
+      const facts=doc.createElement('span');facts.className='twpc-audience-facts';
+      facts.textContent=winner.tickets.toLocaleString()+(winner.tickets===1?' ticket':' tickets')+(job.chance?' · '+raffleSavedChance(winner)+' chance on this pick':'');
+      body.append(facts);row.append(rank,body);nodes.append(row);
+    }
+    list.append(nodes);
+    if(follow)scroll.scrollTop=scroll.scrollHeight;
+  }
+  function finish(job){
+    if(!owns(job))return;
+    clearTimer();appendThrough(job,job.saved.winners.length);
+    modal.removeAttribute('data-rolling');track.textContent='Saved result complete';
+    status.textContent='Replay complete. '+job.saved.winners.length+' saved '+(job.saved.winners.length===1?'winner shown.':'winners shown.');
+    if(doc.activeElement===skip){again.hidden=false;again.focus({preventScroll:true});}
+    skip.hidden=true;again.hidden=false;
+  }
+  function tick(job){
+    if(active!==job)return;
+    if(!owns(job)){close();return;}
+    if(motion?.matches){finish(job);return;}
+    const end=Math.min(job.saved.winners.length,job.revealed+job.batch);
+    track.textContent=end===job.revealed+1?'Revealing pick '+end:'Revealing picks '+(job.revealed+1)+'–'+end;
+    timer=win.setTimeout(()=>{
+      timer=null;
+      if(active!==job)return;
+      if(!owns(job)){close();return;}
+      appendThrough(job,end,!motion?.matches);
+      if(end===job.saved.winners.length)finish(job);else tick(job);
+    },430);
+  }
+  function restart(job){
+    if(!owns(job))return;
+    clearTimer();job.revealed=0;list.replaceChildren();scroll.scrollTop=0;
+    if(motion?.matches){finish(job);return;}
+    status.textContent='Replaying '+job.saved.winners.length+' saved '+(job.saved.winners.length===1?'winner.':'winners.');
+    skip.hidden=false;if(doc.activeElement===again)skip.focus({preventScroll:true});again.hidden=true;
+    modal.setAttribute('data-rolling','');tick(job);
+  }
+  function open(event){
+    if(!event.isTrusted||button.disabled||active||!isActive()||!current)return;
+    const style=appearance(),saved=current;
+    const job={saved,badge:Object.hasOwn(badges,style.emoji)?badges[style.emoji]:'',chance:style.chance,revealed:0,batch:Math.ceil(saved.winners.length/20)};
+    try{modal.showModal();}catch(_){return;}
+    active=job;find('.twpc-audience-war').textContent='Local replay · War #'+saved.warId;
+    title.focus({preventScroll:true});restart(job);
+  }
+  function sync(saved,enabled){
+    current=projection(saved);
+    button.disabled=!enabled||!current||typeof modal.showModal!=='function';
+    if(active&&(!enabled||!current||current.signature!==active.saved.signature||!isActive()))close();
+  }
+  function onMotion(){if(motion.matches&&active)finish(active);}
+  button.addEventListener('click',open);closeButton.addEventListener('click',()=>close(true));
+  skip.addEventListener('click',()=>{if(active)finish(active);});
+  again.addEventListener('click',()=>{if(active)restart(active);});
+  modal.addEventListener('cancel',event=>{event.preventDefault();close(true);});
+  modal.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();event.stopPropagation();close(true);}});
+  motion?.addEventListener?.('change',onMotion);
+  return {sync,close,destroy(){close();motion?.removeEventListener?.('change',onMotion);modal.remove();}};
+}
 
 // Local raffle UI: owns its draw archive and exports, never payment state.
 function createWarPayoutRaffleUI({doc,env,readSnapshot,isActive}) {
@@ -2815,19 +3035,21 @@ function createWarPayoutRaffleUI({doc,env,readSnapshot,isActive}) {
   const presets={losses:{losses:1},hits:{hits:1},balanced:{hits:1,losses:1,assists:1,defends:1},equal:{flat:1}};
   const el=(tag,text)=>{const node=doc.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
   const panel=el('div');panel.id='twpc-raffle-panel';panel.className='twpc-content';
-  panel.innerHTML=`<section><h3>War raffle</h3><p>Tickets use the loaded enemy-only war counts. Losses mean enemy attacks that defeated your members.</p><label for="twpc-raffle-preset">Ticket preset<select id="twpc-raffle-preset"><option value="losses">Loss raffle</option><option value="hits">War hits</option><option value="balanced">Balanced activity</option><option value="equal">Equal entries</option><option value="custom">Custom weights</option></select></label>
-  <details><summary>Ticket weights</summary><div class="twpc-grid twpc-two">${fields.map(field=>`<label for="twpc-raffle-weight-${field}">${labels[field]}<input id="twpc-raffle-weight-${field}" data-raffle-weight="${field}" type="number" min="0" max="1000000" step="0.0001" inputmode="decimal" value="${field==='losses'?1:0}"></label>`).join('')}</div><p>Weights can use up to four decimal places. Each member\u2019s total is rounded down, then capped. Equal entries include only participants represented in the loaded counts.</p></details>
-  <div class="twpc-grid twpc-two"><label for="twpc-raffle-winners">Winners<input id="twpc-raffle-winners" type="number" min="1" max="1000" step="1" value="1" inputmode="numeric"></label><label for="twpc-raffle-cap">Tickets per member cap<input id="twpc-raffle-cap" type="number" min="0" step="1" value="0" inputmode="numeric"></label><label for="twpc-raffle-min">Minimum tickets<input id="twpc-raffle-min" type="number" min="0" step="1" value="1" inputmode="numeric"></label></div><p>Cap 0 means unlimited. Zero-ticket members are excluded.</p>
+  panel.innerHTML=`<section><h3>Host a war raffle</h3><p>Choose a preset and winner count. The default is one ticket per loss to the enemy.</p><label for="twpc-raffle-preset">Ticket preset<select id="twpc-raffle-preset"><option value="losses">Loss raffle</option><option value="hits">War hits</option><option value="balanced">Balanced activity</option><option value="equal">Equal entries</option><option value="custom">Custom weights</option></select></label>
+<label for="twpc-raffle-winners">Winners<input id="twpc-raffle-winners" type="number" min="1" max="1000" step="1" value="1" inputmode="numeric"></label>
+  <details class="twpc-raffle-advanced" id="twpc-raffle-advanced"><summary>Advanced: ticket weights and limits</summary><div class="twpc-grid twpc-two">${fields.map(field=>`<label for="twpc-raffle-weight-${field}">${labels[field]}<input id="twpc-raffle-weight-${field}" data-raffle-weight="${field}" type="number" min="0" max="1000000" step="0.0001" inputmode="decimal" value="${field==='losses'?1:0}"></label>`).join('')}</div><p>Weights can use up to four decimal places. Each member\u2019s total is rounded down, then capped. Equal entries include only participants represented in the loaded counts.</p><div class="twpc-grid twpc-two"><label for="twpc-raffle-cap">Tickets per member cap<input id="twpc-raffle-cap" type="number" min="0" step="1" value="0" inputmode="numeric"></label><label for="twpc-raffle-min">Minimum tickets<input id="twpc-raffle-min" type="number" min="0" step="1" value="1" inputmode="numeric"></label></div><p>Cap 0 means unlimited. Zero-ticket members are excluded.</p></details>
   <p id="twpc-raffle-summary" aria-live="polite"></p><div class="twpc-actions"><button id="twpc-raffle-draw" class="twpc-primary" disabled>Draw winners</button><button id="twpc-raffle-new" disabled>New draw</button></div><p id="twpc-raffle-note" role="status"></p></section>
-  <section><h3>Saved draw</h3><label for="twpc-raffle-saved">Draw history<select id="twpc-raffle-saved"><option value="">No saved draws</option></select></label><p id="twpc-raffle-context"></p><ol id="twpc-raffle-results" class="twpc-raffle-results" aria-live="polite"></ol><div class="twpc-actions"><button id="twpc-raffle-copy" disabled>Copy results</button><button id="twpc-raffle-export" disabled>Export draw</button></div></section>
-  <details><summary>Entrants and first-pick odds</summary><p>These are chances on the first pick. Each winner\u2019s tickets are removed before the next pick.</p><div class="twpc-table-scroll"><table id="twpc-raffle-odds"><thead><tr><th>Participant</th><th>Tickets</th><th>First pick</th></tr></thead><tbody></tbody></table></div><button id="twpc-raffle-csv" disabled>Export odds CSV</button></details>
+  <section><h3>Saved draw</h3><label for="twpc-raffle-saved">Draw history<select id="twpc-raffle-saved"><option value="">No saved draws</option></select></label><button id="twpc-raffle-refresh-saved" type="button" disabled>Refresh saved draws</button><p id="twpc-raffle-refresh-status" role="status"></p><p id="twpc-raffle-context"></p><details class="twpc-raffle-display" id="twpc-raffle-display"><summary>Winner display</summary><p>These choices only change the on-screen list for this page, not saved draws or exports.</p><label for="twpc-raffle-emoji">Winner emoji<select id="twpc-raffle-emoji"><option value="none">None (default)</option><option value="trophy">Trophy</option><option value="star">Star</option></select></label><label class="twpc-checkbox"><input id="twpc-raffle-chance" type="checkbox"> Show chance on each pick</label></details><ol id="twpc-raffle-results" class="twpc-raffle-results" aria-live="polite"></ol><div class="twpc-actions"><button id="twpc-raffle-replay" type="button" disabled>Replay saved draw</button><button id="twpc-raffle-copy" type="button" aria-describedby="twpc-raffle-copy-status" disabled>Copy results</button><button id="twpc-raffle-export" disabled>Export draw</button></div><p id="twpc-raffle-copy-status" role="status"></p><p id="twpc-raffle-export-status" class="twpc-raffle-export-status" role="status"></p></section>
+  <details><summary>Entrants and first-pick odds</summary><p>These are chances on the first pick. Each winner\u2019s tickets are removed before the next pick.</p><div class="twpc-table-scroll"><table id="twpc-raffle-odds"><thead><tr><th>Participant</th><th>Tickets</th><th>First pick</th></tr></thead><tbody></tbody></table></div><button id="twpc-raffle-csv" disabled>Export odds CSV</button><p id="twpc-raffle-csv-status" class="twpc-raffle-export-status" role="status"></p></details>
   <details><summary>Randomness and saved records</summary><p>Draws use Web Crypto random values with rejection sampling, weighted by tickets, without replacement. Secure randomness must be available to draw. Each draw saves its original entrants, settings and ranked winners before displaying results.</p><p>Records stay separate from payout receipts. This is a local draw record, not an externally verified public lottery. Available-log completeness remains unverified. Up to 50 draws / 2 MiB are retained without automatic deletion.</p></details>`;
   const $=name=>panel.querySelector('#twpc-raffle-'+name);
-  let active=false,disposed=false,ready=false,busy=false,loading=null,records=[],selectedId='',newFor='',newAfter=null,scopeKey='',revision=0;
-  let currentPool=null,currentResult=null,exportUrl=null,exportTimer=null;
+  let active=false,disposed=false,ready=false,busy=false,loading=null,records=[],selectedId='',newFor='',newAfter=null,scopeKey='',revision=0,refreshRequest=null,loadFailed=false,saveUncertain=false;
+  let currentPool=null,currentResult=null,exportUrl=null,exportTimer=null,renderedSnapshot=null,renderedExportSettings=null,exportJob=null,exportFeedback=null,copyJob=null,copyFeedback=null;
   const key=scope=>scope?`${scope.factionId}:${scope.warId}`:'';
   const foreground=()=>!disposed&&active&&isActive()&&doc.visibilityState!=='hidden';
   function note(text){$('note').textContent=text;}
+  function refreshStatus(text){$('refresh-status').textContent=text;}
+  const audience=createSavedRaffleAudience({doc,win,panel,button:$('replay'),appearance:()=>({emoji:$('emoji').value,chance:$('chance').checked}),isActive:foreground});
   function releaseExport(){clearTimeout(exportTimer);exportTimer=null;if(exportUrl)win.URL.revokeObjectURL(exportUrl);exportUrl=null;}
   function settings(){
     const number=name=>{const raw=$(name).value.trim();if(!raw)throw Error('Enter a whole number for '+name+'.');return Number(raw);};
@@ -2836,88 +3058,252 @@ function createWarPayoutRaffleUI({doc,env,readSnapshot,isActive}) {
   function syncSelection(snapshot){
     const nextKey=key(snapshot?.scope);
     if(nextKey!==scopeKey){scopeKey=nextKey;newFor='';newAfter=null;selectedId=records.find(record=>key(record.scope)===nextKey)?.id||'';revision++;}
-    if(!selectedId&&scopeKey)selectedId=records.find(record=>key(record.scope)===scopeKey)?.id||'';
+    if(!records.some(record=>record.id===selectedId))selectedId=records.find(record=>key(record.scope)===scopeKey)?.id||'';
   }
-  function render(){
+  function renderWinners(){
+    const target=$('results');target.replaceChildren();
+    if(!currentResult)return;
+    const badges={trophy:'\u{1f3c6}',star:'\u{2b50}'},choice=$('emoji').value;
+    const badge=Object.hasOwn(badges,choice)?badges[choice]:'';
+    const showChance=$('chance').checked;
+    for(const winner of currentResult.winners){
+      const row=el('li');
+      if(badge){const icon=el('span',badge);icon.className='twpc-raffle-badge';icon.setAttribute('aria-hidden','true');row.append(icon);}
+      const chanceLabel=raffleSavedChance(winner);
+      const chance=showChance?` · ${chanceLabel} chance on this pick`:'';
+      row.append(el('strong',`${winner.name} [${winner.id}]`),el('span',` · ${winner.tickets.toLocaleString()} tickets${chance}`));target.append(row);
+    }
+  }
+  function render(){try{renderPanel();}finally{syncExport();syncCopy();}}
+  function renderPanel(){
     if(disposed||!active)return;
-    const snapshot=readSnapshot();records=archive.list().reverse();syncSelection(snapshot);
+    const snapshot=readSnapshot();renderedSnapshot=snapshot;records=archive.list().reverse();syncSelection(snapshot);
     $('saved').replaceChildren();
     for(const record of records)$('saved').append(new win.Option(`War #${record.scope.warId} · faction ${record.scope.factionId} · ${new Date(record.createdAt).toLocaleString()}`,record.id));
-    if(!records.length)$('saved').append(new win.Option('No saved draws',''));
+    if(!records.length)$('saved').append(new win.Option(ready?'No saved draws':loadFailed?'Saved draws unavailable':'Loading saved draws',''));
+    $('refresh-saved').disabled=!foreground()||busy||!!refreshRequest||(!ready&&!loadFailed);
     $('saved').value=selectedId;$('saved').disabled=!ready||busy;
     currentResult=records.find(record=>record.id===selectedId)||null;
-    $('results').replaceChildren();$('context').textContent='';
+    audience.sync(currentResult,ready&&!busy&&!refreshRequest&&foreground());
+    $('context').textContent='';
     if(currentResult){
       $('context').textContent=`War #${currentResult.scope.warId} · faction ${currentResult.scope.factionId} · ${new Date(currentResult.createdAt).toLocaleString()} · ${currentResult.entries.length} entrants / ${currentResult.total.toLocaleString()} tickets. Saved settings and counts; API-log completeness unverified.`;
-      for(const winner of currentResult.winners){const row=el('li'),name=el('strong',`${winner.name} [${winner.id}]`);row.append(name,el('span',` · ${winner.tickets.toLocaleString()} tickets`));$('results').append(row);}
     }
-    for(const name of ['copy','export'])$(name).disabled=!currentResult;
+    renderWinners();
+
     const prior=records.some(record=>key(record.scope)===scopeKey);
-    $('new').disabled=!ready||busy||!snapshot||!prior||snapshot.live||newFor===scopeKey;
-    $('draw').disabled=true;$('csv').disabled=true;currentPool=null;
+    $('new').disabled=!ready||busy||saveUncertain||!!refreshRequest||!snapshot||!prior||snapshot.live||newFor===scopeKey;
+    $('draw').disabled=true;currentPool=null;renderedExportSettings=null;
     $('odds').querySelector('tbody').replaceChildren();
-    if(!ready){$('summary').textContent='Loading saved draws…';note('The calculator stays available while records load.');return;}
+    if(!ready){
+      $('summary').textContent=loadFailed?'Saved draws unavailable.':'Loading saved draws.';
+      note(loadFailed?'Saved raffle records could not be read. Existing data was kept; drawing is disabled. Use Refresh saved draws to retry.':'The calculator stays available while records load.');return;
+    }
     if(!snapshot){$('summary').textContent='Load a war from Calculate to preview tickets.';note('Saved draws remain available in history.');return;}
     try{
-      const pool=R.pool(snapshot.rows,settings());currentPool=pool;
+      const rules=settings(),pool=R.pool(snapshot.rows,rules);currentPool=pool;renderedExportSettings=JSON.stringify(rules);
       $('summary').textContent=`${pool.entries.length} eligible members · ${pool.total.toLocaleString()} tickets${snapshot.live?' · live preview':''}`;
       const body=$('odds').querySelector('tbody');
-      for(const entry of pool.entries){const row=el('tr');row.append(el('td',`${entry.name} [${entry.id}]`),el('td',String(entry.tickets)),el('td',(100*entry.tickets/pool.total).toFixed(2)+'%'));body.append(row);}
-      $('csv').disabled=!pool.entries.length;
+      for(const entry of pool.entries){const row=el('tr');row.append(el('td',`${entry.name} [${entry.id}]`),el('td',String(entry.tickets)),el('td',R.firstPickLabel(entry.tickets,pool.total)));body.append(row);}
+      if(saveUncertain){note('Could not verify the saved raffle. Use Refresh saved draws before drawing again.');return;}
       if(snapshot.live){note('Live war: odds preview only. Load completed counts before drawing.');return;}
       if(!pool.entries.length){note('No member meets these ticket rules. Set a positive weight or lower the minimum.');return;}
       if(pool.settings.winners>pool.entries.length){note('Winner count exceeds eligible members. Lower the number of winners.');return;}
       if(typeof env.crypto?.getRandomValues!=='function'){note('Secure random generation is unavailable. Draws are disabled.');return;}
       if(prior&&newFor!==scopeKey){note('A draw is already saved for this war. New draw keeps the earlier result and asks for confirmation.');return;}
-      $('draw').disabled=busy||!foreground();note(busy?'Drawing and saving…':'Ready. One draw selects the chosen number of unique winners and saves the result.');
+      $('draw').disabled=busy||!!refreshRequest||!foreground();note(busy?'Drawing and saving…':'Ready. One draw selects the chosen number of unique winners and saves the result.');
     }catch(error){$('summary').textContent='Check ticket settings.';note(error.message);}
   }
   function init(){
-    if(!loading)loading=archive.load(foreground).then(()=>{ready=true;if(!disposed)render();}).catch(()=>{loading=null;ready=false;if(!disposed&&active){$('summary').textContent='Saved draws unavailable.';note('Saved raffle records could not be read. Existing data was kept; drawing is disabled. Reopen Raffle to retry.');}});
+    if(!ready&&!loading){
+      loadFailed=false;
+      loading=archive.load(foreground).then(()=>{ready=true;render();}).catch(()=>{loading=null;loadFailed=true;render();});
+    }
     return loading;
   }
-  function trusted(event){return event.isTrusted&&event.detail<=1&&!busy&&foreground();}
+  async function refreshDraws(event){
+    if(!event.isTrusted||busy||refreshRequest||!foreground()||$('refresh-saved').disabled)return;
+    const attempt={};refreshRequest=attempt;
+    const activeRead=()=>refreshRequest===attempt&&foreground();
+    refreshStatus('Refreshing saved draws...');render();
+    try{
+      if(!await archive.refresh(activeRead)||!activeRead())return;
+      ready=true;loadFailed=false;saveUncertain=false;
+      const all=archive.list();
+      if(newFor&&([...all].reverse().find(record=>key(record.scope)===newFor)?.id??null)!==newAfter){newFor='';newAfter=null;revision++;}
+      refreshStatus(all.length?'Saved draws refreshed.':'No saved draws found.');
+    }catch(_){
+      if(activeRead())refreshStatus(ready?'Could not refresh saved draws. Previously loaded results are unchanged. Try again.':'Could not read saved draws. Try again.');
+    }finally{
+      if(refreshRequest===attempt){refreshRequest=null;if(foreground())render();}
+    }
+  }
+  function trusted(event){return event.isTrusted&&event.detail<=1&&!busy&&!refreshRequest&&foreground();}
   async function draw(event){
     if(!trusted(event)||!ready||$('draw').disabled)return;
     const snapshot=readSnapshot(),selection=settings(),token=++revision,previousDrawId=newFor===scopeKey?newAfter:null;
     const stillCurrent=()=>foreground()&&revision===token&&readSnapshot()===snapshot;
-    busy=true;render();
+    let feedback=null;busy=true;render();
     try{
       if(!stillCurrent())throw Error('The selected war changed. Review it before drawing.');
       const record=R.draw(snapshot,selection,env.crypto);
       await archive.append(record,{active:stillCurrent,previousDrawId});
       records=archive.list();
       if(!stillCurrent())return;
-      selectedId=record.id;newFor='';newAfter=null;render();note('Draw saved. Results stay fixed until you deliberately start a new draw.');
-    }catch(error){if(!disposed&&active){const latest=archive.list().filter(record=>key(record.scope)===key(snapshot?.scope)).at(-1);if(latest&&latest.id!==previousDrawId){newFor='';newAfter=null;selectedId=latest.id;}render();note(error.message||'The draw could not be saved. Earlier records were kept.');}}
-    finally{busy=false;if(!disposed&&active){const message=$('note').textContent;render();note(message);}}
+      selectedId=record.id;newFor='';newAfter=null;feedback='Draw saved. Results stay fixed until you deliberately start a new draw.';
+    }catch(error){
+      if(error?.raffleSaveUncertain){saveUncertain=true;newFor='';newAfter=null;}
+      if(stillCurrent()){
+        const latest=archive.list().filter(record=>key(record.scope)===key(snapshot?.scope)).at(-1);
+        if(!saveUncertain&&latest&&latest.id!==previousDrawId){newFor='';newAfter=null;selectedId=latest.id;}
+        feedback=error.message||'The draw could not be saved. Earlier records were kept.';
+      }
+    }finally{
+      busy=false;
+      if(!disposed&&active){render();if(feedback&&stillCurrent())note(feedback);}
+    }
   }
   function newDraw(event){
     if(!trusted(event)||!readSnapshot()||readSnapshot().live)return;
     if(!win.confirm('Start another raffle for this war? The previous saved draw will remain in history.'))return;
     newFor=scopeKey;newAfter=records.find(record=>key(record.scope)===scopeKey)?.id||null;revision++;render();
   }
-  async function copy(){
-    if(!currentResult)return;
+  function copySource(){
+    if(!currentResult||$('saved').value!==currentResult.id)return null;
     const record=currentResult,text=`War raffle #${record.scope.warId} · faction ${record.scope.factionId}\n${new Date(record.createdAt).toISOString()}\nDraw ${record.id}\n${record.entries.length} entrants · ${record.total} tickets\n${record.winners.map(winner=>`${winner.rank}. ${winner.name} [${winner.id}] · ${winner.tickets} tickets`).join('\n')}\nWeb Crypto · weighted without replacement. API-log completeness unverified.`;
-    try{if(typeof env.GM_setClipboard==='function')await env.GM_setClipboard(text);else if(typeof GM_setClipboard==='function')await GM_setClipboard(text);else if(typeof env.GM?.setClipboard==='function')await env.GM.setClipboard(text);else await win.navigator.clipboard.writeText(text);note('Raffle results copied.');}catch(_){note('Could not copy. Export the draw instead.');}
+    return {id:record.id,text};
   }
-  async function download(text,name,type){
+  function ownsCopy(job,source=copySource()){
+    return !!job&&!job.retired&&foreground()&&!!source&&source.id===job.id&&source.text===job.text;
+  }
+  function retireCopy(){
+    if(copyJob)copyJob.retired=true;
+    copyFeedback=null;$('copy-status').textContent='';
+  }
+  function syncCopy(){
+    const source=copyJob||copyFeedback?copySource():null;
+    if(copyJob&&!ownsCopy(copyJob,source))copyJob.retired=true;
+    if(copyFeedback&&!ownsCopy(copyFeedback,source)){copyFeedback=null;$('copy-status').textContent='';}
+    const button=$('copy');button.disabled=!!copyJob||!currentResult||!foreground();
+    if(copyJob)button.setAttribute('aria-busy','true');else button.removeAttribute('aria-busy');
+  }
+  function copyStatus(job,message){
+    if(copyJob!==job||!ownsCopy(job))return;
+    copyFeedback=job;$('copy-status').textContent=message;
+  }
+  async function copy(event){
+    if(!event.isTrusted||copyJob||!foreground()||$('copy').disabled)return;
+    const job=copySource();if(!job)return;
+    copyJob=job;copyStatus(job,'Copying saved results...');syncCopy();
+    const fail=()=>copyStatus(job,'Could not copy the saved results. Use Export draw instead.');
     try{
-      if(env.flutter_inappwebview?.callHandler){await env.__PDA_platformReadyPromise;const bytes=new TextEncoder().encode(text);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);await env.flutter_inappwebview.callHandler('shareFile',{base64Data:win.btoa(binary),fileName:name});}
-      else{releaseExport();exportUrl=win.URL.createObjectURL(new Blob([text],{type}));const link=el('a');link.href=exportUrl;link.download=name;panel.append(link);link.click();link.remove();exportTimer=setTimeout(releaseExport,1000);}
-      note('Raffle export prepared.');
-    }catch(_){note('Could not export the raffle. Try Copy results.');}
+      const manager=env.GM_info?.scriptHandler||env.GM?.info?.scriptHandler;
+      const pda=!!(env.flutter_inappwebview||win.flutter_inappwebview||env.__PDA_platformReadyPromise||env.PDA_storage||env.PDA_getTabState||env.PDA_httpGet||env.__tornpda)||manager==='Torn PDA';
+      const clipboard=win.navigator.clipboard,canObserve=typeof clipboard?.writeText==='function';
+      let receipt;
+      // PDA's legacy wrapper may discard a rejected writeText promise. Use
+      // the observable path when present; never auto-retry a sent write.
+      if(pda&&canObserve)receipt=clipboard.writeText(job.text);
+      else if(typeof env.GM?.setClipboard==='function')receipt=env.GM.setClipboard(job.text);
+      else if(typeof env.GM_setClipboard==='function')receipt=env.GM_setClipboard(job.text);
+      else if(typeof GM_setClipboard==='function')receipt=GM_setClipboard(job.text);
+      else if(canObserve)receipt=clipboard.writeText(job.text);
+      else {fail();return;}
+      if(typeof receipt?.then!=='function'){
+        copyStatus(job,'Could not confirm the clipboard write. Try pasting, or use Export draw.');return;
+      }
+      const reply=await receipt;
+      if(reply===false||reply?.status==='error'){fail();return;}
+      copyStatus(job,'Raffle results copied.');
+    }catch(_){fail();}
+    finally{if(copyJob===job){copyJob=null;if(!disposed)syncCopy();}}
   }
-  $('draw').addEventListener('click',draw);$('new').addEventListener('click',newDraw);
+  function exportSettings(){
+    try{return JSON.stringify(settings());}catch(_){return null;}
+  }
+  function exportSource(kind){
+    if(kind==='export'){
+      if(!currentResult||$('saved').value!==currentResult.id)return null;
+      const {id,scope}=currentResult;
+      return {kind,id,text:JSON.stringify(currentResult,null,2),name:'war-raffle-'+scope.warId+'-'+id+'.json',mime:'application/json',label:'Saved draw file'};
+    }
+    const snapshot=readSnapshot(),stamp=exportSettings();
+    if(!snapshot||snapshot!==renderedSnapshot||!currentPool?.entries.length||!stamp||stamp!==renderedExportSettings)return null;
+    return {kind,snapshot,stamp,text:R.oddsCsv(currentPool),name:'war-raffle-'+snapshot.scope.warId+'-odds.csv',mime:'text/csv;charset=utf-8',label:'Odds CSV'};
+  }
+  function ownsExport(job){
+    if(!job||job.retired||!foreground())return false;
+    if(job.kind==='export')return currentResult?.id===job.id&&$('saved').value===job.id&&JSON.stringify(currentResult,null,2)===job.text;
+    return readSnapshot()===job.snapshot&&renderedSnapshot===job.snapshot&&!!currentPool?.entries.length&&renderedExportSettings===job.stamp&&exportSettings()===job.stamp;
+  }
+  function exportStatus(job,text){
+    if(!ownsExport(job))return;
+    exportFeedback=job;
+    $(job.kind==='export'?'export-status':'csv-status').textContent=text;
+  }
+  function clearExportStatus(){
+    exportFeedback=null;$('export-status').textContent='';$('csv-status').textContent='';
+  }
+  function retireExport(){
+    clearExportStatus();
+    if(exportJob){
+      exportJob.retired=true;
+      // If handed to the bridge, no second share can start until it settles.
+      // Before handoff it is safe to release the lane; a resumed wait cannot issue.
+      if(!exportJob.started)exportJob=null;
+    }
+  }
+  function syncExport(){
+    if(exportJob&&!ownsExport(exportJob))retireExport();
+    else if(exportFeedback&&!ownsExport(exportFeedback))clearExportStatus();
+    $('export').disabled=!foreground()||!!exportJob||!currentResult;
+    $('csv').disabled=!foreground()||!!exportJob||!currentPool?.entries.length;
+  }
+  async function download(kind,event){
+    if(!event.isTrusted||exportJob||!foreground()||$(kind).disabled)return;
+    const source=exportSource(kind);
+    if(!source)return;
+    const job={...source,started:false,retired:false};
+    exportJob=job;clearExportStatus();syncExport();
+    const stillCurrent=()=>exportJob===job&&ownsExport(job);
+    const initialBridge=env.flutter_inappwebview;
+    const manager=env.GM_info?.scriptHandler||env.GM?.info?.scriptHandler;
+    const pda=!!(initialBridge||env.__PDA_platformReadyPromise||env.PDA_storage||env.PDA_getTabState||env.PDA_httpGet||env.__tornpda)||manager==='Torn PDA';
+    const failed=()=>exportStatus(job,pda?'Could not hand off the '+(kind==='export'?'saved draw file':'odds CSV')+'. Try again or download on desktop.':'Could not start the raffle download. Try again.');
+    try{
+      if(pda){
+        exportStatus(job,'Opening the PDA share menu...');
+        await env.__PDA_platformReadyPromise;
+        if(!stillCurrent())return;
+        const bridge=env.flutter_inappwebview||win.flutter_inappwebview;
+        if(typeof bridge?.callHandler!=='function'){failed();return;}
+        const bytes=new TextEncoder().encode(job.text);
+        let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);
+        job.started=true;
+        const reply=await bridge.callHandler('shareFile',{base64Data:win.btoa(binary),fileName:job.name});
+        if(!stillCurrent())return;
+        if(reply?.status==='success')exportStatus(job,job.label+' handed to the PDA share menu. Choose where to save or share it.');
+        else failed();
+      }else{
+        releaseExport();exportUrl=win.URL.createObjectURL(new Blob([job.text],{type:job.mime}));
+        const link=el('a');link.href=exportUrl;link.download=job.name;
+        try{panel.append(link);link.click();}
+        finally{link.remove();exportTimer=setTimeout(releaseExport,1000);}
+        exportStatus(job,'Raffle export prepared.');
+      }
+    }catch(_){if(stillCurrent())failed();}
+    finally{if(exportJob===job){exportJob=null;syncExport();}}
+  }
+  $('draw').addEventListener('click',draw);$('new').addEventListener('click',newDraw);$('refresh-saved').addEventListener('click',refreshDraws);
   for(const name of ['draw','new'])$(name).addEventListener('keydown',event=>{if(event.repeat)event.preventDefault();});
   $('copy').addEventListener('click',copy);
-  $('export').addEventListener('click',()=>{if(currentResult)download(JSON.stringify(currentResult,null,2),'war-raffle-'+currentResult.scope.warId+'-'+currentResult.id+'.json','application/json');});
-  $('csv').addEventListener('click',()=>{if(currentPool)download(R.oddsCsv(currentPool),'war-raffle-'+readSnapshot().scope.warId+'-odds.csv','text/csv;charset=utf-8');});
+  $('export').addEventListener('click',event=>{void download('export',event);});
+  $('csv').addEventListener('click',event=>{void download('csv',event);});
   $('saved').addEventListener('change',()=>{selectedId=$('saved').value;render();});
   $('preset').addEventListener('change',()=>{const preset=presets[$('preset').value];if(preset)for(const field of fields)$('weight-'+field).value=preset[field]??0;revision++;render();});
-  panel.addEventListener('input',event=>{if(event.target.matches('input')){if(event.target.dataset.raffleWeight)$('preset').value='custom';revision++;render();}});
-  return {panel,refresh:render,show(){if(disposed)return;active=true;render();init();},hide(){active=false;revision++;releaseExport();},destroy(){disposed=true;active=false;revision++;releaseExport();panel.remove();}};
+  $('emoji').addEventListener('change',renderWinners);$('chance').addEventListener('change',renderWinners);
+  panel.addEventListener('input',event=>{if(event.target.matches('input')&&event.target!==$('chance')){if(event.target.dataset.raffleWeight)$('preset').value='custom';revision++;render();}});
+  return {panel,refresh:render,show(){if(disposed)return;active=true;init();render();},hide(){active=false;retireExport();retireCopy();audience.close();refreshRequest=null;refreshStatus('');revision++;releaseExport();},destroy(){disposed=true;active=false;retireExport();retireCopy();audience.destroy();refreshRequest=null;revision++;releaseExport();panel.remove();}};
 }
 
 // Payout-specific composition. Window behavior belongs to the shared UI factory;
@@ -2941,11 +3327,11 @@ function mountWarPayoutShell({staging,themeClient,onClose,onSelect,onVisibilityC
   const stockActions=make('div');stockActions.className='twpc-stock-actions';
   const review=make('button','Review payouts →');review.id='twpc-review';review.type='button';review.className='twpc-primary';
   stockActions.append(review);stockFooter.append(stockTotals,stockActions);
-  const movable=[$('total').parentElement,$('balance').parentElement,$('csv'),$('copy')].map(node=>{const home=doc.createComment('payout control home');node.before(home);return {node,home};});
+  const movable=[$('total').parentElement,$('balance').parentElement].map(node=>{const home=doc.createComment('payout control home');node.before(home);return {node,home};});
   let stockMode=null,releaseTheme=null;
   function syncStockLayout(theme){
     const stock=theme?.layout==='stock';if(stockMode===stock)return;stockMode=stock;
-    movable.forEach(({node,home},index)=>{if(stock)(index<2?stockTotals:stockActions).append(node);else home.after(node);});
+    movable.forEach(({node,home})=>{if(stock)stockTotals.append(node);else home.after(node);});
     if(stock)stockActions.append(review);
   }
   const ui=createTornScriptUI({doc,win,id:'war-payout-calculator',title:'War payout calculator',surface:'floating',applyTheme:applyScriptUiTheme,
@@ -2983,6 +3369,61 @@ function warPayoutShellCss(){return `
 #twpc-dialog .twpc-cache-row{display:grid;grid-template-columns:2fr 1fr 2fr auto;gap:8px;align-items:end;margin:8px 0}#twpc-dialog .twpc-cache-state{padding:8px;border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);color:var(--tsui-accent)}#twpc-dialog .twpc-cache-state.twpc-live{color:var(--tsui-warning)}
 #twpc-dialog .twpc-table-scroll{max-width:100%;max-height:320px;overflow:auto;border:1px solid var(--tsui-border);border-radius:var(--tsui-radius)}#twpc-dialog table{font-variant-numeric:tabular-nums}#twpc-dialog th,#twpc-dialog td{white-space:nowrap;text-align:right;font-size:12px;padding:9px}#twpc-dialog th:first-child,#twpc-dialog td:first-child{text-align:left}#twpc-dialog th{position:sticky;top:0;background:var(--tsui-raised);color:var(--tsui-muted)}#twpc-dialog tbody tr:nth-child(even){background:var(--tsui-raised)}#twpc-dialog .twpc-pay{color:var(--tsui-accent);font-weight:bold}
 #twpc-dialog .twpc-warning,#twpc-dialog #twpc-balance.twpc-warning,#twpc-dialog #twpc-validation{color:var(--tsui-error)}#twpc-dialog #twpc-validation:empty,#twpc-dialog #twpc-status:empty{display:none}#twpc-dialog #twpc-credit-summary{color:var(--tsui-accent)}#twpc-dialog #twpc-credit-next{white-space:normal}
+#twpc-dialog .twpc-mode-help{margin:7px 0 0;color:var(--tsui-muted)}
+#twpc-dialog .twpc-posting{margin-top:14px;padding:12px 12px 0;background:var(--tsui-raised);border:1px solid var(--tsui-border);border-radius:var(--tsui-radius)}
+#twpc-dialog .twpc-posting h4{margin:0 0 9px;font-size:14px;color:var(--tsui-text)}
+#twpc-dialog .twpc-posting-formats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+#twpc-dialog .twpc-posting .twpc-posting-format button{width:100%;min-height:54px;white-space:normal}
+#twpc-dialog .twpc-posting-format p{margin:5px 0 8px;line-height:1.35;font-size:11px}
+#twpc-dialog #twpc-more-export,#twpc-dialog #twpc-locked-more-formats{margin:4px 0 0;padding:0}
+#twpc-dialog #twpc-more-export summary,#twpc-dialog #twpc-locked-more-formats summary{min-height:44px;line-height:44px;color:var(--tsui-accent);font-size:12px;font-weight:600}
+#twpc-dialog .twpc-posting button{min-height:44px;max-width:100%;min-height:54px;white-space:normal}
+#twpc-dialog .twpc-posting :focus-visible{outline:2px solid var(--tsui-accent);outline-offset:2px}
+#twpc-dialog #twpc-csv-status{margin:0 0 8px}
+#twpc-dialog #twpc-csv-status:empty,#twpc-dialog #twpc-credit-export-status:empty{margin:0}
+#twpc-dialog #twpc-locked-posting{margin-top:8px}
+#twpc-dialog #twpc-locked-posting .twpc-locked-posting-help{margin:0 0 9px;line-height:1.4}
+#twpc-dialog .twpc-posting-image-copy{margin:0 0 8px}
+#twpc-dialog .twpc-posting-image-copy button{width:100%}
+#twpc-dialog .twpc-posting-image-copy p{margin:5px 0;font-size:11px;line-height:1.4}
+#twpc-dialog .twpc-posting-image-copy .twpc-copy-image-status{color:var(--tsui-text)}
+#twpc-dialog .twpc-posting-image-copy .twpc-copy-image-status:empty{margin:0}
+#twpc-dialog #twpc-locked-records{margin-top:12px;border:1px solid var(--tsui-border);border-radius:var(--tsui-radius);padding:12px}
+#twpc-dialog #twpc-locked-records h4{margin:0;color:var(--tsui-text);font-size:14px}#twpc-dialog #twpc-locked-records button{min-height:44px}
+@container(max-width:285px){#twpc-dialog .twpc-posting-formats{grid-template-columns:1fr}}
+#twpc-dialog .twpc-raffle-advanced{margin-top:10px}
+#twpc-dialog .twpc-raffle-display .twpc-checkbox{display:flex;align-items:center;gap:8px;min-height:34px}
+#twpc-dialog .twpc-raffle-display input[type=checkbox]{width:18px;min-height:18px;flex:none}
+#twpc-dialog .twpc-raffle-badge{margin-right:5px}
+#twpc-dialog .twpc-raffle-export-status:empty{margin:0}
+#twpc-dialog .twpc-audience{color-scheme:dark;box-sizing:border-box;width:min(590px,calc(100% - 24px));max-width:none;max-height:calc(100dvh - 24px);overflow:auto;padding:clamp(15px,3vw,27px);border:1px solid #57768b;border-top:3px solid #edb768;border-radius:18px;background:radial-gradient(ellipse at 100% 5%,#203d55 0,transparent 52%),#101c29;color:#edf3fa;box-shadow:0 22px 70px #000b;text-align:left}
+#twpc-dialog .twpc-audience::backdrop{background:#050c15cd}
+#twpc-dialog .twpc-audience-head{display:flex;flex-wrap:wrap;justify-content:space-between;gap:9px 14px;align-items:flex-start}
+#twpc-dialog .twpc-audience h2{margin:0;font-size:clamp(22px,5vw,33px);letter-spacing:-.02em;line-height:1.15;color:#f6f9fe}
+#twpc-dialog .twpc-audience .twpc-audience-war{margin:0 0 6px;color:#ffcd85;text-transform:uppercase;font-weight:750;font-size:.75rem;letter-spacing:.13em}
+#twpc-dialog .twpc-audience p{color:#bed1df}
+#twpc-dialog .twpc-audience button{min-height:44px;max-width:100%;padding:8px 13px;border:1px solid #61819a;border-radius:9px;background:#213b50;color:#f5f7fc;white-space:normal;font-size:.91rem;font-weight:650}
+#twpc-dialog .twpc-audience [data-replay-skip],#twpc-dialog .twpc-audience [data-replay-again]{background:#eeb974;border-color:#eeb974;color:#182330}
+#twpc-dialog .twpc-audience :focus-visible{outline:2px solid #ffd698;outline-offset:3px}
+#twpc-dialog .twpc-audience [hidden]{display:none!important}
+#twpc-dialog .twpc-audience-controls,#twpc-dialog .twpc-audience-track{display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px}
+#twpc-dialog .twpc-audience-controls{margin:13px 0}
+#twpc-dialog .twpc-audience-controls p{margin:2px 0}
+#twpc-dialog .twpc-audience-track{background:#0b1621;border:1px solid #36566e;border-radius:9px;padding:8px 11px;min-height:35px;color:#b4dbec;font-size:.8rem;letter-spacing:.04em}
+#twpc-dialog .twpc-audience-track span{width:7px;height:7px;border-radius:100%;background:#6fb7d2}
+#twpc-dialog .twpc-audience[data-rolling] .twpc-audience-track span{animation:twpc-audience-roll .57s linear infinite alternate}
+#twpc-dialog .twpc-audience-track span:nth-child(2){animation-delay:.16s!important}#twpc-dialog .twpc-audience-track span:nth-child(3){animation-delay:.32s!important}
+#twpc-dialog .twpc-audience-scroll{max-height:min(48dvh,450px);overflow:auto;overscroll-behavior:contain;border-radius:10px;margin-top:9px}
+#twpc-dialog .twpc-audience ol{display:grid;gap:7px;padding:0;margin:0;list-style:none}
+#twpc-dialog .twpc-audience li{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:12px;align-items:center;padding:10px 12px;margin:0;background:#1a3042;border:1px solid #36566e;border-radius:10px;color:#edf3fa;overflow-wrap:anywhere}
+#twpc-dialog .twpc-audience li:first-child{border-color:#9a7746;background:#263542}
+#twpc-dialog .twpc-audience li.twpc-audience-new{animation:twpc-audience-in .2s ease-out both}
+#twpc-dialog .twpc-audience-rank{font:700 1rem ui-monospace,monospace;color:#ffd391;font-size:.82rem}
+#twpc-dialog .twpc-audience-facts{display:block;margin:3px 0 0;color:#bdd2e1;font-size:.83rem}
+@keyframes twpc-audience-roll{from{opacity:.34;transform:translateY(2px)}to{opacity:1;transform:translateY(-2px)}}
+@keyframes twpc-audience-in{from{opacity:.25;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+@media(prefers-reduced-motion:reduce){#twpc-dialog .twpc-audience *{animation:none!important;transition:none!important}}
+@media(max-width:600px),(pointer:coarse){#twpc-dialog .twpc-raffle-display .twpc-checkbox{min-height:44px}}
 #twpc-dialog .twpc-raffle-results{padding-left:26px;margin:12px 0}#twpc-dialog .twpc-raffle-results li{padding:8px 4px;color:var(--tsui-muted);overflow-wrap:anywhere}#twpc-dialog .twpc-raffle-results strong{color:var(--tsui-accent)}#twpc-dialog #twpc-raffle-summary{font-weight:bold;color:var(--tsui-accent)}#twpc-dialog #twpc-raffle-draw{flex:1;min-width:130px}
 @container(max-width:500px){#twpc-dialog .twpc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#twpc-dialog .twpc-cache-row{grid-template-columns:1fr 1fr}#twpc-dialog .twpc-cache-row label:first-child{grid-column:1/-1}}
 @media(max-width:600px){#twpc-dialog input,#twpc-dialog select{font-size:16px;min-height:44px}#twpc-dialog summary{min-height:44px}#twpc-dialog .twpc-content>section,#twpc-dialog #twpc-credit-panel>section{padding:10px}#twpc-dialog .twpc-grid{gap:8px}}
@@ -3008,13 +3449,412 @@ function warPayoutShellCss(){return `
 #twpc-dialog[data-tsui-layout=stock] .twpc-stock-actions{display:flex;flex-wrap:wrap;gap:6px}
 #twpc-dialog[data-tsui-layout=stock] .twpc-stock-actions button{font-size:11px;padding:6px;min-height:36px}
 #twpc-dialog[data-tsui-layout=stock] #twpc-review{flex:1}
-#twpc-dialog[data-tsui-layout=stock] #twpc-csv{font-size:0}#twpc-dialog[data-tsui-layout=stock] #twpc-csv:after{content:'Export';font-size:11px}
-#twpc-dialog[data-tsui-layout=stock] #twpc-copy{font-size:0}#twpc-dialog[data-tsui-layout=stock] #twpc-copy:after{content:'Copy';font-size:11px}
+
+
 #twpc-dialog[data-tsui-layout=stock] th,#twpc-dialog[data-tsui-layout=stock] td{font-size:11px;padding:9px 6px}
 @media(max-width:600px),(pointer:coarse){#twpc-dialog[data-tsui-layout=stock] input,#twpc-dialog[data-tsui-layout=stock] select{font-size:16px;min-height:44px}#twpc-dialog[data-tsui-layout=stock] summary,#twpc-dialog[data-tsui-layout=stock] .twpc-stock-actions button{min-height:44px}#twpc-dialog[data-tsui-layout=stock] .twpc-stock-totals strong{font-size:23px}}
 `;}
 
 // Runs entirely in this userscript's private closure. The Hub only opens its menu.
+/* Detached report renderer. No API, HTML from Torn, payout mutations or storage. */
+const WarPayoutSheet = (() => {
+  const integer=(x,min=0)=>Number.isSafeInteger(x)&&x>=min;
+  const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const clean=(value,limit=120)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,limit):'';
+  const number=value=>value.toLocaleString('en-US');
+  const money=value=>'$'+number(value);
+  const extra=[['losses','Enemy losses'],['assists','Assists'],['stalemates','Stalemates'],['defends','Successful defends']];
+  const statusNames={pending:'Pending',crediting:'In progress',credited:'Credited',skipped:'Skipped','needs-review':'Needs review'};
+  const valid=value=>{if(!value)throw new Error('A valid payout calculation or locked run is required.');};
+  function build({scope,result,rows,kind,opponent}){
+    const locked=kind==='locked',live=kind==='live'||kind==='live-estimate',estimate=kind==='estimate'||kind==='live-estimate';
+    valid(locked||live||estimate||kind==='draft');
+    valid(scope&&['warId','factionId','opponentId','start','end'].every(key=>integer(scope[key],1))&&scope.end>=scope.start&&scope.factionId!==scope.opponentId);
+    valid(result&&['profit','cut','pool','total'].every(key=>integer(result[key]))&&Number.isSafeInteger(result.leftover)&&result.cut<=result.profit&&result.pool===result.profit-result.cut&&result.leftover===result.pool-result.total);
+    valid(result.rates&&['hits',...extra.map(([key])=>key)].every(key=>integer(result.rates[key])));
+    valid(Array.isArray(rows)&&rows.length>0&&rows.length<=1000);
+    const enabled=extra.filter(([key])=>result.rates[key]>0), ids=new Set();
+    const totals={hits:0n,amount:0n,credited:0n,creditedCount:0,...Object.fromEntries(enabled.map(([key])=>[key,0n]))};
+    const entries=rows.map(row=>{
+      const amount=locked?row?.amount:row?.payout;
+      valid(row&&integer(row.id,1)&&!ids.has(row.id)&&integer(amount)&&integer(row.hits)&&enabled.every(([key])=>integer(row[key])));
+      if(locked)valid(typeof row.status==='string'&&Object.hasOwn(statusNames,row.status));
+      ids.add(row.id);totals.hits+=BigInt(row.hits);totals.amount+=BigInt(amount);
+      for(const [key]of enabled)totals[key]+=BigInt(row[key]);
+      if(locked&&row.status==='credited'){totals.credited+=BigInt(amount);totals.creditedCount++;}
+      return {name:clean(row.name)||'Player '+row.id,amount,hits:row.hits,status:locked?row.status:null,extras:enabled.map(([key])=>row[key])};
+    });
+    valid(totals.amount===BigInt(result.total));
+    const heading='Faction #'+scope.factionId+' vs '+(clean(opponent)||'faction #'+scope.opponentId);
+    const label=locked?'Locked payout snapshot':kind==='live-estimate'?'Live estimate draft':live?'Live payout draft':estimate?'Planning estimate draft':'War payout draft';
+    const detail=locked?'Locked amounts and credit statuses from this device. Only rows marked Credited count toward the credited subtotal.':live?'Available counts so far. This is a draft, not a record of payments.':estimate?'Estimated cache proceeds and loaded member counts. This is a draft, not a record of payments.':'Actual-profit calculator draft. This is not a record of payments.';
+    const tct=stamp=>new Date(stamp*1000).toISOString().slice(0,16).replace('T',' ');
+    const time=tct(scope.start)+' to '+tct(scope.end)+' TCT'+(live?' (through available data)':'');
+    const lines=[
+      [estimate?'Estimated cache proceeds':'War profit',money(result.profit)],
+      ['Faction cut',money(result.cut)],['Available for payout',money(result.pool)],
+      [locked?'Locked payouts':'Calculated payouts',money(result.total)],
+      [result.leftover<0?'Funding shortfall':'Leftover',money(Math.abs(result.leftover)),result.leftover<0],
+      ['Eligible hits in this sheet',number(totals.hits)],['Pay per hit',money(result.rates.hits)],
+      ...enabled.map(([key,text])=>['Rate: '+text,money(result.rates[key])])
+    ];
+    if(locked)lines.push(['Recorded credited',money(totals.credited)],['Members marked credited',number(totals.creditedCount)+' / '+number(entries.length)]);
+    const headers=['Member','Attacks','Pay per hit',...enabled.map(([,text])=>text),...(locked?['Status']:[]),'Total pay'];
+    const memberRows=entries.map(row=>'<tr><th scope="row">'+esc(row.name)+'</th><td>'+number(row.hits)+'</td><td>'+money(result.rates.hits)+'</td>'+
+      row.extras.map(value=>'<td>'+number(value)+'</td>').join('')+(locked?'<td class="state state-'+row.status+'">'+statusNames[row.status]+'</td>':'')+
+      '<td class="amount">'+money(row.amount)+'</td></tr>').join('');
+    const foot='<tr><th scope="row">Total</th><td>'+number(totals.hits)+'</td><td></td>'+enabled.map(([key])=>'<td>'+number(totals[key])+'</td>').join('')+(locked?'<td></td>':'')+'<td class="amount">'+money(result.total)+'</td></tr>';
+    const style=`
+      *{box-sizing:border-box}body{margin:0;background:#0b1827;color:#edf5ff;font:15px/1.48 system-ui,sans-serif}
+      main{width:min(100% - 24px,960px);margin:24px auto 40px}.hero{padding:22px 26px;background:#102a44;color:white;border-top:4px solid #5db9de;border-radius:14px}
+      h1{margin:5px 0 7px;font-size:clamp(1.36rem,3.6vw,2.35rem);line-height:1.15}.tag{display:inline-block;padding:4px 8px;border-radius:4px;background:#d5f0ef;color:#143b42;font-size:.74rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase}
+      .hero p{margin:.3rem 0;color:#d6e4ef}.card{margin-top:17px;padding:18px;border:1px solid #3b546d;background:#13263a;border-radius:12px}h2{margin:0 0 10px;color:#9edbf4;font-size:1.08rem}
+      .scroll{overflow-x:auto}.scroll:focus-visible{outline:2px solid #13688d;outline-offset:2px}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;font-size:.92rem}
+      th,td{padding:8px 10px;text-align:right;vertical-align:top;border-bottom:1px solid #314a61}thead th{background:#254664;color:#eff8ff;font-size:.78rem;white-space:normal}
+      th:first-child{text-align:left}tbody th{min-width:110px;overflow-wrap:anywhere}td.amount{font-weight:700;white-space:nowrap;color:#8ae7d4}tbody tr:nth-child(even){background:#192f47}tfoot th,tfoot td{background:#173a55;color:white!important;font-weight:bold}
+      .state{font-weight:650;white-space:nowrap}.state-credited{color:#8de8cb}.state-needs-review,.state-crediting,.warn{color:#ffb78b}.state-skipped{color:#a5b8c9}
+      dl{margin:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:8px}.fact{padding:8px 12px;background:#1b344b;border-left:3px solid #6eaec8}
+      .fact dt{font-size:.8rem;color:#b9d7ed}.fact dd{margin:2px 0 0;font-size:1.02rem;font-weight:750}footer{padding:14px 4px 0;color:#abc4d7;font-size:.79rem}footer p{margin:0 0 .35rem}
+      @media(max-width:500px){main{margin-top:12px}.hero,.card{padding:13px}th,td{padding:7px 5px}.classic{table-layout:fixed;font-size:12px}.classic th:first-child{width:26%;min-width:0}.classic th:nth-child(2){width:15%}.classic th:nth-child(3){width:29.5%}.classic th:nth-child(4){width:29.5%}.classic td{overflow-wrap:anywhere;white-space:normal}}
+      @media print{body{background:white;color:black}main{width:100%;margin:0}.hero,.card{border:1px solid #999;border-radius:0;color:black;background:white;box-shadow:none}.hero p,.fact dt,h2,td.amount,.state,.warn,footer{color:#222!important}thead th,tfoot th,tfoot td,.fact,tbody tr:nth-child(even){background:#eef3f7;color:#111!important}thead{display:table-header-group}tfoot th,tfoot td{background:#e0ecf4;color:#111!important}tr{break-inside:avoid}.fact{break-inside:avoid}.scroll{overflow:visible}}
+    `;
+    return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'+
+      '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">'+
+      '<title>'+esc(label+' | War #'+scope.warId)+'</title><style>'+style+'</style></head><body><main>'+
+      '<header class="hero"><span class="tag">'+esc(label)+'</span><h1>'+esc(heading)+'</h1>'+
+      '<p>Ranked war #'+scope.warId+' &middot; '+esc(time)+'</p><p>'+esc(detail)+'</p></header>'+
+      '<section class="card"><h2 id="members">Member payouts</h2><div class="scroll" role="region" aria-labelledby="members" tabindex="0"><table'+(headers.length===4?' class="classic"':'')+'>'+
+      '<thead><tr>'+headers.map(title=>'<th scope="col">'+esc(title)+'</th>').join('')+'</tr></thead><tbody>'+memberRows+'</tbody><tfoot>'+foot+'</tfoot></table></div></section>'+
+      '<section class="card"><h2>War summary</h2><dl>'+lines.map(([title,value,warn])=>'<div class="fact"><dt>'+esc(title)+'</dt><dd'+(warn?' class="warn"':'')+'>'+esc(value)+'</dd></div>').join('')+'</dl></section>'+
+      '<footer><p>Counts are for attacks against the selected war opponent. Torn API attack-log completeness is unverified.</p><p>Only amounts tracked in the calculator are shown; separate expenses or donations are not inferred.</p></footer></main></body></html>';
+  }
+
+  async function deliver({doc,env,html,fileName,stillCurrent}){
+    if(!stillCurrent())return false;
+    const win=doc.defaultView;
+    const initialBridge=env.flutter_inappwebview;
+    const manager=env.GM_info?.scriptHandler||env.GM?.info?.scriptHandler;
+    const pda=!!(initialBridge||env.__PDA_platformReadyPromise||env.PDA_storage||env.PDA_getTabState||env.PDA_httpGet||env.__tornpda)||manager==='Torn PDA';
+    if(pda){
+      await env.__PDA_platformReadyPromise;
+      if(!stillCurrent())return false;
+      const bridge=env.flutter_inappwebview||win.flutter_inappwebview;
+      if(typeof bridge?.callHandler!=='function')throw new Error('HTML share unavailable.');
+      let binary='';
+      for(const byte of new TextEncoder().encode(html))binary+=String.fromCharCode(byte);
+      const reply=await bridge.callHandler('shareFile',{base64Data:win.btoa(binary),fileName});
+      if(!stillCurrent())return false;
+      if(reply?.status!=='success')throw new Error('HTML share not acknowledged.');
+      return 'native';
+    }
+    const url=win.URL.createObjectURL(new win.Blob([html],{type:'text/html;charset=utf-8'})),link=doc.createElement('a');
+    try{link.href=url;link.download=fileName;doc.body.append(link);link.click();return true;}
+    finally{link.remove();win.setTimeout(()=>win.URL.revokeObjectURL(url),1000);}
+  }
+  async function copyForForum(doc,html){
+    const win=doc.defaultView, clipboard=win.navigator.clipboard;
+    if(typeof win.ClipboardItem!=='function'||typeof clipboard?.write!=='function')throw new Error('Formatted copy unavailable.');
+    const detached=new win.DOMParser().parseFromString(html,'text/html');
+    const title=detached.querySelector('h1').textContent, kind=detached.querySelector('.tag').textContent;
+    const details=[...detached.querySelectorAll('.hero p')].map(p=>p.textContent);
+    const foot=[...detached.querySelectorAll('footer p')].map(p=>p.textContent);
+    const table=[...detached.querySelectorAll('tr')].map(tr=>({group:tr.parentElement.tagName,cells:[...tr.cells].map(cell=>cell.textContent)}));
+    const summary=[...detached.querySelectorAll('dl .fact')].map(div=>({group:'NOTE',cells:[div.firstElementChild.textContent,div.lastElementChild.textContent]}));
+    const fmtTable=rows=>'<table style="border-collapse:collapse;width:100%;"><tbody>'+rows.map((row,index)=>{
+      const high=row.group==='THEAD'||row.group==='TFOOT';
+      const bg=high?'#213e5b':index%2?'#15283c':'#192d43';
+      return '<tr>'+row.cells.map(cell=>'<td style='+JSON.stringify('background:'+bg+';color:#f1f7ff;border:1px solid #385771;padding:5px 9px;')+'>'+esc(cell)+'</td>').join('')+'</tr>';
+    }).join('')+'</tbody></table>';
+    const fragment='<p><strong>'+esc(title)+'</strong></p><p>'+esc(kind)+'</p>'+details.map(v=>'<p>'+esc(v)+'</p>').join('')+fmtTable(table)+'<p><strong>War summary</strong></p>'+fmtTable(summary)+foot.map(v=>'<p>'+esc(v)+'</p>').join('');
+    const plain=[title,kind,...details,'',...table.map(row=>row.cells.join('\t')),'','War summary',...summary.map(row=>row.cells.join(': ')),...foot].join('\n');
+    const item=new win.ClipboardItem({'text/html':new win.Blob([fragment],{type:'text/html'}),'text/plain':new win.Blob([plain],{type:'text/plain'})});
+    return clipboard.write([item]);
+  }
+  return {build,deliver,copyForForum};
+})();
+
+/* Render the already-sanitized sheet projection, not the browser viewport. */
+const WarPayoutSheetPng = (() => {
+  const maxHeight=4096;
+  const tooWide=()=>Object.assign(new Error('This sheet needs more width than the compact forum PNG. Download the regular PNG or full HTML sheet instead.'),{compactFit:true});
+  const tooTall=compact=>Object.assign(new Error(compact?'This payout sheet is too tall for a compact forum PNG. Try the regular PNG or download the full HTML sheet instead.':'This payout sheet is too tall for a single PNG. Download the full HTML sheet instead.'),{compactFit:compact});
+  function fonts(ctx,size,heavy=false){ctx.font=(heavy?'700 ':'400 ')+size+'px system-ui, sans-serif';}
+  function wrap(ctx,text,space){
+    const words=String(text??'').trim().split(/\s+/), rows=[];
+    let line='';
+    for(const word of words){
+      if(!word)continue;
+      const candidate=line?line+' '+word:word;
+      if(ctx.measureText(candidate).width<=space){line=candidate;continue;}
+      if(line){rows.push(line);line='';}
+      if(ctx.measureText(word).width<=space){line=word;continue;}
+      for(const symbol of word){
+        if(line&&ctx.measureText(line+symbol).width>space){rows.push(line);line='';}
+        line+=symbol;
+      }
+    }
+    if(line||!rows.length)rows.push(line);
+    return rows;
+  }
+  function project(doc,html){
+    const page=new doc.defaultView.DOMParser().parseFromString(html,'text/html');
+    const content=selector=>[...page.querySelectorAll(selector)].map(node=>node.textContent);
+    return {
+      title:content('.hero h1')[0],kind:content('.hero .tag')[0],meta:content('.hero p'),
+      header:content('thead tr th'),body:[...page.querySelectorAll('tbody tr')].map(tr=>[...tr.cells].map(c=>c.textContent)),
+      total:content('tfoot tr > *'),
+      facts:[...page.querySelectorAll('dl .fact')].map(f=>({label:f.firstElementChild.textContent,value:f.lastElementChild.textContent,warn:f.lastElementChild.classList.contains('warn')})),
+      foot:content('footer p'),
+    };
+  }
+  async function render(doc,html,compact){
+    const width=compact?720:1120,left=compact?24:32,inside=width-2*left;
+    const titleSize=compact?34:35,bodySize=compact?22:18,headSize=compact?22:17,cellLine=compact?24:22;
+    const metaSize=compact?21:17,metaLine=compact?25:24;
+    const factLabel=compact?20:15,factValue=compact?23:20, factLabelLine=compact?22:19,factValueLine=25;
+    const footSize=compact?20:15,footLine=compact?23:21;
+    const data=project(doc,html), cols=data.header.length;
+    if(!data.title||!data.kind||cols<4||cols>9||!data.body.length||data.total.length!==cols||data.body.some(row=>row.length!==cols))throw new Error('A complete payout sheet is required.');
+    if(data.body.length>maxHeight/(compact?32:30))throw tooTall(compact);
+    const canvas=doc.createElement('canvas');
+    canvas.width=width;canvas.height=1;
+    const ctx=canvas.getContext('2d');if(!ctx||typeof canvas.toBlob!=='function')throw new Error('PNG is not available in this browser. Download the HTML sheet instead.');
+    const weights=cols===4?[.38,.16,.21,.25]:[.235,...Array(cols-2).fill(.58/(cols-2)),.185];
+    let widths=weights.map((weight,i)=>i===cols-1?inside-weights.slice(0,-1).reduce((sum,x)=>sum+Math.floor(x*inside),0):Math.floor(inside*weight));
+    if(compact){
+      const minimum=data.header.map((label,i)=>i===0?(cols===4?150:116):i===cols-1?110:label==='Status'?88:label==='Attacks'?63:label==='Pay per hit'?85:47);
+      fonts(ctx,headSize,true);
+      data.header.forEach((label,i)=>{
+        for(const word of label.split(/\s+/))minimum[i]=Math.max(minimum[i],Math.ceil(ctx.measureText(word).width)+20);
+      });
+      for(const row of [...data.body,data.total])row.forEach((value,i)=>{
+        if(value[0]!=='$')return;
+        fonts(ctx,bodySize,i===cols-1||row===data.total);
+        minimum[i]=Math.max(minimum[i],Math.ceil(ctx.measureText(value).width)+20);
+      });
+      const spare=inside-minimum.reduce((sum,w)=>sum+w,0);
+      if(spare<0)throw tooWide();
+      widths=minimum.map((w,i)=>w+Math.floor(spare*(i===0?.55:i===cols-1?.17:.28/(cols-2))));
+      widths[0]+=inside-widths.reduce((sum,w)=>sum+w,0);
+    }
+    if(!compact){
+      // Whole dollar amounts must stay together. Borrow from columns with
+      // room above their readability floors instead of wrapping digits.
+      const minimum=data.header.map((label,i)=>i===0?160:label==='Status'?100:55);
+      fonts(ctx,headSize,true);
+      data.header.forEach((label,i)=>{
+        for(const word of label.split(/\s+/))minimum[i]=Math.max(minimum[i],Math.ceil(ctx.measureText(word).width)+20);
+      });
+      for(const row of [...data.body,data.total])row.forEach((value,i)=>{
+        if(value[0]!=='$')return;
+        fonts(ctx,bodySize,i===cols-1||row===data.total);
+        minimum[i]=Math.max(minimum[i],Math.ceil(ctx.measureText(value).width)+20);
+      });
+      if(minimum.reduce((sum,w)=>sum+w,0)>inside)throw new Error('This sheet needs more width than a single PNG. Download the full HTML sheet instead.');
+      for(let i=0;i<cols;i++){
+        let need=minimum[i]-widths[i];
+        while(need>0){
+          let donor=0;
+          for(let j=1;j<cols;j++)if(widths[j]-minimum[j]>widths[donor]-minimum[donor])donor=j;
+          const transfer=Math.min(need,widths[donor]-minimum[donor]);
+          widths[donor]-=transfer;widths[i]+=transfer;need-=transfer;
+        }
+      }
+    }
+    function tableRow(values,size,heavy=false){
+      fonts(ctx,size,heavy);
+      const cells=values.map((value,i)=>{fonts(ctx,size,heavy||i===cols-1);return wrap(ctx,value,widths[i]-20);});
+      return {cells,height:Math.max(compact?32:30,8+Math.max(...cells.map(lines=>lines.length))*cellLine)};
+    }
+    const header=tableRow(data.header,headSize,true), total=tableRow(data.total,bodySize,true);
+    const rows=data.body.map(values=>tableRow(values,bodySize));
+    fonts(ctx,titleSize,true);const title=wrap(ctx,data.title,inside-48);
+    fonts(ctx,metaSize);const meta=data.meta.map(line=>wrap(ctx,line,inside-48));
+    const bannerHeight=80+title.length*42+meta.reduce((sum,lines)=>sum+lines.length*metaLine,0);
+    const tableHeight=header.height+rows.reduce((sum,row)=>sum+row.height,0)+total.height;
+    let lanes=2;
+    if(compact){fonts(ctx,factValue,true);if(data.facts.some(({value})=>ctx.measureText(value).width>(inside-14)/2-28))lanes=1;}
+    const laneWidth=Math.floor((inside-(lanes-1)*14)/lanes);
+    const facts=data.facts.map(fact=>{
+      fonts(ctx,factLabel);const label=wrap(ctx,fact.label,laneWidth-28);
+      fonts(ctx,factValue,true);const value=wrap(ctx,fact.value,laneWidth-28);
+      return {...fact,label,value,height:18+label.length*factLabelLine+value.length*factValueLine};
+    });
+    const factRows=[];
+    for(let i=0;i<facts.length;i+=lanes){const pair=facts.slice(i,i+lanes);factRows.push({pair,height:Math.max(...pair.map(f=>f.height))});}
+    const factsHeight=factRows.reduce((sum,row)=>sum+row.height+8,0);
+    fonts(ctx,footSize);const foot=data.foot.map(line=>wrap(ctx,line,inside));
+    const height=32+bannerHeight+56+tableHeight+64+factsHeight+foot.reduce((n,lines)=>n+lines.length*footLine+4,0)+31;
+    if(height>maxHeight)throw tooTall(compact);
+    canvas.height=height;
+    const rect=(x,y,w,h,color)=>{ctx.fillStyle=color;ctx.fillRect(x,y,w,h);};
+    const text=(content,x,y,color,size,{heavy=false,align='left',line=22}={})=>{
+      fonts(ctx,size,heavy);ctx.textAlign=align;ctx.textBaseline='top';ctx.fillStyle=color;
+      content.forEach((value,index)=>ctx.fillText(value,x,y+index*line));
+    };
+    rect(0,0,width,height,'#0b1827');
+    rect(left,32,inside,bannerHeight,'#102a44');rect(left,32,inside,5,'#5db9de');
+    text([data.kind.toUpperCase()],left+24,49,'#8ce5d7',compact?20:15,{heavy:true});
+    text(title,left+24,76,'#ffffff',titleSize,{heavy:true,line:42});
+    let y=82+title.length*42;
+    for(const list of meta){text(list,left+24,y,'#d6e4ef',metaSize,{line:metaLine});y+=list.length*metaLine;}
+    y=32+bannerHeight+20;
+    text(['Member payouts'],left,y,'#9edbf4',23,{heavy:true});
+    y+=36;
+    function paintTable(row,color,foreground,heavy=false){
+      rect(left,y,inside,row.height,color);
+      let x=left;
+      row.cells.forEach((cell,i)=>{
+        const ink=i===cols-1&&color!=='#254664'?'#8ae7d4':foreground;
+        text(cell,i===0?x+10:x+widths[i]-10,y+5,ink,heavy&&color==='#254664'?headSize:bodySize,{heavy:heavy||i===cols-1,align:i===0?'left':'right',line:cellLine});
+        x+=widths[i];
+      });
+      rect(left,y+row.height-1,inside,1,'#314a61');
+      y+=row.height;
+    }
+    paintTable(header,'#254664','#eff8ff',true);
+    rows.forEach((row,i)=>paintTable(row,i%2?'#192f47':'#13263a','#edf5ff'));
+    paintTable(total,'#173a55','#ffffff',true);
+    y+=23;text(['War summary'],left,y,'#9edbf4',23,{heavy:true});y+=37;
+    for(const {pair,height:band} of factRows){
+      pair.forEach((fact,i)=>{
+        const x=left+i*(laneWidth+14);rect(x,y,laneWidth,band,'#1b344b');rect(x,y,4,band,'#6eaec8');
+        text(fact.label,x+14,y+7,'#b9d7ed',factLabel,{line:factLabelLine});
+        text(fact.value,x+14,y+9+fact.label.length*factLabelLine,fact.warn?'#ffb78b':'#edf5ff',factValue,{heavy:true,line:factValueLine});
+      });
+      y+=band+8;
+    }
+    y+=4;
+    for(const line of foot){text(line,left,y,'#abc4d7',footSize,{line:footLine});y+=line.length*footLine+4;}
+    try{
+      return await new Promise((resolve,reject)=>canvas.toBlob(blob=>blob&&blob.type==='image/png'?resolve(blob):reject(new Error('PNG could not be created. Download the HTML sheet instead.')),'image/png'));
+    }finally{canvas.width=0;canvas.height=0;}
+  }
+  // One PNG chooser lane. A stale render can be replaced; an issued native
+  // call owns the lane until it settles, regardless of the open section.
+  let pngNativeJob=null;
+  function outcome(value,locked){
+    if(value==='busy')return 'Another PNG is already opening or sharing. Try again after it finishes.';
+    const label=locked?'Locked payout PNG':'Payout PNG';
+    return value==='native'?label+' handed to the PDA share menu.':label+' download started.';
+  }
+  async function deliver({doc,env,html,fileName,stillCurrent,compact=false}){
+    if(!stillCurrent())return false;
+    const win=doc.defaultView;
+    const manager=String(env.GM_info?.scriptHandler??'').trim();
+    const pda=!!(win.flutter_inappwebview||env.flutter_inappwebview||win.__PDA_platformReadyPromise||env.__PDA_platformReadyPromise||env.PDA_storage||env.PDA_getTabState||env.PDA_httpGet||env.__tornpda)||manager==='Torn PDA';
+    const unavailable=()=>new Error('The PNG share could not be confirmed in PDA. Try copying the forum image or downloading the PNG on desktop.');
+    if(pda){
+      if(pngNativeJob&&(pngNativeJob.issued||pngNativeJob.owner()))return 'busy';
+      const job={owner:stillCurrent,issued:false};pngNativeJob=job;
+      const owns=()=>pngNativeJob===job&&stillCurrent();
+      try{
+        const blob=await render(doc,html,compact);
+        if(!owns())return false;
+        try{
+        await (win.__PDA_platformReadyPromise??env.__PDA_platformReadyPromise);
+        if(!owns())return false;
+        const bytes=new Uint8Array(await blob.arrayBuffer());
+        if(!owns())return false;
+        let binary='';
+        for(let i=0;i<bytes.length;i+=16384)binary+=String.fromCharCode(...bytes.subarray(i,i+16384));
+        const bridge=win.flutter_inappwebview??env.flutter_inappwebview;
+        if(typeof bridge?.callHandler!=='function')throw unavailable();
+        job.issued=true;
+        const reply=await bridge.callHandler('shareFile',{base64Data:win.btoa(binary),fileName});
+        if(!owns())return false;
+        if(reply?.status!=='success')throw unavailable();
+        return 'native';
+      }catch(_){if(!owns())return false;throw unavailable();} }
+      finally{if(pngNativeJob===job)pngNativeJob=null;}
+    }
+    const blob=await render(doc,html,compact);
+    if(!stillCurrent())return false;
+    const url=win.URL.createObjectURL(blob),link=doc.createElement('a');
+    try{link.href=url;link.download=fileName;doc.body.append(link);link.click();return 'desktop';}
+    finally{link.remove();win.setTimeout(()=>win.URL.revokeObjectURL(url),1000);}
+  }
+  function message(error){
+    const detail=error?.message||'';
+    return /^(This payout sheet is too tall|This sheet needs more width|PNG is not available|PNG could not be created|The PNG share could not (?:open|be confirmed in PDA))/.test(detail)?detail:'Could not prepare the payout PNG. Download the HTML sheet instead.';
+  }
+  // Preparation is asynchronous; writing the already prepared Blob starts in
+  // the second trusted click so it never depends on retaining user activation.
+  function createClipboard({doc,button,readSource,note,readNote,locked=false}){
+    const win=doc.defaultView;
+    const idle='Copy forum image';
+    const readyLabel='Copy image now';
+    const unavailable='Image clipboard unavailable here. Download the forum PNG instead.';
+    const failed='Could not copy the image. Download the forum PNG instead.';
+    let task=null,lastNote='';
+    const say=value=>{lastNote=value;note(value);};
+    function invalidate(){
+      task=null;button.textContent=idle;
+      if(lastNote&&readNote()===lastNote)note('');
+      lastNote='';
+    }
+    const owns=value=>task===value&&!button.disabled&&value.source.current();
+    function retireIfStale(){if(task&&!owns(task))invalidate();}
+    function clipboard(){
+      const api=win.navigator.clipboard,Item=win.ClipboardItem;
+      if(typeof api?.write!=='function'||typeof Item!=='function'||(typeof Item.supports==='function'&&Item.supports('image/png')===false))return null;
+      return {api,Item};
+    }
+    async function prepare(next){
+      try{
+        const html=next.source.html();
+        let blob;
+        try{blob=await render(doc,html,true);}
+        catch(error){
+          if(!error?.compactFit)throw error;
+          if(!owns(next))return;
+          next.wide=true;
+          blob=await render(doc,html,false);
+        }
+        if(!owns(next))return;
+        next.blob=blob;next.phase='ready';button.textContent=readyLabel;
+        say(next.wide?'Full-size image ready. The compact image does not fit. Tap Copy image now.':'Forum PNG ready. Tap the copy button to put the image on your clipboard.');
+      }catch(error){
+        if(!owns(next))return;
+        invalidate();say(message(error));
+      }
+    }
+    function beginCopy(active,api,Item){
+      active.phase='copying';button.textContent='Copying image...';
+      try{
+        if(!owns(active)){invalidate();return;}
+        const item=new Item({'image/png':active.blob});
+        if(!owns(active)){invalidate();return;}
+        const result=api.write([item]);
+        if(typeof result?.then!=='function')throw new Error('Image clipboard did not acknowledge.');
+        Promise.resolve(result).then(()=>{
+          if(!owns(active))return;
+          invalidate();say('Forum PNG copied. Paste the image where you want to share it.');
+        },()=>{
+          if(!owns(active))return;
+          invalidate();say(active.wide?'Could not copy the image. Download the full-size PNG under other sheet formats.':failed);
+        });
+      }catch(_){if(owns(active)){invalidate();say(active.wide?'Could not copy the image. Download the full-size PNG under other sheet formats.':failed);}}
+    }
+    button.addEventListener('click',event=>{
+      if(!event.isTrusted||button.disabled)return;
+      retireIfStale();
+      if(task&&task.phase!=='ready')return;
+      let capability;
+      try{capability=clipboard();}catch(_){}
+      if(!capability){invalidate();say(unavailable);return;}
+      if(task){beginCopy(task,capability.api,capability.Item);return;}
+      const source=readSource();if(!source?.current())return;
+      const next={source,phase:'preparing',blob:null};task=next;
+      button.textContent='Preparing image...';
+      say('Preparing the forum PNG. Nothing is copied yet.');
+      void prepare(next);
+    });
+    return {invalidate,retireIfStale};
+  }
+  return {deliver,message,createClipboard,outcome};
+})();
+
 function installWarPayoutCalculator() {
   const D = WarPayoutDomain;
   const id = 'war-payout-calculator';
@@ -3025,12 +3865,12 @@ function installWarPayoutCalculator() {
   const metrics = ['hits', 'losses', 'assists', 'stalemates', 'defends'];
   const labels = {hits:'War hits', losses:'Losses to enemy', assists:'Assists', stalemates:'Stalemates', defends:'Successful defends'};
   let dialog, style, opener, snapshot = null, wars = [], job = null, sharedKey = null, personalKey = '', revision = 0;
-  let creditUI=null, raffleUI=null, shell=null, selectedTab='calculator';
+  let creditUI=null, raffleUI=null, draftForumClipboard=null, shell=null, selectedTab='calculator',draftHtmlRevision=0,draftPngRevision=0;
   let disposed = false, attached = false, pdaActive = true, current = null, estimate = null, generation = 0, draftEdited = false;
   let localKeyRevision = 0;
   let keyPolicyReady=false,hubManaged=false,hubFallback=false;
   let keyPersistence = Promise.resolve();
-  let exportUrl = null, exportTimer = null, savedPrefs = null;
+  let exportUrl = null, exportTimer = null, savedPrefs = null, payoutCsvJob = null;
   let cacheReady = null, cacheLoaded = false, cacheIssue = '', reportSource = '';
   const $ = name => dialog?.querySelector('#twpc-' + name);
   const money = value => '$' + Number(value).toLocaleString('en-US');
@@ -3139,9 +3979,12 @@ function installWarPayoutCalculator() {
     if (!dialog) return;
     const rough=$('mode').value==='estimate';
     $('mode').closest('.twpc-mode-row')?.classList.toggle('twpc-planning',rough);
-    $('cut').step=$('cut-mode').value==='percent'?'0.01':'1';
+    const pct=$('cut-mode').value==='percent';
+    $('cut').step=pct?'0.01':'1';
+    $('cut').inputMode=pct?'decimal':'numeric';
     if(shell)$('cut').labels[0].firstChild.textContent=$('cut-mode').value==='percent'?'Cut (%)':'Cut ($)';
     $('actual').hidden=rough; $('estimate').hidden=!rough;
+    $('mode-help').textContent=rough?'Estimate only. Switch to Actual profit to prepare member credits.':'Use settled profit for a payout draft. Nothing is paid from this tab.';
     $('cache-total-field').hidden=$('cache-source').value!=='total';
     $('cache-items').hidden=$('cache-source').value!=='items';
     $('expected').hidden=$('count-source').value!=='expected';
@@ -3174,11 +4017,18 @@ function installWarPayoutCalculator() {
     table.append(body);
     $('empty').hidden=result.rows.length>0;
   }
+  function draftPngNote(message){const node=$('png-download-status');if(node)node.textContent=message;}
+  function retireDraftPng(){draftPngRevision++;draftPngNote('');}
   function recalculate() {
+    retirePayoutCsv();draftHtmlRevision++;retireDraftPng();draftForumClipboard?.invalidate();
     if (!dialog) return;
+    refreshSavedPrefsMessage();
     creditUI?.resetReview();
     current=null;estimate=null;
-    $('validation').textContent='';$('copy').disabled=true;$('csv').disabled=true;$('apply-rate').disabled=true;
+    // Reset feedback for the previous calculation before either new preview.
+    $('estimate-note').textContent='';$('table-note').textContent='';
+    $('balance-label').textContent='Leftover';$('balance').classList.remove('twpc-warning');
+    $('validation').textContent='';$('copy').disabled=true;$('csv').disabled=true;$('sheet').disabled=true;$('sheet-png').disabled=true;$('sheet-forum-png').disabled=true;$('copy-forum-png').disabled=true;$('forum-sheet').disabled=true;$('apply-rate').disabled=true;
     $('est-rate').textContent='—';
     for (const name of ['summary-profit','summary-cut','pool','total','balance']) $(name).textContent='—';
     $('players').replaceChildren();$('empty').hidden=false;
@@ -3202,7 +4052,7 @@ function installWarPayoutCalculator() {
       $('table-note').textContent=planning?'Table uses loaded player counts and the chosen rates. Expected totals are for planning; switch to loaded counts to export player payouts.':rough?'Estimated values and the chosen fixed rates; unsold caches are not actual profit.':'Payouts use the chosen fixed rates. A shortfall does not change anyone\u2019s rate.';
       current={result,context:{reportStatus:'Draft — API log completeness unverified',warId:snapshot?.scope.warId||'',opponent:snapshot?.opponentName||'',start:snapshot?.scope.start||'',end:snapshot?.scope.end||'',mode:rough?'Cache estimate':'Actual profit',coverage:snapshot?.coverage||'Not loaded',coverageStatus:snapshot?.coverageStatus||'not-loaded',live:!!snapshot?.live,unattributed:snapshot?.unattributed||0,unknownResults:snapshot?.unknownResults||0,cutMode,cutValue,countSource:rough?$('count-source').value:'loaded',...(rough?cacheInput():{})}};
       const canExport=!!snapshot&&!planning;
-      $('copy').disabled=!canExport;$('csv').disabled=!canExport;
+      $('copy').disabled=!canExport;$('csv').disabled=!canExport;$('sheet').disabled=$('sheet-png').disabled=$('sheet-forum-png').disabled=$('copy-forum-png').disabled=$('forum-sheet').disabled=!canExport||!result.rows.length;
     } catch (error) { $('validation').textContent=error.message; }
     creditUI?.refresh();
     raffleUI?.refresh();
@@ -3227,17 +4077,73 @@ function installWarPayoutCalculator() {
       status('Payout draft copied.');
     } catch (_) { status('Could not copy. Use Export CSV instead.'); }
   }
-  async function download() {
-    try {
-      const text=exportText(),fileName='war-payout-'+snapshot.scope.warId+'.csv';
-      if(env.flutter_inappwebview?.callHandler) {
+  function payoutCsvStatus(text){
+    const feedback=$('csv-status');if(feedback)feedback.textContent=text;
+  }
+  function syncPayoutCsv(){
+    const button=$('csv');if(!button)return;
+    if(payoutCsvJob)button.setAttribute('aria-busy','true');else button.removeAttribute('aria-busy');
+  }
+  function retirePayoutCsv(){
+    payoutCsvStatus('');
+    if(payoutCsvJob){
+      payoutCsvJob.retired=true;
+      // An already-issued native share cannot be undone. It retains the lane
+      // until settlement; an unissued readiness wait can be replaced safely.
+      if(!payoutCsvJob.started)payoutCsvJob=null;
+    }
+    syncPayoutCsv();
+  }
+  async function download(event) {
+    if(!event.isTrusted||payoutCsvJob||!current||!snapshot||!dialog?.isConnected||!awake()||selectedTab!=='calculator'||$('csv').disabled)return;
+    const view={draft:current,war:snapshot,selection:$('war').value,dialog,started:false,retired:false};
+    const owns=()=>payoutCsvJob===view&&!view.retired&&dialog===view.dialog&&awake()&&selectedTab==='calculator'&&current===view.draft&&snapshot===view.war&&$('war')?.value===view.selection;
+    const initialBridge=env.flutter_inappwebview;
+    const manager=env.GM_info?.scriptHandler||env.GM?.info?.scriptHandler;
+    const pda=!!(initialBridge||env.__PDA_platformReadyPromise||env.PDA_storage||env.PDA_getTabState||env.PDA_httpGet||env.__tornpda)||manager==='Torn PDA';
+    const failed=()=>payoutCsvStatus(pda?'Could not hand off the payout CSV. Try Export draft CSV again, use Copy draft CSV text, or download on desktop.':'Could not start the payout CSV download. Try Export draft CSV again or use Copy draft CSV text.');
+    payoutCsvJob=view;payoutCsvStatus('');syncPayoutCsv();
+    try{
+      const text=exportText(),fileName='war-payout-'+view.war.scope.warId+'.csv';
+      if(pda){
+        payoutCsvStatus('Opening the PDA share menu...');
         await env.__PDA_platformReadyPromise;
+        if(!owns())return;
+        const bridge=env.flutter_inappwebview||window.flutter_inappwebview;
+        if(typeof bridge?.callHandler!=='function'){failed();return;}
         const bytes=new TextEncoder().encode(text);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);
-        await env.flutter_inappwebview.callHandler('shareFile',{base64Data:btoa(binary),fileName});status('Payout CSV shared.');return;
+        view.started=true;
+        const result=await bridge.callHandler('shareFile',{base64Data:btoa(binary),fileName});
+        if(!owns())return;
+        if(result?.status==='success')payoutCsvStatus('Payout CSV handed to the PDA share menu. Choose where to save or share it.');
+        else failed();
+        return;
       }
       releaseExport();exportUrl=URL.createObjectURL(new Blob(['\uFEFF'+text],{type:'text/csv;charset=utf-8'}));
-      const link=node('a');link.href=exportUrl;link.download=fileName;dialog.append(link);link.click();link.remove();exportTimer=setTimeout(releaseExport,1000);status('Payout CSV exported.');
-    } catch (_) {status('Could not export. Try Copy payouts instead.');}
+      const link=node('a'); link.href=exportUrl;link.download=fileName;
+      try{dialog.append(link);link.click();}
+      finally{link.remove();exportTimer=setTimeout(releaseExport,1000);}
+      if(owns())payoutCsvStatus('Payout CSV exported.');
+    }catch(_){if(owns())failed();}
+    finally{if(payoutCsvJob===view){payoutCsvJob=null;syncPayoutCsv();}}
+  }
+  async function downloadPayoutSheet(mode) {
+    const forum=mode==='forum',compact=mode==='forum-png',png=mode==='png'||compact;
+    if(!current||!snapshot||!awake()||selectedTab!=='calculator'||$('csv').disabled||$(forum?'forum-sheet':compact?'sheet-forum-png':png?'sheet-png':'sheet').disabled)return;
+    const exact=current,war=snapshot,htmlRevision=mode==='html'?++draftHtmlRevision:null,pngRevision=draftPngRevision;
+    const stillCurrent=()=>awake()&&selectedTab==='calculator'&&current===exact&&snapshot===war&&(png?draftPngRevision===pngRevision:(mode!=='html'||draftHtmlRevision===htmlRevision));
+    try {
+      const estimateMode=exact.context.mode==='Cache estimate';
+      const kind=war.live?(estimateMode?'live-estimate':'live'):(estimateMode?'estimate':'draft');
+      const html=WarPayoutSheet.build({scope:war.scope,result:exact.result,rows:exact.result.rows,kind,opponent:war.opponentName});
+      if(forum){
+        await WarPayoutSheet.copyForForum(document,html);
+        if(stillCurrent())status('Forum table copied. Check the formatting after pasting.');
+        return;
+      }
+      const saved=await (png?WarPayoutSheetPng:WarPayoutSheet).deliver({doc:document,env,html,fileName:'war-payout-'+war.scope.warId+'-'+kind+(compact?'-forum.png':png?'.png':'.html'),stillCurrent,compact});
+      if(saved&&stillCurrent())(png?draftPngNote:status)(png?WarPayoutSheetPng.outcome(saved,false):saved==='native'?'Payout sheet handed to the PDA share menu. Choose where to save or share it.':'Payout sheet prepared. Review it before sharing.');
+    } catch(error){if(stillCurrent())(png?draftPngNote:status)(forum?'Formatted copy unavailable. Try Download forum PNG, or open More export options to copy the draft CSV text.':png?WarPayoutSheetPng.message(error):'Could not hand off the HTML sheet. Try Copy for Torn forum, or download the sheet on desktop.');}
   }
   function request(path,params,signal) {
     const publicError=WarPayoutAPI.requestError;
@@ -3340,16 +4246,41 @@ function installWarPayoutCalculator() {
     } else status('Personal fallback set for this page.');
     connection();
   }
-  async function rememberRates() {
+  const payoutPrefsKey='twpc-preferences-v1';
+  const prefsRemembered='Faction cut and payout rates remembered.';
+  const prefsDiffer='Current cut and rates differ from remembered settings.';
+  function savedPrefsMessage(value) {
+    try {
+      return value && value.cutMode===$('cut-mode')?.value && value.cutValue===number('cut') &&
+        metrics.every(metric=>value.rates?.[metric]===number('rate-'+metric)) ? prefsRemembered : prefsDiffer;
+    } catch (_) {return prefsDiffer;}
+  }
+  function refreshSavedPrefsMessage() {
+    const shown=$('status')?.textContent;
+    if(shown===prefsRemembered||shown===prefsDiffer)status(savedPrefsMessage(savedPrefs));
+  }
+  let payoutPrefsQueue=Promise.resolve(), payoutPrefsAttempt=0;
+  function rememberRates() {
+    const attempt=++payoutPrefsAttempt;
+    const tell=message=>{if(!disposed&&attempt===payoutPrefsAttempt)status(message);};
+    let value;
     try {
       const rates=readRates(),cutMode=$('cut-mode').value,cutValue=number('cut');
       D.calculate({profit:cutMode==='amount'?cutValue:0,cutMode,cutValue,rates},[]);
-      const value={rates,cutMode,cutValue};
-      if(typeof GM_setValue==='function')await GM_setValue('twpc-preferences-v1',value);
-      else if(typeof GM!=='undefined'&&typeof GM.setValue==='function')await GM.setValue('twpc-preferences-v1',value);
-      else throw new Error();
-      savedPrefs=value;status('Faction cut and payout rates remembered.');
-    } catch (_) {status('Could not remember preferences. Check the faction cut and rates.');}
+      value={rates,cutMode,cutValue};
+    } catch (_) {tell('Could not remember preferences. Check the faction cut and rates.');return;}
+    // Serialize saves, but do not let an older result take over the latest attempt's status.
+    payoutPrefsQueue=payoutPrefsQueue.then(async()=>{
+      if(disposed)return;
+      try {
+        if(typeof GM_setValue==='function')await GM_setValue(payoutPrefsKey,value);
+        else if(typeof GM!=='undefined'&&typeof GM.setValue==='function')await GM.setValue(payoutPrefsKey,value);
+        else throw new Error();
+        const stored=typeof GM_getValue==='function'?await GM_getValue(payoutPrefsKey,null):typeof GM!=='undefined'&&typeof GM.getValue==='function'?await GM.getValue(payoutPrefsKey,null):null;
+        if(stored?.cutMode!==value.cutMode||stored.cutValue!==value.cutValue||metrics.some(metric=>stored.rates?.[metric]!==value.rates[metric]))throw new Error();
+        savedPrefs=value;tell(savedPrefsMessage(value));
+      } catch (_) {tell('Could not confirm your cut and rates were saved. Your current inputs are unchanged.');}
+    });
   }
   function applyPrefs() {
     if(!dialog||!savedPrefs||draftEdited)return;
@@ -3366,14 +4297,15 @@ function installWarPayoutCalculator() {
     dialog.innerHTML=`<header><div><h2 id="twpc-title">War payout calculator</h2><small>Enemy-only counts · standalone Hub tool</small></div><button id="twpc-close" aria-label="Close calculator">×</button></header>
     <div class="twpc-content"><section><h3>1 · War</h3><label for="twpc-war">Ranked war<select id="twpc-war"><option value="">Load recent wars</option></select></label><div class="twpc-actions"><button id="twpc-list-wars">Load recent wars</button><button id="twpc-load" class="twpc-primary">Load war data</button><button id="twpc-cancel-load" hidden>Cancel loading</button></div><p id="twpc-coverage"></p>
     <details id="twpc-connection"><summary>API connection</summary><p id="twpc-key-state"></p><label for="twpc-key">Personal Torn API key<input id="twpc-key" type="password" maxlength="16" autocomplete="new-password" spellcheck="false" placeholder="Enter a replacement key"></label><label class="twpc-checkbox"><input id="twpc-remember-key" type="checkbox">Remember this personal fallback</label><div class="twpc-actions"><button id="twpc-use-key">Use personal key</button><button id="twpc-forget-key">Forget personal key</button></div><p id="twpc-storage-note"></p><p>Requires a Torn key with faction attacks access and faction API permission. Approve this calculator separately in Hub API Keys to use a shared key.</p></details></section>
-    <section><h3>2 · Money available</h3><div class="twpc-grid"><label for="twpc-mode">Calculation mode<select id="twpc-mode"><option value="actual">Actual profit</option><option value="estimate">Rough estimate</option></select></label><label for="twpc-cut-mode">Faction cut type<select id="twpc-cut-mode"><option value="amount">Dollar amount</option><option value="percent">Percent</option></select></label>${field('cut','Faction cut',0)}</div>
+    <section><h3>2 · Profit and faction cut</h3><div class="twpc-grid"><label for="twpc-mode">Calculator mode<select id="twpc-mode" aria-describedby="twpc-mode-help"><option value="actual">Actual profit</option><option value="estimate">Planning estimate</option></select></label><label for="twpc-cut-mode">Faction cut type<select id="twpc-cut-mode"><option value="amount">Dollar amount</option><option value="percent">Percent</option></select></label>${field('cut','Faction cut',0)}</div>
+    <p id="twpc-mode-help" class="twpc-mode-help"></p>
     <div id="twpc-actual" class="twpc-grid twpc-two" style="margin-top:12px">${field('profit','Total war profit ($)',0)}</div>
     <div id="twpc-estimate" hidden><p>Estimate from unsold caches. Enter your expected sale values; prices are assumptions.</p><div class="twpc-grid twpc-two"><label for="twpc-cache-source">Cache value input<select id="twpc-cache-source"><option value="total">Estimated total</option><option value="items">Quantities × prices</option></select></label>${field('cache-total','Estimated cache total ($)',0)}</div><div id="twpc-cache-items" hidden><div id="twpc-cache-rows"></div><button id="twpc-add-cache">Add cache type</button></div>
     <label for="twpc-count-source" style="margin-top:12px">Hit and other payout counts<select id="twpc-count-source"><option value="loaded">Loaded war counts</option><option value="expected">Expected counts (planning)</option></select></label><div id="twpc-expected" class="twpc-grid" style="margin-top:12px" hidden>${metrics.map(metric=>field('expected-'+metric,'Expected '+labels[metric].toLowerCase(),metric==='hits'?0:'')).join('')}</div>
     <div class="twpc-rate-box"><div><small>Estimated dollars per war hit</small><div id="twpc-est-rate">—</div></div><button id="twpc-apply-rate" class="twpc-primary" disabled>Use estimated hit rate</button></div><p id="twpc-estimate-note"></p></div></section>
     <section><h3>3 · Player rates</h3><div class="twpc-grid twpc-two">${field('rate-hits','$ per successful war hit')}${field('rate-losses','$ per loss to enemy')}</div><p>A loss means an enemy attack that defeats your player. Failed attacks your players start do not earn loss pay.</p><details><summary>More payout options</summary><div class="twpc-grid">${metrics.slice(2).map(metric=>field('rate-'+metric,'$ per '+({assists:'assist',stalemates:'offensive stalemate',defends:'successful defend'}[metric]))).join('')}</div><p>Enemy-only assists and offensive stalemates. A successful defend means the enemy attacker lost; escapes and timeouts are excluded.</p></details><button id="twpc-remember-rates">Remember cut and rates</button></section>
     <p id="twpc-validation" role="alert"></p><div class="twpc-summary" aria-live="polite"><div><small>Profit / estimate</small><strong id="twpc-summary-profit">—</strong></div><div><small>Faction cut</small><strong id="twpc-summary-cut">—</strong></div><div><small>Player pool</small><strong id="twpc-pool">—</strong></div><div><small>Player payouts</small><strong id="twpc-total">—</strong></div><div><small id="twpc-balance-label">Leftover</small><strong id="twpc-balance">—</strong></div></div>
-    <section><h3>Player payouts</h3><p id="twpc-table-note"></p><div class="twpc-table-scroll"><table id="twpc-players"></table></div><p id="twpc-empty">Load a war to see players.</p><div class="twpc-actions"><button id="twpc-csv" disabled>Export draft CSV</button><button id="twpc-copy" disabled>Copy payout draft</button></div></section><p id="twpc-status" role="status"></p></div>`;
+    <section><h3>Player payouts</h3><p id="twpc-table-note"></p><div class="twpc-table-scroll"><table id="twpc-players"></table></div><p id="twpc-empty">Load a war to see players.</p><div class="twpc-posting" aria-labelledby="twpc-posting-title" role="group"><h4 id="twpc-posting-title">Post payout sheet</h4><div class="twpc-posting-image-copy"><button id="twpc-copy-forum-png" type="button" class="twpc-primary" aria-describedby="twpc-posting-copy-help twpc-forum-copy-status" disabled>Copy forum image</button><p id="twpc-posting-copy-help">Copies the styled image without saving a file. Tap again when it is ready.</p><p id="twpc-forum-copy-status" class="twpc-copy-image-status" role="status"></p></div><div class="twpc-posting-formats"><div class="twpc-posting-format"><button id="twpc-forum-sheet" type="button" aria-describedby="twpc-posting-editable" disabled>Copy for Torn forum</button><p id="twpc-posting-editable">Editable table to paste into a forum post.</p></div><div class="twpc-posting-format"><button id="twpc-sheet-forum-png" type="button" aria-describedby="twpc-posting-image twpc-png-download-status" disabled>Download forum PNG</button><p id="twpc-posting-image">Styled image with colors and totals.</p></div></div><details id="twpc-more-export"><summary>More export options</summary><div class="twpc-actions"><button id="twpc-sheet-png" type="button" aria-describedby="twpc-png-download-status" disabled>Download full-size PNG</button><button id="twpc-sheet" type="button" disabled>Download HTML sheet</button><button id="twpc-copy" disabled>Copy draft CSV text</button><button id="twpc-csv" aria-describedby="twpc-csv-status" disabled>Export draft CSV</button></div></details><p id="twpc-png-download-status" role="status"></p><p id="twpc-csv-status" role="status"></p></div></section><p id="twpc-status" role="status"></p></div>`;
     document.body.append(dialog);addCache();applyPrefs();connection();updateCoverage();updateMode();
     $('coverage').before($('status'));
     $('list-wars').textContent='Find wars';$('load').textContent='Reload war data';busy(false);
@@ -3386,12 +4318,20 @@ function installWarPayoutCalculator() {
     raffleUI=createWarPayoutRaffleUI({doc:document,env,readSnapshot:()=>snapshot,isActive:()=>awake()&&selectedTab==='raffle'&&!job});dialog.append(raffleUI.panel);
     shell=mountWarPayoutShell({staging:dialog,themeClient:appearanceAdapter?.client,onClose:close,onSelect:sectionChanged,onVisibilityChange:surfaceActivity,
       readLayout:()=>readUiValue('twpc-ui-layout-v1'),writeLayout:value=>writeUiValue('twpc-ui-layout-v1',value),
-      onDestroy(){cancel();releaseExport();creditUI?.destroy();raffleUI?.destroy();creditUI=null;raffleUI=null;shell=null;dialog=null;style?.remove();style=null;},
+      onDestroy(){retirePayoutCsv();draftHtmlRevision++;retireDraftPng();draftForumClipboard?.invalidate();draftForumClipboard=null;cancel();releaseExport();creditUI?.destroy();raffleUI?.destroy();creditUI=null;raffleUI=null;shell=null;dialog=null;style?.remove();style=null;},
     });
     dialog=shell.root;
     const calculatorInput=event=>!event.target.closest?.('#twpc-credit-panel,#twpc-raffle-panel')&&event.target!==$('key')&&event.target!==$('remember-key');
     dialog.addEventListener('input',event=>{if(!calculatorInput(event))return;draftEdited=true;updateMode();});
     dialog.addEventListener('change',event=>{if(!calculatorInput(event))return;draftEdited=true;if(event.target===$('war')){cancel();resetCacheRows();clearSnapshot();if($('war').value)loadWar();}updateMode();});
+    draftForumClipboard=WarPayoutSheetPng.createClipboard({doc:document,button:$('copy-forum-png'),note:message=>{$('forum-copy-status').textContent=message;},readNote:()=>$('forum-copy-status')?.textContent,readSource(){
+      if(!current||!snapshot||!awake()||selectedTab!=='calculator'||$('csv').disabled)return null;
+      const exact=current,war=snapshot,estimateMode=exact.context.mode==='Cache estimate';
+      const kind=war.live?(estimateMode?'live-estimate':'live'):(estimateMode?'estimate':'draft');
+      return {current:()=>awake()&&selectedTab==='calculator'&&current===exact&&snapshot===war,
+        html:()=>WarPayoutSheet.build({scope:war.scope,result:exact.result,rows:exact.result.rows,kind,opponent:war.opponentName})};
+    }});
+    for(const [id,mode] of [['sheet','html'],['sheet-png','png'],['sheet-forum-png','forum-png'],['forum-sheet','forum']])$(id).addEventListener('click',event=>{if(event.isTrusted)void downloadPayoutSheet(mode);});
     const actions={'list-wars':listWars,'load':()=>loadWar(true),'cancel-load':()=>cancel(),'use-key':useKey,'forget-key':async()=>{cancel();personalKey='';revision++;const localRevision=++localKeyRevision;resetConnectionData();connection();const ok=await persistPersonalKey(null);if(localRevision===localKeyRevision&&!disposed)status(ok?'Personal fallback removed.':'Personal fallback cleared for this page. Stored-key removal is unavailable; clear it in your userscript manager or PDA storage.');},'add-cache':()=>{addCache();recalculate();},'apply-rate':()=>{if(estimate?.rate!==null&&estimate?.shortfall===0){$('rate-hits').value=estimate.rate;draftEdited=true;recalculate();}},'remember-rates':rememberRates,'csv':download,'copy':copy};
     for(const [name,action] of Object.entries(actions))$(name).addEventListener('click',action);
     const cacheState=node('p',undefined,'twpc-cache-state');cacheState.id='twpc-cache-state';cacheState.title='Saved counts reopen without scanning. Refresh deliberately scans again. Live snapshots are provisional.';cacheState.hidden=true;$('war-details').before(cacheState);
@@ -3413,6 +4353,7 @@ function installWarPayoutCalculator() {
     throw new Error('Window settings storage unavailable');
   }
   function sectionChanged(name){
+    retirePayoutCsv();draftHtmlRevision++;retireDraftPng();draftForumClipboard?.invalidate();
     selectedTab=name;if(!shell||!creditUI)return;
     if(name==='credits'&&awake())creditUI.show();else creditUI.hide();
     if(name==='raffle'&&awake())raffleUI?.show();else raffleUI?.hide();
@@ -3420,7 +4361,7 @@ function installWarPayoutCalculator() {
   }
   function selectTab(name){shell?.ui.select(name);}
   function surfaceActivity(active){
-    if(!active){cancel('Loading paused while the calculator is inactive. Refresh when ready.');creditUI?.pause();raffleUI?.hide();releaseExport();if($('key'))$('key').value='';}
+    if(!active){retirePayoutCsv();draftHtmlRevision++;retireDraftPng();draftForumClipboard?.invalidate();cancel('Loading paused while the calculator is inactive. Refresh when ready.');creditUI?.pause();raffleUI?.hide();releaseExport();if($('key'))$('key').value='';}
     else if(selectedTab==='credits')creditUI?.show();else if(selectedTab==='raffle')raffleUI?.show();
   }
   function open(tab='calculator') {
@@ -3432,12 +4373,12 @@ function installWarPayoutCalculator() {
     shell.ui.nav.querySelector('[aria-current="page"]')?.focus();return true;
   }
   function close() {
-    cancel();releaseExport();creditUI?.hide();raffleUI?.hide();if($('key'))$('key').value='';shell?.ui.hide();
+    retirePayoutCsv();draftHtmlRevision++;retireDraftPng();draftForumClipboard?.invalidate();cancel();releaseExport();creditUI?.hide();raffleUI?.hide();if($('key'))$('key').value='';shell?.ui.hide();
     const target=opener?.isConnected&&opener.getClientRects().length?opener:document.getElementById('tsh-launcher');target?.focus();
   }
   function activity(event) {
     if(event?.type==='tornpda:tabState'){const detail=event.detail;if(typeof detail?.isActiveTab!=='boolean'||typeof detail?.isWebViewVisible!=='boolean')return;pdaActive=detail.isActiveTab&&detail.isWebViewVisible;}
-    if(!awake()){cancel('Loading stopped while this tab is inactive. Load again when ready.');creditUI?.pause();raffleUI?.hide();if($('key'))$('key').value='';}else if(selectedTab==='raffle')raffleUI?.show();
+    if(!awake()){retirePayoutCsv();draftHtmlRevision++;retireDraftPng();draftForumClipboard?.invalidate();cancel('Loading stopped while this tab is inactive. Load again when ready.');creditUI?.pause();raffleUI?.hide();if($('key'))$('key').value='';}else if(selectedTab==='credits')creditUI?.show();else if(selectedTab==='raffle')raffleUI?.show();
   }
   function attach() {
     if(attached||disposed)return;attached=true;
@@ -3473,7 +4414,7 @@ function installWarPayoutCalculator() {
   else if(typeof GM!=='undefined'&&typeof GM.registerMenuCommand==='function')GM.registerMenuCommand('War payout calculator',open);
   Promise.resolve().then(async()=>{
     let preferences=null;
-    try{preferences=typeof GM_getValue==='function'?await GM_getValue('twpc-preferences-v1',null):typeof GM!=='undefined'&&GM.getValue?await GM.getValue('twpc-preferences-v1',null):null;}catch(_){}
+    try{preferences=typeof GM_getValue==='function'?await GM_getValue(payoutPrefsKey,null):typeof GM!=='undefined'&&GM.getValue?await GM.getValue(payoutPrefsKey,null):null;}catch(_){}
     const stored=await privateStore.get('personal-key');
     if(disposed)return;
     if(localKeyRevision===0&&typeof stored==='string'&&/^[A-Za-z0-9]{16}$/.test(stored))personalKey=stored;

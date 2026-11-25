@@ -14,6 +14,7 @@
     "lib/war-payout-raffle-ui.js",
     "lib/war-payout-release.json",
     "lib/war-payout-shell.js",
+    "lib/war-payout-sheet.js",
     "lib/war-payout-ui.js",
     "script-hub/docs/script-menu-hub.md",
     "script-hub/docs/api-key-manager.md",

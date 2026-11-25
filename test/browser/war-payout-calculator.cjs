@@ -138,6 +138,7 @@ async function install(page, code, world, native = false) {
       await page.click('#twpc-apply-rate');
       assert.equal(await page.$eval('#twpc-rate-hits', el => el.value), '187500');
       await page.selectOption('#twpc-mode', 'actual');
+      await page.click('#twpc-more-export > summary');
       await page.click('#twpc-copy');
       await page.waitForFunction(() => document.body.dataset.copied);
       const copied = await page.$eval('body', el => el.dataset.copied);

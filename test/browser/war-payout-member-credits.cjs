@@ -65,7 +65,8 @@ const html='<html><head></head><body><aside id="sidebar"><div class="status-icon
   const harness=await browser.newPage();await harness.route('**/*',r=>r.fulfill({status:200,contentType:'text/html',body:html}));await harness.goto('https://www.torn.com/factions.php?step=your&type=1');
   const credits=fs.readFileSync(path.join(root,'lib/war-payout-credits.cjs'),'utf8').replace(/^module\.exports[^\n]*$/gm,'');
   const ui=fs.readFileSync(path.join(root,'lib/war-payout-credit-ui.js'),'utf8');
-  await harness.evaluate(code=>(0,eval)(code),`(function(){${credits}\n${ui}\n
+  const sheets=fs.readFileSync(path.join(root,'lib/war-payout-sheet.js'),'utf8');
+  await harness.evaluate(code=>(0,eval)(code),`(function(){${credits}\n${sheets}\n${ui}\n
    const records=new Map(),dialog=document.createElement('dialog');dialog.id='twpc-dialog';dialog.style.cssText='width:90vw;height:85vh;overflow:auto';document.body.append(dialog);dialog.showModal();
    const draft={scope:{warId:99,factionId:10,opponentId:20,start:${now-1000},end:${now-500}},live:false,mode:'actual',coverage:'unverified',result:{profit:1000,cut:0,pool:1000,total:300,leftover:700,rates:{hits:100},rows:[1,2,3].map(id=>({id,name:'Member '+id,payout:100,hits:1,losses:0}))}};
    document.body.dataset.ineligible='1';
