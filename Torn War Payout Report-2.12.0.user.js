@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn War Payout Report
 // @namespace    https://github.com/iSatomi/torn-war-payout-report
-// @version      2.12.21-local
+// @version      2.12.40-local
 // @description  Per-member ranked war breakdown: hits, losses (all attackers + enemy-only), defends held, stalemates, assists and respect — plus a FACTION DRUG ANALYZER that ties Xanax taken from the armoury to hits actually landed, per war, and a MULTI-WAR SWEEP that runs the same check across every war at once to surface repeat offenders. Loops faction/attacks across the war window (handles the 100-record cap), classifies every hit, and exports as an aligned table, Discord block, TSV, CSV or a standalone HTML report.
 // @author       iSatomi [3580191]
 // @license      GPL-3.0
@@ -111,6 +111,14 @@
         return `${Math.floor(h / 24)}d`;
     }
 
+    // A ranked war can be loaded from either faction's perspective.
+    function cacheRecordKey(war, includeLegacy = false) {
+        const id = String(war?.warId ?? ''), faction = String(war?.factionId ?? '');
+        if (!/^[1-9][0-9]*$/.test(id)) return null;
+        if (/^[1-9][0-9]*$/.test(faction)) return CACHE_PREFIX + faction + '_' + id;
+        return includeLegacy && !faction ? CACHE_PREFIX + id : null;
+    }
+
     async function cacheIndexGet() {
         try { const raw = await gmGet(CACHE_INDEX, ''); return raw ? JSON.parse(raw) : []; }
         catch (e) { return []; }
@@ -130,15 +138,17 @@
      * is there", so the entry accumulates instead of thrashing.
      */
     async function cacheSave(war, report, attacksScanned, partial, drugs, official, od) {
+        const cacheKey = cacheRecordKey(war);
+        if (!cacheKey) return false;
         // Deliberately reads storage directly rather than cacheLoad(): that
         // rejects report-less entries, which is exactly what a drug-only sweep
         // writes, and merging against null would erase it on the second pass.
         let prev = null;
         try {
-            const raw = await gmGet(CACHE_PREFIX + war.warId, '');
+            const raw = await gmGet(cacheKey, '');
             if (raw) prev = JSON.parse(raw);
         } catch (e) { prev = null; }
-        if (prev && Date.now() - (prev.savedAt || 0) > CACHE_TTL_MS) prev = null;   // expired: don't revive it
+        if (prev && (cacheRecordKey(prev) !== cacheKey || Date.now() - (prev.savedAt || 0) > CACHE_TTL_MS)) prev = null;
 
         const slim = (r) => ({
             list: r.list,
@@ -155,6 +165,7 @@
             reportScanVersion: report ? 3 : ((prev && prev.reportScanVersion) || 0),
             savedAt: Date.now(),
             warId: war.warId,
+            factionId: war.factionId,
             oppName: war.oppName,
             attacksScanned: attacksScanned != null ? attacksScanned : (prev ? prev.attacksScanned : 0),
             partial: report ? !!partial : !!(prev && prev.partial),
@@ -166,23 +177,31 @@
             od: od || (prev ? prev.od : null) || null,
             report: report ? slim(report) : ((prev && prev.report) || null),
         };
-        try { await gmSet(CACHE_PREFIX + war.warId, JSON.stringify(payload)); } catch (e) { return; }
-        const idx = (await cacheIndexGet()).filter(x => x.warId !== war.warId);
-        idx.push({ warId: war.warId, savedAt: payload.savedAt, oppName: war.oppName });
+        const encoded = JSON.stringify(payload);
+        try {
+            await gmSet(cacheKey, encoded);
+            // Some managers report no write error even when the entry was dropped.
+            if (report && await gmGet(cacheKey, '') !== encoded) return false;
+        } catch (e) { return false; }
+        const idx = (await cacheIndexGet()).filter(x => cacheRecordKey(x, true) !== cacheKey);
+        idx.push({ warId: war.warId, factionId: war.factionId, savedAt: payload.savedAt, oppName: war.oppName });
         await cacheIndexSet(idx);
+        return true;
     }
 
-    async function cacheLoad(warId) {
+    async function cacheLoad(war) {
+        const cacheKey = cacheRecordKey(war);
+        if (!cacheKey) return null;
         try {
-            const raw = await gmGet(CACHE_PREFIX + warId, '');
+            const raw = await gmGet(cacheKey, '');
             if (!raw) return null;
             const p = JSON.parse(raw);
             // A sweep-written entry has drug data and no attack report. Demanding
             // a report here is what stopped those entries from ever being read
             // back, so the sweep re-pulled the same armoury log every time.
             // Callers that need the attack report must check `p.report` — and do.
-            if (!p || !p.savedAt || (!p.report && !p.drugs && !p.official)) return null;
-            if (Date.now() - p.savedAt > CACHE_TTL_MS) { await cacheDelete(warId); return null; }
+            if (!p || cacheRecordKey(p) !== cacheKey || !p.savedAt || (!p.report && !p.drugs && !p.official)) return null;
+            if (Date.now() - p.savedAt > CACHE_TTL_MS) { await cacheDelete(war); return null; }
             if (p.report && (p.reportScanVersion !== 3 || Date.now() - (p.reportSavedAt || p.savedAt) > CACHE_TTL_MS)) { p.report = null; p.partial = true; }
             return p;
         } catch (e) { return null; }
@@ -190,13 +209,14 @@
 
     // Update the same stored report without renewing its age or overwriting
     // attack and drug data from the snapshot displayed before the request.
-    async function cacheEnemyHitTotal(warId, reportSavedAt, count, current) {
+    async function cacheEnemyHitTotal(war, reportSavedAt, count, current) {
         if (!Number.isSafeInteger(count) || count < 0) return;
-        const cacheKey = CACHE_PREFIX + warId;
+        const cacheKey = cacheRecordKey(war);
+        if (!cacheKey) return;
         try {
             const raw = await gmGet(cacheKey, '');
             const saved = raw ? JSON.parse(raw) : null;
-            if (!current() || !saved?.report || saved.partial || saved.reportScanVersion !== 3 ||
+            if (!current() || cacheRecordKey(saved) !== cacheKey || !saved?.report || saved.partial || saved.reportScanVersion !== 3 ||
                 (saved.reportSavedAt || saved.savedAt) !== reportSavedAt ||
                 Date.now() - reportSavedAt > CACHE_TTL_MS || saved.report.enemyReportHits != null) return;
             saved.report.enemyReportHits = count;
@@ -204,10 +224,12 @@
         } catch (_) { /* Keep the fetched total for this view if storage is unavailable. */ }
     }
 
-    async function cacheDelete(warId) {
-        try { await gmSet(CACHE_PREFIX + warId, ''); } catch (e) {}
+    async function cacheDelete(war) {
+        const cacheKey = cacheRecordKey(war);
+        if (!cacheKey) return;
+        try { await gmSet(cacheKey, ''); } catch (e) {}
         const idx = await cacheIndexGet();
-        await cacheIndexSet(idx.filter(x => x.warId !== warId));
+        await cacheIndexSet(idx.filter(x => cacheRecordKey(x, true) !== cacheKey));
     }
 
     async function cachePrune() {
@@ -215,7 +237,9 @@
         const now = Date.now();
         const keep = [];
         for (const x of idx) {
-            if (now - x.savedAt > CACHE_TTL_MS) { try { await gmSet(CACHE_PREFIX + x.warId, ''); } catch (e) {} }
+            const key = cacheRecordKey(x, true);
+            if (!key) continue;
+            if (now - x.savedAt > CACHE_TTL_MS) { try { await gmSet(key, ''); } catch (e) {} }
             else keep.push(x);
         }
         await cacheIndexSet(keep);
@@ -229,7 +253,10 @@
         // exactly where it was — the worst possible outcome for a button whose
         // entire job is to remove things.
         const keys = [];
-        for (const x of idx) keys.push(CACHE_PREFIX + x.warId, OD_BASELINE_PREFIX + x.warId);
+        for (const x of idx) {
+            const key = cacheRecordKey(x, true);
+            if (key) keys.push(key, OD_BASELINE_PREFIX + x.warId);
+        }
         // The overdose snapshot cache is permanent BY DESIGN — a past day's
         // count cannot change, so it is never re-read. That makes it the one
         // store with no self-healing path: if Torn ever hands back a wrong
@@ -384,6 +411,7 @@
             const war = w.war || {};
             out.push({
                 warId,
+                factionId: ctx.factionId,
                 start: war.start || 0,
                 end: war.end || 0,             // 0 means still running
                 oppId,
@@ -746,7 +774,7 @@
             const { war, warStart, warEnd, from, to, leadDays, tailHours } = windows[i];
             const step = msg => onProgress && onProgress(i + 1, windows.length, war, msg);
 
-            const cached = opts.useCache ? await cacheLoad(war.warId) : null;
+            const cached = opts.useCache ? await cacheLoad(war) : null;
 
             // Hits first — a drug report built without them can't be flagged.
             // Order matters: a full attack pull beats the official report, since
@@ -1865,8 +1893,60 @@
         gmSet(LS_COLORS, JSON.stringify({}));
     }
 
+    let copyAttempt = 0, statusRevision = 0, warListCopyRevision = 0, sweepCopyRevision = 0;
+
+    function singleWarCopyOwner() {
+        const revision = warListCopyRevision;
+        const { current } = drugRunContext();
+        return () => revision === warListCopyRevision && current();
+    }
+
+    function reportSelectionCurrent() {
+        return !!state.war && state.war === state.wars[Number($('#twpr-war')?.value)];
+    }
+
+    function clearSingleWarResults() {
+        state.report = null;
+        state.drugs = null;
+        state.odResults = null;
+        $('#twpr-result').style.display = 'none';
+        $('#twpr-report-blank').style.display = 'block';
+        $('#twpr-report-war').textContent = '';
+        $('#twpr-tbody').textContent = '';
+        $('#twpr-summary').textContent = '';
+        $('#twpr-copy-table').disabled = true;
+        $('#twpr-drug-blank').style.display = '';
+        $('#twpr-drug-body').textContent = '';
+        state.raffleDraw?.cancel();
+        state.raffleDraw = null;
+        $('#twpr-raffle-winner').textContent = '';
+        for (const id of ['draw', 'wheel', 'csv']) {
+            const button = $('#twpr-raffle-' + id);
+            if (button) button.disabled = true;
+        }
+        markTab('drugs', false);
+        updateDrugActions();
+        if ($('#twpr-raffle').classList.contains('open')) renderRaffle();
+    }
+
+    function onWarSelectionChange() {
+        if (!state.war || reportSelectionCurrent()) return;
+        state.war = null;
+        clearSingleWarResults();
+        setStatus('War selection changed. Press Pull report to load the selected war.');
+    }
+
     /** The war table exists now; stop telling the user to go and make one. */
     function showReport() {
+        if (!state.drugs) {
+            $('#twpr-drug-blank').style.display = 'none';
+            $('#twpr-drug-body').innerHTML =
+                '<div class="twpr-note" style="font-size:12.5px;">Press <b>Pull drug data</b> to fetch the ' +
+                'faction armoury log for this war and tie Xanax taken to hits landed.</div>';
+        }
+        const war = state.war;
+        const date = war?.start ? new Date(war.start * 1000).toISOString().slice(0, 10) : null;
+        $('#twpr-report-war').textContent = 'Loaded report: vs ' + (war?.oppName || 'enemy') + (date ? ' (' + date + ' TCT)' : '');
         const blank = $('#twpr-report-blank');
         if (blank) blank.style.display = 'none';
         const res = $('#twpr-result');
@@ -1878,6 +1958,7 @@
     function setStatus(msg, isErr) {
         const el = $('#twpr-status');
         if (!el) return;
+        statusRevision++;
         el.textContent = msg || '';
         el.classList.toggle('err', !!isErr);
     }
@@ -2003,18 +2084,20 @@
                   <div class="twpr-sec">
                     <div class="twpr-sec-h"><span class="n">2</span> Draw <span class="sub" id="twpr-raffle-sum"></span></div>
                     <div class="twpr-sec-b">
-                      <div class="twpr-field"><label>Winners to draw</label>
-                        <input class="twpr-input" id="twpr-raffle-n" type="number" min="1" value="1" style="width:86px;"></div>
+                      <div class="twpr-field"><label for="twpr-raffle-n">Winners to draw</label>
+                        <input class="twpr-input" id="twpr-raffle-n" type="number" min="1" step="1" value="1" aria-describedby="twpr-raffle-n-hint" style="width:86px;">
+                        <div class="twpr-hint" id="twpr-raffle-n-hint" role="status" hidden>Enter a whole number of winners (at least 1).</div></div>
                       <div class="twpr-field"><label title="Nobody can hold more than this many tickets, however big their numbers. Stops one member owning the draw. 0 = no cap.">Ticket cap per member</label>
                         <input class="twpr-input" id="twpr-raffle-cap" type="number" min="0" step="1" value="0" style="width:86px;"></div>
                       <div class="twpr-field"><label title="Members below this many tickets are excluded from the draw entirely.">Minimum tickets</label>
                         <input class="twpr-input" id="twpr-raffle-min" type="number" min="0" step="1" value="1" style="width:86px;"></div>
                       <div class="twpr-field"><label>&nbsp;</label>
                         <div class="twpr-btnrow">
-                          <button class="twpr-btn" id="twpr-raffle-draw" type="button">🎲 Draw</button>
-                          <button class="twpr-colortoggle" id="twpr-raffle-wheel" type="button">Copy for wheelofnames</button>
-                          <button class="twpr-colortoggle" id="twpr-raffle-csv" type="button">⬇ Odds CSV</button>
+                          <button class="twpr-btn" id="twpr-raffle-draw" type="button" disabled>🎲 Draw</button>
+                          <button class="twpr-colortoggle" id="twpr-raffle-wheel" type="button" aria-describedby="twpr-raffle-wheel-hint" disabled>Copy for wheelofnames</button>
+                          <button class="twpr-colortoggle" id="twpr-raffle-csv" type="button" disabled>⬇ Odds CSV</button>
                         </div>
+                        <div class="twpr-hint" id="twpr-raffle-wheel-hint" role="status" hidden></div>
                       </div>
                     </div>
                   </div>
@@ -2116,7 +2199,7 @@
                         <label class="twpr-check" title="Reuse the 30-day cache where a war has already been analysed. Untick to re-pull everything live.">
                           <input type="checkbox" id="twpr-sweep-cache" checked> Use cached wars (free)
                         </label>
-                        <label class="twpr-check" title="After sweeping, read Torn's overdose stat for everyone who took Xanax and landed nothing. An OD hospitalises you for hours and is the most common innocent explanation. Readings are cached permanently, so this is cheap after the first run.">
+                        <label class="twpr-check" title="Compare overdose counts where measured Xanax waste meets the sweep threshold. Daily or earlier readings cannot date a rise to a war.">
                           <input type="checkbox" id="twpr-sweep-autood"> Check overdoses automatically
                         </label>
                       </div>
@@ -2137,7 +2220,7 @@
                           <option value="waste">Wasted more than…</option>
                           <option value="flagged">Took Xanax, landed nothing (any war)</option>
                           <option value="repeat">Repeat offenders (2+ wars)</option>
-                          <option value="od">Overdosed during a war</option>
+                          <option value="od">OD count increased</option>
                         </select>
                       </div>
                       <div class="twpr-field">
@@ -2156,8 +2239,8 @@
                         <label class="twpr-check" title="Someone who never touched the armoury is a different conversation — they cost the faction nothing.">
                           <input type="checkbox" id="twpr-sweep-onlytook"> Only members who took Xanax
                         </label>
-                        <label class="twpr-check" title="Hide anyone whose overdose check came back positive — an OD ended their war, which is an explanation rather than an excuse.">
-                          <input type="checkbox" id="twpr-sweep-hideod"> Hide confirmed overdoses
+                        <label class="twpr-check" title="Hide rows with an increased OD count in an associated comparison; timing is unconfirmed.">
+                          <input type="checkbox" id="twpr-sweep-hideod"> Hide OD count increases
                         </label>
                       </div>
                       <div class="twpr-field">
@@ -2186,6 +2269,7 @@
                   <span>The other tabs work without it — Multi-war only needs the war list.</span>
                 </div>
                 <div id="twpr-result" style="display:none;">
+                <h3 id="twpr-report-war" style="margin:0 0 8px;"></h3>
                 <div class="twpr-row" style="margin-bottom:8px;gap:14px;">
                   <div class="twpr-field">
                     <label for="twpr-lossscope">Count "losses" as</label>
@@ -2234,8 +2318,10 @@
         bindTap($('#twpr-close'), closePanel);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) closePanel(); });
         bindTap($('#twpr-load'), onLoadWars);
+        $('#twpr-key').addEventListener('input', onWarKeyInput);
         bindTap($('#twpr-run'), onRun);
         bindTap($('#twpr-copy-table'), onCopyTable);
+        $('#twpr-war').addEventListener('change', onWarSelectionChange);
 
         // Color settings: build pickers, restore saved values, wire toggle.
         buildColorUI();
@@ -2268,7 +2354,8 @@
         // Odds must move as you type a weight, or the numbers you draw against
         // are not the ones on screen.
         overlay.addEventListener('input', (e) => {
-            if (e.target.id && (e.target.id.startsWith('twpr-rw-') ||
+            if (e.target.id === 'twpr-raffle-n') syncRaffleDrawCount();
+            else if (e.target.id && (e.target.id.startsWith('twpr-rw-') ||
                 ['twpr-raffle-cap', 'twpr-raffle-min'].includes(e.target.id))) renderRaffle();
         });
         bindTap($('#twpr-rf-p-loss'), () => applyRafflePreset({ loss: 1 }));
@@ -2319,7 +2406,11 @@
         });
 
         // Prefill saved key.
-        gmGet(LS_KEY, '').then(k => { if (k) $('#twpr-key').value = k; });
+        const keyInput = $('#twpr-key');
+        const untouchedKeyRevision = warKeyRevision;
+        gmGet(LS_KEY, '').then(k => {
+            if (k && warKeyRevision === untouchedKeyRevision && !keyInput.value) keyInput.value = k;
+        }).catch(() => {});
     }
 
     /**
@@ -2348,26 +2439,74 @@
     }
 
     function openPanel() { buildPanel(); $('#twpr-overlay').classList.add('open'); }
-    function closePanel() { const o = $('#twpr-overlay'); if (o) o.classList.remove('open'); }
+    function closePanel() {
+        copyAttempt++;
+        const o = $('#twpr-overlay');
+        if (o) o.classList.remove('open');
+    }
+
+    let warKeyRevision = 0, runningWarLoad = null, warKeySave = Promise.resolve(), warLoadPrune = null;
+    let acceptedWarKey = null;
+    function requireAcceptedWarKey(key) {
+        if (!key) { setStatus('Enter your API key first.', true); return false; }
+        if (acceptedWarKey?.key !== key || acceptedWarKey.revision !== warKeyRevision) {
+            setStatus('API key changed. Press Load wars before using this war list.', true);
+            return false;
+        }
+        if (runningWarLoad) { setStatus('Wait for Load wars to finish before using this war list.'); return false; }
+        return true;
+    }
+    function onWarKeyInput() {
+        warKeyRevision++;
+        if (!runningWarLoad) return;
+        const loadingStatus = runningWarLoad.status;
+        runningWarLoad = null;
+        if (statusRevision === loadingStatus) setStatus('API key changed. Press Load wars to try again.');
+    }
 
     async function onLoadWars() {
-        const key = $('#twpr-key').value.trim();
+        const input = $('#twpr-key');
+        const key = input.value.trim();
+        const keyRevision = warKeyRevision;
+        const load = { status: 0 };
+        runningWarLoad = null;
         if (!key) { setStatus('Enter your API key first.', true); return; }
-        gmSet(LS_KEY, key);
+        const current = () => runningWarLoad === load && warKeyRevision === keyRevision && input.value.trim() === key;
+        warListCopyRevision++;
         setStatus('Loading faction + wars…');
+        load.status = statusRevision;
+        runningWarLoad = load;
         try {
-            await cachePrune();
-            state.ctx = await getFactionContext(key);
-            state.wars = listWars(state.ctx);
-            if (!state.wars.length) { setStatus('No ranked wars found for this faction.', true); return; }
-            const cachedIds = new Set((await cacheIndexGet()).map(x => x.warId));
+            if (!warLoadPrune) warLoadPrune = cachePrune().finally(() => { warLoadPrune = null; });
+            await warLoadPrune;
+            if (!current()) return;
+            const ctx = await getFactionContext(key);
+            if (!current()) return;
+            const wars = listWars(ctx);
+            const cachedKeys = new Set(wars.length ? (await cacheIndexGet()).map(x => cacheRecordKey(x)).filter(Boolean) : []);
+            if (!current()) return;
             const sel = $('#twpr-war');
-            sel.innerHTML = state.wars.map((w, i) => {
+            const options = wars.map((w, i) => {
                 const when = w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : '?';
                 const live = w.end ? '' : ' [LIVE]';
-                const cached = cachedIds.has(w.warId) ? ' 💾' : '';
+                const cached = cachedKeys.has(cacheRecordKey(w)) ? ' 💾' : '';
                 return `<option value="${i}">${when} vs ${w.oppName} (${w.myScore}–${w.oppScore})${live}${cached}</option>`;
             }).join('');
+            state.ctx = ctx;
+            state.wars = wars;
+            acceptedWarKey = { key, revision: keyRevision };
+            sel.innerHTML = options;
+            // Only accepted results can remember a key. Order saves without delaying the picker.
+            warKeySave = warKeySave.then(() => gmSet(LS_KEY, key)).catch(() => {});
+            onWarSelectionChange();
+            if (!wars.length) {
+                $('#twpr-war-row').style.display = 'none';
+                $('#twpr-sweep-wars').replaceChildren();
+                $('#twpr-sweep-main').style.display = 'none';
+                $('#twpr-sweep-blank').style.display = 'block';
+                setStatus('No ranked wars found for this faction.', true);
+                return;
+            }
             $('#twpr-war-row').style.display = 'flex';
             // Wars are the only prerequisite the sweep has, so it unlocks here —
             // it does NOT need a war report, and used to be gated behind one.
@@ -2380,32 +2519,26 @@
             setStatus(`Found ${state.wars.length} war(s) for ${state.ctx.factionName}. 💾 = cached. Pick one and pull, ` +
                       `or open 💊 Drug Report → Multi-war sweep to check them all at once.`);
         } catch (e) {
-            setStatus(e.message || 'Failed to load.', true);
+            if (current()) setStatus(e.message || 'Failed to load.', true);
+        } finally {
+            if (runningWarLoad === load) runningWarLoad = null;
         }
     }
 
     let reportRun = 0;
     async function onRun() {
+        const key = $('#twpr-key').value.trim();
+        if (!requireAcceptedWarKey(key)) return;
         const run = ++reportRun;
         const ownsRun = () => run === reportRun;
-        const key = $('#twpr-key').value.trim();
         const idx = Number($('#twpr-war').value);
         const war = state.wars[idx];
         if (!war) { setStatus('Select a war.', true); return; }
-        const current = () => ownsRun() && state.wars[Number($('#twpr-war').value)] === war
+        const current = () => ownsRun() && state.war === war && reportSelectionCurrent()
             && $('#twpr-key').value.trim() === key;
         const changed = () => { if (ownsRun()) setStatus('The selected war or API key changed. Pull again for a new report.'); };
         state.war = war;
-        state.report = null;
-        // Drug data is per-war — never carry the last war's numbers over.
-        state.drugs = null;
-        state.odResults = null;
-        updateDrugActions();
-        if ($('#twpr-drug-body')) {
-            $('#twpr-drug-body').innerHTML =
-                '<div class="twpr-note" style="font-size:12.5px;">Press <b>Pull drug data</b> to fetch the ' +
-                'faction armoury log for this war and tie Xanax taken to hits landed.</div>';
-        }
+        clearSingleWarResults();
 
         const from = war.start;
         const to = war.end && war.end > 0 ? war.end : Math.floor(Date.now() / 1000);
@@ -2414,7 +2547,7 @@
         // Serve from the 30-day cache unless "Fresh pull" is ticked.
         const forceFresh = !!($('#twpr-fresh') && $('#twpr-fresh').checked);
         if (!forceFresh && war.end > 0) {
-            const cached = await cacheLoad(war.warId);
+            const cached = await cacheLoad(war);
             if (!current()) { changed(); return; }
             // `cached.report` is now optional: the multi-war sweep writes drug
             // data for wars it never pulled attacks for. Such an entry can't
@@ -2448,7 +2581,7 @@
                         state.report.enemyReportHits = officialEnemyHits;
                         renderTable();
                         setStatus(cacheStatus + ' Enemy hit total taken from the war report.' + freshHint);
-                        await cacheEnemyHitTotal(war.warId, cached.reportSavedAt || cached.savedAt, officialEnemyHits, current);
+                        await cacheEnemyHitTotal(war, cached.reportSavedAt || cached.savedAt, officialEnemyHits, current);
                     } else {
                         setStatus(cacheStatus + ' Official enemy hit total unavailable; showing the attack-log estimate.' + freshHint);
                     }
@@ -2494,14 +2627,14 @@
             renderTable();
             renderRaffle();
             // Cache the finished report for 30 days (skip caching partial pulls).
-            if (!pulled.partial && war.end > 0) await cacheSave(war, state.report, attacks.length, pulled.partial);
+            const cached = !pulled.partial && war.end > 0 && await cacheSave(war, report, attacks.length, pulled.partial);
             if (!current()) return;
             const source = state.report.enemyReportHits != null
                 ? 'Enemy hit total taken from the war report.'
                 : war.end > 0
                     ? 'Official enemy hit total unavailable; showing the attack-log estimate.'
                     : 'Official enemy hit total unavailable during the live war; showing the attack-log estimate.';
-            const cacheNote = pulled.partial ? ' Not cached (partial).' : war.end > 0 ? ' Cached for 30 days.' : ' Live report not cached.';
+            const cacheNote = pulled.partial ? ' Not cached (partial).' : war.end > 0 ? (cached ? ' Cached for 30 days.' : ' Could not confirm the report was saved locally. A later pull may scan again.') : ' Live report not cached.';
             setStatus(`Done. ${source}${partialNote}${cacheNote}`, pulled.partial);
         } catch (e) {
             if (current()) setStatus(e.message || 'Pull failed.', true);
@@ -2603,10 +2736,11 @@
             enemyStr + ` · Respect: <b>${fmt(rep.totalRespect.toFixed(2))}</b>`;
     }
 
-    // Shared row set: drop members who did nothing at all.
-    function reportRows() {
+    // Detailed exports have an OffLost column; compact summaries do not.
+    function reportRows(includeOutgoingLosses) {
         return sortedRows()
-            .filter(row => row.wins || row.lossAll || row.defHeld || row.assists || row.stalemates)
+            .filter(row => row.wins || row.lossAll || row.defHeld || row.assists || row.stalemates ||
+                (includeOutgoingLosses && row.offLost))
             .map(row => ({
                 name: row.name,
                 id: row.id,
@@ -2684,17 +2818,17 @@
     }
 
     function onCopyTable() {
-        if (!state.report || state.report.__partial) return;
-        const rows = reportRows();
-        if (!rows.length) { setStatus('No active members to copy.', true); return; }
+        if (!reportSelectionCurrent() || !state.report || state.report.__partial) return;
         const mode = $('#twpr-fmt') ? $('#twpr-fmt').value : 'aligned';
+        const rows = reportRows(mode === 'csv' || mode === 'tsv');
+        if (!rows.length) { setStatus('No active members to copy.', true); return; }
         const summary = summaryLine();
         let text, label;
         if (mode === 'aligned')      { text = summary + '\n\n' + buildAligned(rows);                 label = 'Aligned table copied.'; }
         else if (mode === 'discord') { text = '```\n' + summary + '\n\n' + buildAligned(rows) + '\n```'; label = 'Discord block copied.'; }
         else if (mode === 'tsv')     { text = buildDelimited(rows, '\t', false);  label = 'TSV copied — paste into a spreadsheet.'; }
         else                         { text = buildDelimited(rows, ',', true);    label = 'CSV copied.'; }
-        copy(text, label);
+        copy(text, label, singleWarCopyOwner());
     }
 
     /* =================== drug report UI ======================= */
@@ -2710,10 +2844,15 @@
      * these, so an export can never disagree with the screen it was taken from —
      * which is the whole point of an "exactly as shown" export.
      */
+    const OD_DAILY_NOTE = 'Daily readings may include time outside the war and cannot place an overdose inside the war.';
+    function odDailyLabel(o) {
+        if (o.lifetime === 0) return 'no OD';
+        return o.ods > 0 ? 'OD +' + o.ods + ' (daily)' : 'no increase (daily)';
+    }
     function odText(r) {
         const od = state.odResults && state.odResults[r.id];
         if (!od) return '–';
-        if (od.mode === 'delta') return od.ods > 0 ? `💊 OD ×${od.ods}` : 'no OD';
+        if (od.mode === 'delta') return odDailyLabel(od);
         if (od.mode === 'baseline') return od.ods > 0 ? `💊 OD ×${od.ods}?` : 'no OD*';
         if (od.mode === 'lifetime') return `? (${fmt(od.lifetime)} ever)`;
         return 'could not check';
@@ -2730,9 +2869,9 @@
         const label = odText(r);
         if (!od) return '<span style="color:#5b6070">–</span>';
         if (od.mode === 'delta') {
-            return od.ods > 0
-                ? `<span class="twpr-stale" title="Overdose count rose by ${od.ods} between the war's start and end (${od.before} → ${od.after}). An OD hospitalises for hours — this very likely explains the missing hits.">${label}</span>`
-                : `<span class="twpr-ok" title="Overdose count did not move across the war window (${od.before} → ${od.after}). No OD.">${label}</span>`;
+            if (od.lifetime === 0) return '<span class="twpr-ok" title="Verified lifetime total of zero.">no OD</span>';
+            const detail = 'Daily overdose readings: ' + escHtml(od.before) + ' to ' + escHtml(od.after) + '. ' + OD_DAILY_NOTE;
+            return '<span class="' + (od.ods > 0 ? 'twpr-stale' : 'twpr-ok') + '" title="' + detail + '">' + label + '</span>';
         }
         if (od.mode === 'baseline') {
             const when = od.since ? ' (' + dayStr(od.since) + ')' : '';
@@ -2906,7 +3045,7 @@
 
     async function onDrugRun() {
         const { war, report, ctx, key, current } = drugRunContext();
-        if (!key) { setStatus('Enter your API key first.', true); return; }
+        if (!requireAcceptedWarKey(key)) return;
         if (!war || !report || !current()) { setStatus('Pull the selected war report first.', true); return; }
 
         // The fighting window and the DRUG window are deliberately different.
@@ -2992,10 +3131,9 @@
                 g.checked++;
                 if ((o.mode === 'delta' || o.mode === 'baseline') && o.ods > 0) {
                     g.ods += o.ods; g.wars++;
-                    // WHICH war matters twice over: it is what a leader is told,
-                    // and it is what decides whether that war's Xanax counts as
-                    // wasted at all.
-                    g.byWar[p.war.warId] = { ods: o.ods, opp: p.war.oppName, start: p.war.start };
+                    // Keep the associated matchup for the existing sweep rule and display.
+                    // The comparison does not date an event to that matchup.
+                    g.byWar[p.war.warId] = { ods: o.ods, opp: p.war.oppName, start: p.war.start, comparison: o.mode };
                 } else if (o.mode === 'lifetime' || o.mode === 'error') g.unknown++;
             }
         }
@@ -3183,13 +3321,13 @@
             zero: 'members with confirmed zero hits in all recorded wars',
             under: `members under ${fmt(thresh)} ${basis === 'avg' ? 'hits per war on average' : 'total hits'} with complete recorded hit counts`,
             waste: `members who wasted more than ${fmt(thresh)} Xanax ${basis === 'avg' ? 'per war on average' : 'in total'}`,
-            od: 'members with a confirmed overdose during a war',
+            od: 'members with an OD count increase',
             flagged: 'members flagged in at least one war',
             repeat: 'repeat offenders — flagged in 2 or more wars',
         }[mode];
         return `Showing <b>${fmt(shown)}</b> of ${fmt(total)} — ${what}`
              + (onlyTook && mode !== 'took' ? ', and only those who took Xanax' : '')
-             + (hideOd ? ', excluding confirmed overdoses' : '') + '.';
+             + (hideOd ? ', excluding OD count increases' : '') + '.';
     }
 
     /* RAINBOW COLUMNS, corrected.
@@ -3220,20 +3358,22 @@
      * "clean" — that distinction is the entire reason this feature exists
      * rather than a blank column.
      */
+    const SWEEP_OD_NOTE = 'OD count increases are not proof of an overdose during a war. One event may appear in more than one comparison. Excused totals follow the current sweep rule.';
+    const sweepOdComparison = x => x.comparison === 'delta' ? 'daily readings'
+        : x.comparison === 'baseline' ? 'earlier saved reading' : 'comparison timing unknown';
+    const sweepOdMatchup = (x, fullDate = false) => x.opp
+        + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(fullDate ? 0 : 5, 10) : '')
+        + ' (' + sweepOdComparison(x) + ')';
     function odCellSweep(r) {
         const o = state.sweepOd && state.sweepOd[r.id];
         if (!o) return '<span style="color:#4e5468" title="' + (state.sweepOd ? 'Not selected for the overdose check' : 'Overdose checks were not run') + '">·</span>';
         if (o.ods > 0) {
-            // Name the wars. "1 overdose" is not actionable; "overdosed during
-            // Bravo Company" is, and the war window is the honest resolution —
-            // Torn's snapshot is daily, so a precise time would be invented.
-            const where = (r.odWars || []).map(x =>
-                escHtml(x.opp) + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '')
-                + (x.ods > 1 ? ' ×' + x.ods : '')).join(', ');
-            return `<span style="color:#ff8080;font-weight:700" title="Overdosed during ${where || o.wars + ' war(s)'} — that ended their war, so those Xanax are excused rather than wasted">💊 ${where || o.ods}</span>`;
+            const where = (r.odWars || []).map(x => escHtml(sweepOdMatchup(x))).join(', ');
+            const label = where || o.wars + ' positive comparison(s)';
+            return `<span style="color:#ff8080;font-weight:700" title="OD count increased: ${label}. Timing unconfirmed; exclusions follow the current sweep rule.">${label}</span>`;
         }
         if (o.unknown) return `<span style="color:#ffd479" title="${o.unknown} of ${o.checked} war(s) could not be determined: no usable reading">?</span>`;
-        return '<span style="color:#7fe3a0" title="Checked across every flagged war — no overdose">—</span>';
+        return '<span style="color:#7fe3a0" title="No increase between the targeted readings; a saved baseline may not cover a war">—</span>';
     }
 
     /** Waste is a scale, not a yes/no — so is its colour. */
@@ -3328,7 +3468,8 @@
                 : '');
 
         const caveats = [];
-        if (state.sweepOd) caveats.push(escHtml(sweepOdCoverage()));
+        const odCaveat = state.sweepOd
+            ? '<div class="twpr-note" style="margin:8px 0;">' + escHtml(sweepOdCoverage()) + '</div>' : '';
         if (s.unknownWars.length) {
             caveats.push(`<b>${fmt(s.unknownWars.length)} war${s.unknownWars.length === 1 ? '' : 's'}</b> had no hit data
               (${s.unknownWars.map(w => escHtml(w.oppName)).join(', ')}) — no complete hit report was available.
@@ -3376,11 +3517,9 @@
                 return `<td class="${sp} none" title="${escHtml(w.oppName)} has no complete hit report, so this cannot be judged">`
                      + `<span class="x">${fmt(u)}</span> <span class="sep">/ ?</span>${plus}</td>`;
             }
-            // An overdose outranks the flag. They took the Xanax and landed
-            // nothing, but they were hospitalised — leaving the red warning on
-            // would keep accusing someone the data has already explained.
+            // Preserve the existing comparison-based exclusion, not a finding of causation.
             if (p.od) {
-                return `<td class="${sp} excused" title="Overdosed during ${escHtml(w.oppName)} — an OD hospitalises you for hours and ends your war, so these ${fmt(u)} Xanax are excused rather than wasted">`
+                return `<td class="${sp} excused" title="OD count increased for the comparison associated with ${escHtml(w.oppName)}. Timing unconfirmed; the sweep rule excuses waste for this matchup.">`
                      + `<span class="x">${fmt(u)}</span> <span class="sep">/</span> <span class="h">${fmt(p.hits)}</span><span class="od">OD</span>${plus}</td>`;
             }
             if (p.flagged) {
@@ -3410,12 +3549,12 @@
                 <th title="Faction member [Torn ID]">Member</th>
                 <th title="How many of the swept wars this member took Xanax in and landed ZERO hits. This is the column that matters — 2 or more is a pattern.">Wasted<br><span style="font-weight:400;color:#8b90a6;font-size:10px">wars</span></th>
                 <th title="Energy that left the armoury and never became a war hit, expressed in Xanax. A Xanax is 250 energy and a hit costs 25, so one Xanax is worth TEN hits — someone who draws 10 and lands 5 has wasted 9.5 of them. Never negative: natural regen means an active fighter lands more than their Xanax paid for, and that surplus must not cancel out somebody else's waste.">Wasted<br><span style="font-weight:400;color:#ff8080;font-size:10px">Xanax</span></th>
-                <th title="Waste an overdose excuses. An OD hospitalises you for hours and ends your war, so the Xanax swallowed before it was not squandered — the member was prevented from spending that energy. Shown separately rather than deleted, because “wasted 2, excused 15” and “wasted 17” are different conversations.">Excused<br><span style="font-weight:400;color:#9fc7ff;font-size:10px">overdose</span></th>
+                <th title="Xanax excluded from waste by the current OD comparison rule, not an in-war finding.">Excused<br><span style="font-weight:400;color:#9fc7ff;font-size:10px">overdose</span></th>
                 <th title="Xanax this member SWALLOWED straight from the armoury. This is the figure waste and efficiency are measured on, because this energy certainly entered a body.">Used<br><span style="font-weight:400;color:#ffd479;font-size:10px">swallowed</span></th>
                 <th title="Xanax moved out of the armoury into their own inventory, minus anything they put back. The log never mentions it again, so this is NOT counted as waste — they may be handing it out, holding it for the next war, or restocking. A large number here is a question, not a verdict.">Withdrew<br><span style="font-weight:400;color:#9fc7ff;font-size:10px">net, unspent</span></th>
                 <th title="Total successful war hits across every swept war, from Torn's official reports">Hits<br><span style="font-weight:400;color:#7fe3a0;font-size:10px">total</span></th>
                 <th title="Average hits per war this member actually appeared in — the fair comparison when people joined at different times">Avg<br><span style="font-weight:400;color:#8b90a6;font-size:10px">hits/war</span></th>
-                <th title="Overdoses confirmed during the swept wars, for members who took Xanax and landed nothing. An OD hospitalises you for hours and ends your war — the most common innocent explanation. A dot means NOT CHECKED; it never means clean.">OD<br><span style="font-weight:400;color:#8b90a6;font-size:10px">during war</span></th>
+                <th title="OD count increases in comparisons, not proof of an in-war overdose. A dot means not checked.">OD<br><span style="font-weight:400;color:#8b90a6;font-size:10px">comparisons</span></th>
                 <th title="Hits landed per Xanax taken, available only when all wars with recorded member activity have hit counts. TEN is break-even — that is exactly what 250 energy buys. Below 10 they are not converting what they take; above 10 they are also fighting on natural regen, which is what you want to see.">Hits/Xan<br><span style="font-weight:400;color:#8b90a6;font-size:10px">10 = break-even</span></th>
                 ${cols.map((w, i) => `<th class="twpr-wh${i === 0 ? ' twpr-split' : ''}" title="${escHtml(w.oppName)} — ${w.start ? new Date(w.start * 1000).toISOString().slice(0, 10) : 'date unknown'}${w.hitsSrc === 'none' ? ' · hit data unavailable' : ''}">
                     <span class="n" style="color:${hueOf(i)}">${escHtml(String(w.oppName).slice(0, 12))}</span>
@@ -3437,8 +3576,8 @@
                 <td class="${flags ? (r.repeat ? 'twpr-repeat' : 'twpr-flag') : incomplete ? '' : 'twpr-ok'}"
                     title="${!r.warsKnown ? 'No hit data - zero-hit Xanax wars cannot be measured'
                       : (r.warsFlagged ? 'Took Xanax and landed nothing in ' + r.warsFlagged + ' war(s)'
-                        + (r.warsExcused ? ' - ' + r.warsExcused + ' explained by an overdose' : '')
-                        : 'No zero-hit Xanax wars recorded') + coverage}">${flagValue}${r.warsExcused ? ' <span style="color:#9fc7ff;font-size:10px">+' + r.warsExcused + ' OD</span>' : ''}</td>
+                        + (r.warsExcused ? ' - ' + r.warsExcused + ' flagged wars excused by the comparison rule' : '')
+                        : 'No zero-hit Xanax wars recorded') + coverage}">${flagValue}${r.warsExcused ? ' <span style="color:#9fc7ff;font-size:10px">+' + r.warsExcused + ' flagged wars excused</span>' : ''}</td>
                 <td style="color:${marker && r.wasted < 0.05 ? '#ffd479' : wasteColor(r)};font-weight:${(r.wasted || 0) >= 1 ? 700 : 400}"
                     title="${r.wasted == null ? 'No hit data yet - waste cannot be measured'
                       : (r.wasted < 0.05 ? 'No unexcused Xanax waste measured'
@@ -3446,7 +3585,7 @@
                           + (r.worstWar ? ' - worst vs ' + escHtml(r.worstWar.opp) + ': ' + fmt(r.worstWar.drawn) + ' Xanax for ' + fmt(r.worstWar.hits) + ' hits' : '')) + coverage}">${wasteValue}</td>
                 <td style="color:${(r.excused || 0) >= 0.05 ? '#9fc7ff' : '#4e5468'}"
                     title="${(r.excused || 0) >= 0.05
-                      ? `${r.excused.toFixed(1)} Xanax not counted as waste because they overdosed`
+                      ? `${r.excused.toFixed(1)} Xanax not counted as waste under the OD comparison rule`
                       : 'Nothing excused'}">${(r.excused || 0) >= 0.05 ? r.excused.toFixed(1) : '—'}</td>
                 <td style="color:#ffd479;font-weight:700">${fmt(r.totalUsed)}</td>
                 <td style="color:${r.unaccounted ? '#9fc7ff' : '#5c6178'}"
@@ -3473,13 +3612,13 @@
                  Xanax totals, rates and flags are provisional. Run the sweep again before relying on them.
                  Copy and Download are unavailable until the armoury scan completes.</div>`
             : '';
-        box.innerHTML = runningBox + partialBox + kpis + repeatBox + caveatBox + legend + table + shownNote;
+        box.innerHTML = runningBox + partialBox + kpis + odCaveat + repeatBox + caveatBox + legend + table + shownNote;
     }
 
     async function onSweepRun() {
         if (state.sweepRunning) return;
         const key = $('#twpr-key').value.trim();
-        if (!key) { setStatus('Enter your API key first.', true); return; }
+        if (!requireAcceptedWarKey(key)) return;
         if (!state.ctx || !state.wars || !state.wars.length) { setStatus('Load wars first.', true); return; }
         const wars = sweepSelection();
         if (!wars.length) { setStatus('Pick at least one war to sweep.', true); return; }
@@ -3500,6 +3639,7 @@
         }
         const btn = $('#twpr-sweep-run');
         const autoOd = !!$('#twpr-sweep-autood')?.checked;
+        sweepCopyRevision++;
         state.sweepRunning = true;
         if (btn) btn.disabled = true;
         try {
@@ -3531,7 +3671,7 @@
             setStatus(`Swept ${fmt(wars.length)} war(s)${reused ? ` — ${reused} reused from cache` : ''}` +
                       `${saved ? `, ${saved} newly cached (re-sweeping them is now free)` : ''}. ` +
                       `${fmt(state.sweep.repeats.length)} repeat offender(s), ${fmt(state.sweep.flaggedAny.length)} flagged at least once.` +
-                      (state.sweepOd ? (odFound ? ' ' + odFound + ' member(s) overdosed.' : '') + ' ' + sweepOdCoverage() : '') +
+                      (state.sweepOd ? (odFound ? ' ' + odFound + ' member(s) showed an OD count increase.' : '') + ' ' + sweepOdCoverage() : '') +
                       (partials ? ` ${partials} war(s) pulled partially and were NOT cached — re-run to fill in.` : ''), partials > 0);
         } catch (e) {
             setStatus((e.message || 'Sweep failed.') + (state.sweep ? ' Still showing the previous sweep.' : ''), true);
@@ -3560,9 +3700,9 @@
         }
         if (!checked) return 'Overdose check: no eligible member-war checks.';
         if (unknown) return 'Overdose check incomplete: ' + unknown + ' of ' + checked +
-            ' targeted member-war checks could not be determined.' + (found ? '' : ' No overdoses confirmed.');
+            ' targeted member-war checks could not be determined.' + (found ? ' ' + SWEEP_OD_NOTE : ' No count increase found in usable comparisons.');
         return 'Overdose check: ' + checked + ' targeted member-war ' + (checked === 1 ? 'check' : 'checks') +
-            ' resolved.' + (found ? '' : ' No overdoses found among those checked.');
+            ' completed.' + (found ? ' ' + SWEEP_OD_NOTE : ' No count increase found in the targeted comparisons.');
     }
 
     function sweepOdRollCall(s) {
@@ -3605,7 +3745,7 @@
         out.push('Waste is charged on Xanax SWALLOWED only — withdrawals to inventory are listed separately and never counted as waste.');
         out.push(`Filter: ${stripTags(sweepFilterLabel(rows.length, s.list.length))}`);
         out.push(sweepOdCoverage());
-        out.push('OD count: confirmed overdose wars only. Blank means unchecked or unknown, not zero.');
+        out.push('OverdoseWars and OverdosedIn describe the associated matchups with increases: comparison counts, not unique overdoses. Blank means unchecked or unknown, not zero. ExcusedXanax follows the current sweep rule.');
         return out;
     }
 
@@ -3715,15 +3855,12 @@
             + sweepDiscordWasteLegend(rows)
             + `_${stripTags(sweepFilterLabel(rows.length, s.list.length))}${state.sweepOd ? '' : ' Overdoses not checked.'}_\n`;
 
-        // Who overdosed, and where. This is the half the table cannot show:
-        // the column says "1", this says which war it was.
+        // Name the matchup associated with each positive comparison, not the event date.
         const roll = sweepOdRollCall(s);
         const odBlock = roll.length
-            ? '\n**Overdosed during a war** — their Xanax that war is excused, not wasted:\n'
+            ? '\n**OD count increases (timing unconfirmed)** — Xanax excused by the current sweep rule:\n'
               + roll.slice(0, 15).map(r =>
-                  '\u2022 ' + r.name + ' — ' + r.wars.map(x =>
-                      x.opp + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '')
-                      + (x.ods > 1 ? ' (x' + x.ods + ')' : '')).join(', ')
+                  '\u2022 ' + r.name + ' — ' + r.wars.map(x => sweepOdMatchup(x)).join(', ')
                   + (r.excused >= 0.05 ? ' [' + r.excused.toFixed(1) + ' Xanax excused]' : '')).join('\n')
               + (roll.length > 15 ? '\n\u2026 +' + (roll.length - 15) + ' more' : '') + '\n'
             : '';
@@ -3847,16 +3984,16 @@
             + fmt(s.totalUsed) + ' Xanax swallowed, ' + sweepHitSummary(s).description + ', **'
             + sweepWasteSummary(s).description + '**'
             + ((s.totalExcused || 0) >= 0.5
-                ? ' (a further ' + s.totalExcused.toFixed(0) + ' excused — those members overdosed)' : '')
+                ? ' (a further ' + s.totalExcused.toFixed(0) + ' excused by the OD comparison rule)' : '')
             + '.\n'
             + (s.repeats.length
                 ? ':warning: ' + s.repeats.length + ' member' + (s.repeats.length === 1 ? '' : 's')
                   + ' took stock and landed nothing in 2+ wars.\n' : '')
             + '_Each war cell is Xanax swallowed/hits. ' + TICK + '+' + TICK + ' = also withdrew stock (not charged). '
             + TICK + '!' + TICK + ' = swallowed Xanax, landed nothing. '
-            + TICK + 'od' + TICK + ' = overdosed, so that war is excused. '
+            + TICK + 'od' + TICK + ' = positive OD comparison, excused by the sweep rule. '
             + TICK + '-' + TICK + ' = not in that war. ' + TICK + '/?' + TICK + ' = hit data unavailable._\n'
-            + '_OD: . = not checked; ? = unknown; - = none found in the checks performed._\n'
+            + '_OD: numbers count positive comparisons, not events. . = not checked; ? = unknown; - = no increase in the comparisons._\n'
             + '_Wars: ' + legend + '_\n'
             + '_Wasted = energy that never became a hit (1 Xanax = ' + ENERGY_PER_XANAX + ' E = '
             + HITS_PER_XANAX + ' hits), charged on Xanax swallowed only. H/X: ' + HITS_PER_XANAX + ' is break-even; ? = incomplete hit data, - = no Xanax swallowed._\n'
@@ -3864,15 +4001,12 @@
             + '_' + stripTags(sweepFilterLabel(rows.length, s.list.length))
             + (state.sweepOd ? '' : ' Overdoses not checked.') + '_\n';
 
-        // Who overdosed, and where. This is the half the table cannot show:
-        // the column says "1", this says which war it was.
+        // Name the matchup associated with each positive comparison, not the event date.
         const roll = sweepOdRollCall(s);
         const odBlock = roll.length
-            ? '\n**Overdosed during a war** — their Xanax that war is excused, not wasted:\n'
+            ? '\n**OD count increases (timing unconfirmed)** — Xanax excused by the current sweep rule:\n'
               + roll.slice(0, 15).map(r =>
-                  '\u2022 ' + r.name + ' — ' + r.wars.map(x =>
-                      x.opp + (x.start ? ' ' + new Date(x.start * 1000).toISOString().slice(5, 10) : '')
-                      + (x.ods > 1 ? ' (x' + x.ods + ')' : '')).join(', ')
+                  '\u2022 ' + r.name + ' — ' + r.wars.map(x => sweepOdMatchup(x)).join(', ')
                   + (r.excused >= 0.05 ? ' [' + r.excused.toFixed(1) + ' Xanax excused]' : '')).join('\n')
               + (roll.length > 15 ? '\n\u2026 +' + (roll.length - 15) + ' more' : '') + '\n'
             : '';
@@ -3967,7 +4101,7 @@
                 repeat: !!r.repeat,
                 odEvidence: !state.sweepOd?.[r.id] ? 'unchecked' : state.sweepOd[r.id].unknown ? 'unknown' : 'resolved',
                 odWars: (r.odWars || []).map(x => ({
-                    opp: x.opp, ods: x.ods,
+                    opp: x.opp, ods: x.ods, comparison: sweepOdComparison(x),
                     date: x.start ? new Date(x.start * 1000).toISOString().slice(0, 10) : '',
                 })),
                 per: Object.fromEntries(Object.entries(r.per).map(([k, p]) => [k, {
@@ -4119,10 +4253,10 @@
             '  waste:"members who wasted more than "+fmt(th)+" Xanax"+(b==="avg"?" per war":" in total"),',
             '  flagged:"members who took Xanax and landed nothing in a war",',
             '  repeat:"repeat offenders — two or more such wars",',
-            '  od:"members with a confirmed overdose"}[m];',
+            '  od:"members with an OD count increase"}[m];',
             ' return "Showing <b>"+fmt(n)+"</b> of "+fmt(t)+" — "+w',
             '  +($("f-took").checked&&m!=="took"?", and only those who took Xanax":"")',
-            '  +($("f-od").checked?", excluding confirmed overdoses":"")+"."}',
+            '  +($("f-od").checked?", excluding OD count increases":"")+"."}',
             // Cells report Xanax SWALLOWED. A withdrawal is stock movement —
             // the quartermaster hands it out — so it is shown as "+N" and never
             // charged as waste.
@@ -4132,8 +4266,8 @@
             '  +\' into their own inventory — not counted as waste">+\'+fmt(p.t)+\'</span>\':"";',
             ' if(!p.k)return \'<td class="none" title="War hit data unavailable">\'+fmt(p.u)',
             '  +\' <span class="sep">/ ?</span>\'+plus+\'</td>\';',
-            ' if(p.od)return \'<td class="excused" title="Overdosed during \'+esc(w.opp)',
-            '  +\' — these Xanax are excused, not wasted">\'+fmt(p.u)+\'<span class="sep">/</span>\'',
+            ' if(p.od)return \'<td class="excused" title="Positive OD comparison for \'+esc(w.opp)',
+            '  +\'. Timing unconfirmed; waste is excused by the sweep rule">\'+fmt(p.u)+\'<span class="sep">/</span>\'',
             '  +fmt(p.h)+\'<span class="od">OD</span>\'+plus+\'</td>\';',
             ' var waste=Math.max(0,p.u*D.energyPerXanax-p.h*D.energyPerHit)/D.energyPerXanax;',
             ' return \'<td class="\'+(p.f?"flag":"")+\'" title="\'+fmt(p.u)+\' swallowed, \'+fmt(p.h)+\' hits\'',
@@ -4144,10 +4278,10 @@
             'function odCell(r){',
             ' if(r.odEvidence==="unchecked")return \'<td class="none" title="Overdoses were not checked — this is not the same as clean">\\u00b7</td>\';',
             ' if(!r.odWars.length&&r.odEvidence==="unknown")return \'<td title="No usable reading" style="color:#ffd479">?</td>\';',
-            ' if(!r.odWars.length)return \'<td style="color:#7fe3a0" title="No overdose found in the targeted checks performed">none found</td>\';',
+            ' if(!r.odWars.length)return \'<td style="color:#7fe3a0" title="No increase in the targeted comparisons">no increase</td>\';',
             ' var w=r.odWars.map(function(x){return x.opp+(x.date?" "+x.date.slice(5):"")',
-            '  +(x.ods>1?" \\u00d7"+x.ods:"")}).join(", ");',
-            ' return \'<td style="color:#ff8080;font-weight:700" title="Overdosed during \'+esc(w)+\'">\'+esc(w)+\'</td>\'}',
+            '  +" ("+x.comparison+")"}).join(", ");',
+            ' return \'<td style="color:#ff8080;font-weight:700" title="Positive OD comparison for \'+esc(w)+\'">\'+esc(w)+\'</td>\'}',
             'function render(){',
             ' var rows=visible().slice();',
             ' rows.sort(function(a,b){var x=a[sortKey],y=b[sortKey];',
@@ -4170,7 +4304,7 @@
             '  +\'<td><span class="nm">\'+esc(r.name)+\'</span> <span class="id">[\'+esc(r.id||"?")+\']</span></td>\'',
             '  +\'<td\'+title+\' style="color:\'+(r.flagged?(r.repeat?"#ff7a7a":"#ffb37a"):incomplete?"#8b90a6":"#7fe3a0")+\'">\'',
             '   +(!r.warsKnown?"?":r.flagged?r.flagged+" of "+r.warsSeen+marker:marker?"0*":"\\u2014")',
-            '   +(r.excusedWars?\' <span style="color:#9fc7ff;font-size:10px">+\'+r.excusedWars+" OD</span>":"")+"</td>"',
+            '   +(r.excusedWars?\' <span style="color:#9fc7ff;font-size:10px">+\'+r.excusedWars+" flagged wars excused</span>":"")+"</td>"',
             '  +\'<td\'+title+\' style="color:\'+(marker&&r.wasted<0.05?"#8b90a6":wasteCol(r.wasted))+\';font-weight:700">\'',
             '   +(r.wasted==null?"?":r.wasted<0.05?(marker?"0*":"\\u2014"):r.wasted.toFixed(1)+marker)+"</td>"',
             '  +\'<td style="color:\'+(r.excused>=0.05?"#9fc7ff":"#4e5468")+\'">\'',
@@ -4228,17 +4362,12 @@
         const roll = sweepOdRollCall(s);
         const odSection = roll.length
             ? '<h2>Overdoses</h2><div class="wrap"><table><thead><tr><th>Member</th>'
-              + '<th>Overdosed during</th><th>Xanax excused</th></tr></thead><tbody>'
+              + '<th>Associated matchups and readings</th><th>Xanax excused by sweep rule</th></tr></thead><tbody>'
               + roll.map(r => '<tr><td><span class="nm">' + e(r.name) + '</span> <span class="id">['
-                  + e(r.id) + ']</span></td><td>' + e(r.wars.map(x => x.opp + (x.start
-                      ? ' ' + new Date(x.start * 1000).toISOString().slice(0, 10) : '')
-                      + (x.ods > 1 ? ' (×' + x.ods + ')' : '')).join(', '))
+                  + e(r.id) + ']</span></td><td>' + e(r.wars.map(x => sweepOdMatchup(x, true)).join(', '))
                   + '</td><td style="color:#9fc7ff">' + (r.excused >= 0.05 ? r.excused.toFixed(1) : '—')
                   + '</td></tr>').join('') + '</tbody></table></div>'
-              + '<div class="note">An overdose hospitalises you for hours and ends your war. The Xanax '
-              + 'swallowed beforehand was not squandered — the member was prevented from spending that '
-              + 'energy — so it is excused rather than wasted. Torn records overdoses daily, so the war '
-              + 'is the finest resolution available; a precise time would be invented. ' + e(sweepOdCoverage()) + '</div>'
+              + '<div class="note">' + e(sweepOdCoverage()) + '</div>'
             : '<h2>Overdoses</h2><div class="note">' + e(sweepOdCoverage()) + '</div>';
 
         const warHeads = wars.map((w, i) =>
@@ -4257,7 +4386,7 @@
 + kpi('Xanax swallowed', fmt(s.totalUsed), 'from the faction armoury', '#ffd479')
 + kpi(hits.complete ? 'Wasted' : 'Measured waste', waste.rounded,
      hits.complete ? fmt(Math.round(s.totalWasted * ENERGY_PER_XANAX)) + ' energy that bought no hits' : hits.coverage, waste.color)
-+ kpi('Excused', (s.totalExcused || 0).toFixed(0), 'overdosed — not counted as waste',
++ kpi('Excused', (s.totalExcused || 0).toFixed(0), 'OD comparison rule; timing unconfirmed',
      (s.totalExcused || 0) > 0 ? '#9fc7ff' : '#8b90a6')
 + kpi(hits.complete ? 'War hits' : 'Confirmed war hits', hits.value,
      hits.complete ? 'from official war reports' : hits.coverage, '#7fe3a0')
@@ -4284,7 +4413,7 @@
 + '<option value="waste">Wasted more than</option>'
 + '<option value="flagged">Took Xanax, landed nothing (any war)</option>'
 + '<option value="repeat">Repeat offenders (2+ wars)</option>'
-+ '<option value="od">Overdosed during a war</option>'
++ '<option value="od">OD count increased</option>'
 + '</select></div>'
 + '<div class="f"><label>Threshold</label><input type="number" id="f-thresh" min="0" step="1" style="width:92px"></div>'
 + '<div class="f"><label>Measured as</label><select id="f-basis">'
@@ -4293,7 +4422,7 @@
 + '<div class="f"><label>Search</label><input type="text" id="f-q" placeholder="name or ID" style="width:150px"></div>'
 + '<div class="f"><label>Narrow</label>'
 + '<label class="chk"><input type="checkbox" id="f-took"> Only those who took Xanax</label>'
-+ '<label class="chk"><input type="checkbox" id="f-od"> Hide confirmed overdoses</label></div>'
++ '<label class="chk"><input type="checkbox" id="f-od"> Hide OD count increases</label></div>'
 + '<div class="count" id="count"></div>'
 + '</div>'
 + '<div class="wrap"><table id="mtable"><thead><tr>'
@@ -4316,7 +4445,7 @@
 + 'inventory — the quartermaster does this to supply the faction, so it is shown but <b>never charged '
 + 'as waste</b>.'
 + '<br><b>Red cells</b> are wars where a member swallowed Xanax and landed nothing. '
-+ '<b>Blue cells</b> are wars they overdosed in — excused, not wasted.<br>'
++ '<b>Blue cells</b> mark positive OD comparisons excluded by the sweep rule, not confirmed in-war events.<br>'
 + 'This counts <b>faction</b> Xanax only; personal stock is invisible to the API.</div>'
 + '<details><summary>How this report was produced</summary><ul>'
 + sweepSettingsLines().map(l => '<li>' + e(l) + '</li>').join('') + '</ul></details>'
@@ -4355,7 +4484,9 @@
         // one is a file, and the button says so rather than silently pasting
         // 20KB of markup into a chat box.
         if (kind === 'html') { setStatus('HTML is a file — use ⬇ Download for that one.', true); return; }
-        copy(out.text, `Copied ${fmt(out.rows)} member rows` + (out.messages > 1 ? ` (${out.messages} messages).` : '.'));
+        const sweep = state.sweep, revision = sweepCopyRevision;
+        copy(out.text, `Copied ${fmt(out.rows)} member rows` + (out.messages > 1 ? ` (${out.messages} messages).` : '.'),
+            () => revision === sweepCopyRevision && state.sweep === sweep);
     }
 
     function onSweepDownload() {
@@ -4390,7 +4521,7 @@
 
     async function onDrugOD() {
         const { war, report, key, current: reportCurrent } = drugRunContext();
-        if (!key) { setStatus('Enter your API key first.', true); return; }
+        if (!requireAcceptedWarKey(key)) return;
         if (!war || !report || !reportCurrent()) { setStatus('Pull the selected war report first.', true); return; }
         const drugs = state.drugs;
         if (!canUseDrugResults() || drugOdInFlight === drugs) return;
@@ -4421,10 +4552,11 @@
             const failed = vals.filter(o => o.mode === 'error').length;
             const uncertain = comparison.length + lifetimeOnly + failed;
             const msg = [];
-            if (changes) msg.push(`${changes} member(s) showed an overdose increase across the war window.`);
+            if (changes) msg.push(`${changes} member(s) showed an overdose increase between daily readings.`);
             if (clear) msg.push(uncertain || changes
                 ? `${clear} checked without an overdose increase.`
                 : `No overdoses found among the ${clear} checked member(s).`);
+            if (vals.some(o => o.mode === 'delta' && o.lifetime !== 0)) msg.push(OD_DAILY_NOTE);
             if (comparison.length) msg.push(`${comparison.length} member(s) compared with an earlier reading (${comparisonChanges} with an increase), not a war-window check.`);
             if (lifetimeOnly) msg.push(`${lifetimeOnly} member(s) had a lifetime total only. That does not date an overdose to this war.`);
             if (failed) msg.push(`${failed} member lookup${failed === 1 ? '' : 's'} failed. No new baseline count for those members.`);
@@ -4454,7 +4586,7 @@
         ['XanaxDeposited', r => r.xanDeposited],
         ['XanaxTotalOut',  r => r.drawn],
         ['OtherDrugs', r => r.otherDrugs],
-        ['Overdose', r => { const o = state.odResults && state.odResults[r.id]; if (!o) return ''; if (o.mode === 'delta') return o.ods > 0 ? 'OD x' + o.ods : 'none'; if (o.mode === 'baseline') return o.ods > 0 ? 'OD x' + o.ods + ' (wider window)' : 'none (wider window)'; if (o.mode === 'lifetime') return 'unknown (' + o.lifetime + ' lifetime)'; return 'check failed'; }],
+        ['Overdose', r => { const o = state.odResults && state.odResults[r.id]; if (!o) return ''; if (o.mode === 'delta') return o.lifetime === 0 ? 'none' : odDailyLabel(o); if (o.mode === 'baseline') return o.ods > 0 ? 'OD x' + o.ods + ' (wider window)' : 'none (wider window)'; if (o.mode === 'lifetime') return 'unknown (' + o.lifetime + ' lifetime)'; return 'check failed'; }],
         ['TotalItems', r => r.total],
         ['Hits',      r => r.hits],
         ['HitsPerXanax', r => r.hitsPerXan == null ? '' : r.hitsPerXan.toFixed(2)],
@@ -4514,7 +4646,7 @@
             csvCell(`Showing: ${rows.length} of ${(d.list || []).length} — ${modeLabel}`),
             csvCell(`Columns: ${shown ? 'exactly as displayed on screen' : 'full raw data'}`),
             csvCell(state.odResults
-                ? 'Overdose check: run. A blank OD cell means unchecked, never clean.'
+                ? 'Overdose check: run. A blank OD cell means unchecked, never clean. ' + (Object.values(state.odResults).some(o => o?.mode === 'delta' && o.lifetime !== 0) ? OD_DAILY_NOTE : '')
                 : 'Overdose check: NOT run — the OD column is empty because nobody was checked.'),
             csvCell('Armoury only — personal Xanax is invisible to the API, so 0 means "took none of yours".'),
             '',
@@ -4544,7 +4676,7 @@
             if (r.stocker) bits.push('stocker');
             const od = state.odResults && state.odResults[r.id];
             if (od) {
-                if (od.mode === 'delta') bits.push(od.ods > 0 ? `OD x${od.ods}` : 'no OD');
+                if (od.mode === 'delta') bits.push(odDailyLabel(od));
                 else if (od.mode === 'baseline') bits.push(od.ods > 0 ? `OD x${od.ods}?` : 'no OD*');
                 else if (od.mode === 'lifetime') bits.push('OD unknown');
                 else bits.push('OD check failed');
@@ -4572,7 +4704,9 @@
             `${fmt(d.totalDrawn || d.totalXan)} Xanax out of the armoury ` +
             `(${fmt(d.totalXanPre || 0)} in the build-up, ${fmt(d.totalXanWar || 0)} during the war) · ` +
             `${fmt(d.totalHits)} war hits · ${d.hitsPerXan == null ? '—' : d.hitsPerXan.toFixed(2)} hits per Xanax` +
-            (flagged ? `\n:warning: ${fmt(flagged)} member${flagged === 1 ? '' : 's'} took stock and landed nothing.` : '');
+            (flagged ? '\n:warning: ' + fmt(flagged) + ' member' + (flagged === 1 ? '' : 's') + ' took stock and landed nothing.' : '') +
+            (state.odResults && rows.some(r => { const o = state.odResults[r.id]; return o?.mode === 'delta' && o.lifetime !== 0; })
+                ? '\n' + OD_DAILY_NOTE : '');
 
         // Discord hard-caps a message at 2000 characters. Rather than silently
         // producing something that won't send, split on ROW boundaries so every
@@ -4599,17 +4733,20 @@
 
     function onDrugCopy() {
         if (!canUseDrugResults()) return;
+        const current = singleWarCopyOwner();
+        const { drugs, odResults } = state;
+        const ownsExport = () => current() && state.drugs === drugs && state.odResults === odResults;
         if (drugExportFormat() === 'discord') {
             const out = buildDrugDiscord();
             if (!out) { setStatus('Nothing to copy in this filter.', true); return; }
             copy(out.text, out.messages > 1
                 ? `Copied ${fmt(out.rows)} rows as ${out.messages} messages — paste them one at a time (Discord caps a message at 2000 characters).`
-                : `Copied ${fmt(out.rows)} rows — paste straight into Discord.`);
+                : `Copied ${fmt(out.rows)} rows — paste straight into Discord.`, ownsExport);
             return;
         }
         const out = buildDrugCsv();
         if (!out) { setStatus('Nothing to copy in this filter.', true); return; }
-        copy(out.text, `Copied ${fmt(out.rows)} rows (${out.shown ? 'as shown' : 'full data'}).`);
+        copy(out.text, `Copied ${fmt(out.rows)} rows (${out.shown ? 'as shown' : 'full data'}).`, ownsExport);
     }
 
     function onDrugCsvDownload() {
@@ -4685,14 +4822,13 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
  ${d.freeloaders.map(r => {
      const o = state.odResults && state.odResults[r.id];
      const tag = !o ? ''
-       : (o.mode === 'delta' && o.ods > 0) ? ' — 💊 OVERDOSED ×' + o.ods
+       : o.mode === 'delta' ? ' - ' + odDailyLabel(o)
        : (o.mode === 'baseline' && o.ods > 0) ? ' — 💊 OD ×' + o.ods + '?'
-       : (o.mode === 'delta' || o.mode === 'baseline') ? ' — no OD'
+       : o.mode === 'baseline' ? ' - no increase (wider window)'
        : ' — OD unknown';
      return esc(r.name) + ' (' + fmt(r.drawn) + ')' + tag;
    }).join(', ')}.
- ${state.odResults ? 'Members marked OVERDOSED were hospitalised — that is the explanation, not slacking.' :
-   'Check for hospital time, travel, or chain use before drawing conclusions.'}</div>` : ''}
+ ${state.odResults && Object.values(state.odResults).some(o => o.mode === 'delta' && o.lifetime !== 0) ? esc(OD_DAILY_NOTE) + ' ' : ''}Check for hospital time, travel, or chain use before drawing conclusions.</div>` : ''}
 <table><thead><tr><th>Member</th><th>Pre-war</th><th>In war</th><th>Used</th><th>Withdrew</th><th>Total out</th><th>Other drugs</th><th>Hits</th><th>Hits/Xan</th><th>Respect</th><th>OD</th><th>Flag</th></tr></thead>
 <tbody>${rows.map(r => `<tr>
  <td>${esc(r.name)} <span class="dim">[${esc(r.id)}]</span></td>
@@ -4707,7 +4843,7 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
  <td class="dim">${fmt(Number(r.respect || 0).toFixed(2))}</td>
  <td>${(() => { const o = state.odResults && state.odResults[r.id];
    if (!o) return '<span class="dim">–</span>';
-   if (o.mode === 'delta') return o.ods > 0 ? `<span class="xan">💊 OD ×${o.ods}</span>` : '<span class="win">no OD</span>';
+   if (o.mode === 'delta') return '<span class="' + (o.ods > 0 ? 'xan' : 'win') + '">' + esc(odDailyLabel(o)) + '</span>';
    if (o.mode === 'baseline') return o.ods > 0 ? `<span class="xan">💊 OD ×${o.ods}?</span>` : '<span class="win">no OD*</span>';
    if (o.mode === 'lifetime') return `<span class="dim">? (${fmt(o.lifetime)} ever)</span>`;
    return '<span class="flag">could not check</span>'; })()}</td>
@@ -4783,6 +4919,23 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
         return out;
     }
 
+    // Use the canonical decimal value of an accepted numeric input. This does not
+    // recalculate report aggregates such as Respect from the original attacks.
+    function raffleDecimal(value) {
+        const [mantissa, exponent = '0'] = String(value).split('e');
+        const point = mantissa.indexOf('.');
+        const places = (point < 0 ? 0 : mantissa.length - point - 1) - Number(exponent);
+        return [BigInt(mantissa.replace('.', '')), places];
+    }
+
+    function raffleTicketCap() {
+        const input = $('#twpr-raffle-cap');
+        // A cleared field still means no cap; a bad numeric edit does not.
+        if (input?.validity.badInput) return null;
+        const cap = Number(input?.value || 0);
+        return Number.isInteger(cap) && cap >= 0 ? cap : null;
+    }
+
     /**
      * Tickets per member under the current weights.
      *
@@ -4790,27 +4943,42 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
      * a fractional ticket is not a thing anyone can hold, and rounding up would
      * hand an entry to somebody who did nothing.
      */
-    function raffleEntrants() {
+    function raffleEntrants(cap) {
         if (!state.report) return [];
         const w = raffleWeights();
-        const cap = Math.max(0, Number(($('#twpr-raffle-cap') || {}).value) || 0);
         const min = Math.max(0, Number(($('#twpr-raffle-min') || {}).value) || 0);
-        const active = RAFFLE_SOURCES.filter(sc => w[sc.key] > 0);
+        const active = RAFFLE_SOURCES.filter(sc => w[sc.key] > 0)
+            .map(sc => ({ sc, decimal: raffleDecimal(w[sc.key]) }));
 
         return state.report.list.map(row => {
             const parts = [];
             let raw = 0;
-            for (const sc of active) {
+            let units = 0n, places = 0;
+            for (const { sc, decimal: [weightUnits, weightPlaces] } of active) {
                 const n = Number(sc.get(row)) || 0;
                 if (n <= 0) continue;
                 const t = n * w[sc.key];
                 raw += t;
+                // Track exact terms only while the legacy sum is finite.
+                if (Number.isFinite(raw)) {
+                    const [sourceUnits, sourcePlaces] = raffleDecimal(n);
+                    const termPlaces = sourcePlaces + weightPlaces;
+                    if (termPlaces > places) {
+                        units *= 10n ** BigInt(termPlaces - places);
+                        places = termPlaces;
+                    }
+                    units += sourceUnits * weightUnits * 10n ** BigInt(places - termPlaces);
+                }
                 parts.push(`${fmt(n)} ${sc.label.toLowerCase()} x${w[sc.key]} = ${Math.round(t * 10) / 10}`);
             }
-            let tickets = Math.floor(raw);
+            const whole = units / (10n ** BigInt(places));
+            // Preserve the former numeric path outside the safe integer range.
+            const rawTickets = Number.isFinite(raw) && whole <= BigInt(Number.MAX_SAFE_INTEGER)
+                ? Number(whole) : Math.floor(raw);
+            let tickets = rawTickets;
             const capped = cap > 0 && tickets > cap;
             if (capped) tickets = cap;
-            return { name: row.name, id: row.id, tickets, raw, capped, parts };
+            return { name: row.name, id: row.id, tickets, rawTickets, capped, parts };
         })
         .filter(e => e.tickets >= Math.max(1, min))
         .sort((a, b) => b.tickets - a.tickets);
@@ -4846,18 +5014,100 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
         renderRaffle();
     }
 
+    function raffleReportProblem() {
+        if (!state.report || !reportSelectionCurrent()) return 'no-report';
+        return state.report.__partial ? 'partial' : null;
+    }
+
+    function raffleWinnerCount() {
+        const input = $('#twpr-raffle-n');
+        if (input?.validity.badInput) return null;
+        const count = Number(input?.value || 1);
+        return Number.isInteger(count) && count >= 1 ? count : null;
+    }
+
+    let raffleUnsafePool = false;  // renderer-owned; handlers validate their current input again
+    function syncRaffleDrawCount(blocked = !!raffleReportProblem() || raffleTicketCap() === null || raffleUnsafePool) {
+        const invalid = raffleWinnerCount() === null;
+        $('#twpr-raffle-n')?.setAttribute('aria-invalid', String(invalid));
+        const hint = $('#twpr-raffle-n-hint'), draw = $('#twpr-raffle-draw');
+        if (hint) hint.hidden = blocked || !invalid;
+        if (draw) draw.disabled = blocked || invalid || !!state.raffleDraw;
+    }
+
+    // Local browser work budget for the expanded, one-entry-per-ticket clipboard export.
+    const RAFFLE_WHEEL_COPY_LIMIT = 10000;
+    const wheelCopyLimitMessage = () => 'Wheel copy is limited to ' + fmt(RAFFLE_WHEEL_COPY_LIMIT) + ' tickets. Reduce the ticket count to copy.';
+    function boundedWheelTicketCount(entrants) {
+        let total = 0;
+        for (const { tickets } of entrants) {
+            if (!Number.isSafeInteger(tickets) || tickets < 1 || tickets > RAFFLE_WHEEL_COPY_LIMIT - total) return null;
+            total += tickets;
+        }
+        return total;
+    }
+
+    const raffleUnsafePoolMessage = 'Ticket counts are too large to calculate reliable odds. Lower the weights or set a smaller ticket cap.';
+    function rafflePoolTotal(entrants) {
+        let total = 0;
+        for (const { tickets } of entrants) {
+            if (!Number.isSafeInteger(tickets) || tickets < 1 || tickets > Number.MAX_SAFE_INTEGER - total) return null;
+            total += tickets;
+        }
+        return total;
+    }
+
     function renderRaffle() {
         buildRaffleWeights();
         const sum = $('#twpr-raffle-sum');
         if (!sum) return;
-        if (!state.report) {
+        const problem = raffleReportProblem();
+        const cap = raffleTicketCap();
+        $('#twpr-raffle-cap')?.setAttribute('aria-invalid', String(cap === null));
+        const reportOrCapBlocked = !!problem || cap === null;
+        const entrants = reportOrCapBlocked ? [] : raffleEntrants(cap);
+        const total = rafflePoolTotal(entrants);
+        raffleUnsafePool = total === null;
+        const blocked = reportOrCapBlocked || raffleUnsafePool;
+        const wheelHint = $('#twpr-raffle-wheel-hint');
+        if (wheelHint) wheelHint.hidden = true;
+        syncRaffleDrawCount(blocked);
+        for (const id of ['wheel', 'csv']) {
+            const button = $('#twpr-raffle-' + id);
+            if (button) button.disabled = blocked;
+        }
+        if (problem === 'partial') {
+            sum.textContent = 'Raffle unavailable';
+            const ob = $('#twpr-raffle-oddsbody');
+            if (ob) ob.textContent = 'Incomplete attack scan. Pull the selected war report again.';
+            return;
+        }
+        if (problem) {
             sum.textContent = 'Pull a war report first';
             const ob = $('#twpr-raffle-oddsbody');
             if (ob) ob.innerHTML = '<div style="color:#8b90a6;padding:6px 2px;">The raffle draws from a war\'s per-member numbers, so it needs a report.</div>';
             return;
         }
-        const entrants = raffleEntrants();
-        const total = entrants.reduce((s, e) => s + e.tickets, 0);
+        if (cap === null) {
+            sum.textContent = 'Check the ticket cap';
+            const ob = $('#twpr-raffle-oddsbody');
+            if (ob) ob.innerHTML = '<div role="status">Enter a whole number for the ticket cap (0 means no cap).</div>';
+            return;
+        }
+        if (raffleUnsafePool) {
+            sum.textContent = 'Ticket counts too large';
+            const ob = $('#twpr-raffle-oddsbody');
+            if (ob) ob.innerHTML = '<div role="status">' + raffleUnsafePoolMessage + '</div>';
+            return;
+        }
+        if (boundedWheelTicketCount(entrants) === null) {
+            const wheel = $('#twpr-raffle-wheel');
+            if (wheel) wheel.disabled = true;
+            if (wheelHint) {
+                wheelHint.textContent = wheelCopyLimitMessage();
+                wheelHint.hidden = false;
+            }
+        }
         const active = RAFFLE_SOURCES.filter(sc => raffleWeights()[sc.key] > 0);
         sum.innerHTML = active.length
             ? `<b>${fmt(entrants.length)}</b> members · <b>${fmt(total)}</b> tickets`
@@ -4873,27 +5123,32 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
         }
         const top = entrants[0].tickets;
         odds.innerHTML = `<table class="twpr-oddstable">${entrants.map(e => `<tr>
-            <td>${escHtml(e.name)} <span style="color:#6a7080;">[${e.id}]</span>${e.capped ? ' <span style="color:#ffd479;font-size:10px;" title="Capped — raw total was ' + Math.floor(e.raw) + '">capped</span>' : ''}</td>
+            <td>${escHtml(e.name)} <span style="color:#6a7080;">[${e.id}]</span>${e.capped ? ' <span style="color:#ffd479;font-size:10px;" title="Capped — raw total was ' + (Number.isSafeInteger(e.rawTickets) ? e.rawTickets : 'above the safe ticket range') + '">capped</span>' : ''}</td>
             <td style="width:34%;"><span class="twpr-oddsbar"><i style="width:${(e.tickets / top) * 100}%"></i></span></td>
             <td style="text-align:right;white-space:nowrap;" title="${escHtml(e.parts.join('  +  ') || 'no qualifying activity')}">
               <b>${fmt(e.tickets)}</b> <span style="color:#8b90a6;">${((e.tickets / total) * 100).toFixed(1)}%</span></td>
           </tr>`).join('')}</table>`;
     }
 
-    function showRaffleWinners(winners, total) {
+    function showRaffleWinners(winners) {
         const el = $('#twpr-raffle-winner');
         if (!el) return;
-        el.innerHTML = winners.map((w, i) => {
-            const odds = total ? ((w.tickets / total) * 100).toFixed(1) : '0';
-            return `<div class="twpr-winner">🏆 ${winners.length > 1 ? `#${i + 1} ` : ''}<b>${w.name}</b> [${w.id}] <span class="sub">${fmt(w.tickets)} tickets · ${odds}% odds</span></div>`;
+        el.innerHTML = winners.map(({ winner: w, poolTickets }, i) => {
+            const odds = poolTickets ? ((w.tickets / poolTickets) * 100).toFixed(1) : '0';
+            return `<div class="twpr-winner">🏆 ${winners.length > 1 ? `#${i + 1} ` : ''}<b>${escHtml(w.name)}</b> [${w.id}] <span class="sub">${fmt(w.tickets)} tickets · ${odds}% chance on this draw</span></div>`;
         }).join('');
     }
 
     function onRaffleDraw() {
-        const entrants = raffleEntrants();
+        const el = $('#twpr-raffle-winner'), btn = $('#twpr-raffle-draw');
+        if (!el || !btn || btn.disabled || state.raffleDraw) return;
+        const { war, report } = state;
+        const cap = raffleTicketCap(), requested = raffleWinnerCount();
+        if (raffleReportProblem() || cap === null || requested === null) return;
+        const entrants = raffleEntrants(cap);
         if (!entrants.length) { setStatus('Nobody holds a ticket under these weights.', true); return; }
-        const total = entrants.reduce((s, e) => s + e.tickets, 0);
-        const n = Math.max(1, Math.min(Number($('#twpr-raffle-n').value || 1), entrants.length));
+        if (rafflePoolTotal(entrants) === null) { setStatus(raffleUnsafePoolMessage, true); return; }
+        const n = Math.min(requested, entrants.length);
 
         // Pre-compute unique winners (weighted, without replacement).
         const pool = entrants.slice();
@@ -4901,42 +5156,60 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
         for (let i = 0; i < n; i++) {
             const w = pickWeighted(pool);
             if (!w) break;
-            winners.push(w);
+            winners.push({ winner: w, poolTickets: pool.reduce((s, e) => s + e.tickets, 0) });
             pool.splice(pool.indexOf(w), 1);
         }
 
         // Spin animation: cycle random names, decelerating, then reveal.
-        const el = $('#twpr-raffle-winner');
-        const btn = $('#twpr-raffle-draw');
-        if (btn) btn.disabled = true;
+        let timer = null;
+        const draw = {cancel: () => { if (timer !== null) clearTimeout(timer); }};
+        state.raffleDraw = draw;
+        btn.disabled = true;
         const start = Date.now();
         (function step() {
+            // Cleared/replaced reports and other draws do not belong to this callback.
+            if (state.raffleDraw !== draw) return;
+            const problem = raffleReportProblem();
+            if (state.war !== war || state.report !== report || problem) {
+                state.raffleDraw = null;
+                el.textContent = '';
+                syncRaffleDrawCount();
+                return;
+            }
             const rnd = entrants[Math.floor(cryptoFloat() * entrants.length)];
-            el.innerHTML = `<div class="twpr-spin">${rnd.name}</div>`;
+            el.innerHTML = `<div class="twpr-spin">${escHtml(rnd.name)}</div>`;
             const elapsed = Date.now() - start;
             if (elapsed < 2200) {
-                setTimeout(step, 50 + elapsed / 22);
+                timer = setTimeout(step, 50 + elapsed / 22);
             } else {
-                showRaffleWinners(winners, total);
-                if (btn) btn.disabled = false;
+                showRaffleWinners(winners);
+                state.raffleDraw = null;
+                syncRaffleDrawCount();
             }
         })();
     }
 
     // Each name repeated by its ticket count — paste into wheelofnames.com.
     function onCopyWheel() {
-        const entrants = raffleEntrants();
+        const cap = raffleTicketCap();
+        if (raffleReportProblem() || cap === null) return;
+        const entrants = raffleEntrants(cap);
         if (!entrants.length) { setStatus('No tickets to export.', true); return; }
+        if (rafflePoolTotal(entrants) === null) { setStatus(raffleUnsafePoolMessage, true); return; }
+        if (boundedWheelTicketCount(entrants) === null) { setStatus(wheelCopyLimitMessage(), true); return; }
         const lines = [];
         for (const e of entrants) for (let i = 0; i < e.tickets; i++) lines.push(e.name);
-        copy(lines.join('\n'), `Copied ${fmt(lines.length)} entries — paste into wheelofnames.com.`);
+        copy(lines.join('\n'), `Copied ${fmt(lines.length)} entries — paste into wheelofnames.com.`, singleWarCopyOwner());
     }
 
     /** The odds table as CSV — the receipt for a draw. */
     function onRaffleCsv() {
-        const entrants = raffleEntrants();
+        const cap = raffleTicketCap();
+        if (raffleReportProblem() || cap === null) return;
+        const entrants = raffleEntrants(cap);
         if (!entrants.length) { setStatus('No tickets to export.', true); return; }
-        const total = entrants.reduce((s, e) => s + e.tickets, 0);
+        const total = rafflePoolTotal(entrants);
+        if (total === null) { setStatus(raffleUnsafePoolMessage, true); return; }
         const w = raffleWeights();
         const used = RAFFLE_SOURCES.filter(sc => w[sc.key] > 0).map(sc => `${sc.label} x${w[sc.key]}`).join(' + ');
         const lines = [`"Tickets from: ${used.replace(/"/g, '""')}"`, 'Member,ID,Tickets,Odds%'];
@@ -4956,18 +5229,40 @@ ${d.freeloaders.length ? `<div class="warn"><b>${fmt(d.freeloaders.length)}</b> 
         } catch (e) { setStatus('Download blocked — use Copy instead.', true); }
     }
 
-    function copy(text, okMsg) {
-        const done = () => setStatus(okMsg);
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
-        } else { fallbackCopy(text, done); }
+    async function copy(text, okMsg, ownsExport) {
+        const attempt = ++copyAttempt, statusAtStart = statusRevision;
+        const current = () => attempt === copyAttempt && ownsExport();
+        let copied = false;
+        try {
+            const clipboard = navigator.clipboard;
+            if (typeof clipboard?.writeText === 'function') {
+                const pending = clipboard.writeText(text);
+                if (typeof pending?.then === 'function') {
+                    await pending;
+                    copied = true;
+                }
+            }
+        } catch (_) { /* Try the legacy copy when clipboard access fails. */ }
+        // A native write already handed to the browser cannot be cancelled;
+        // do not start a legacy write or publish feedback for an old export.
+        if (!current()) return;
+        if (!copied) copied = fallbackCopy(text);
+        if (!current() || statusAtStart !== statusRevision) return;
+        if (copied) setStatus(okMsg);
+        else setStatus('Copy failed. Check clipboard permissions and try again.', true);
     }
-    function fallbackCopy(text, done) {
+    function fallbackCopy(text) {
         const ta = document.createElement('textarea');
         ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.select();
-        try { document.execCommand('copy'); done(); } catch (e) { setStatus('Copy failed — select manually.', true); }
-        document.body.removeChild(ta);
+        try {
+            document.body.appendChild(ta);
+            ta.select();
+            return document.execCommand('copy') === true;
+        } catch (_) {
+            return false;
+        } finally {
+            ta.remove();
+        }
     }
 
     /* ----------------------- bootstrap ------------------------ */

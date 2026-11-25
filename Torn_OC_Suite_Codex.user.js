@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn OC Suite Codex
 // @namespace    torn_oc_suite_rebuild
-// @version      3.37.0-codex37
+// @version      3.37.0-codex57
 // @description  Full Organised Crime management for Torn faction leaders — fill slots by CPR, track loaned items and armory gaps, and see exactly who got paid what.
 // @author       iSatomi (3580191)
 // @license      GPL-3.0
@@ -3381,7 +3381,7 @@
     .oc2-tag.t-ok      { background: #14241a; color: var(--ocm-cpr-good); }
     .oc2-tag.t-armory  { background: #16202c; color: var(--ocm-link); }
     .oc2-tag.t-missing { background: #2a1618; color: var(--ocm-cpr-crit); }
-    .oc2-tag.t-open    { background: #22262e; color: var(--ocm-text-faint); }
+    .oc2-tag.t-open, .oc2-tag.t-unknown, .oc2-issue.i-unknown { background: #22262e; color: var(--ocm-text-faint); }
     .oc2-tag.t-ts      { background: #1e222a; }
     .oc2-tag.t-risk    { background: #2a2416; color: var(--ocm-cpr-warn); }
 
@@ -3955,6 +3955,26 @@
     .ocm-last5-facts { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; gap: 3px 6px; min-width: 0; }
     .ocm-last5-facts > span { min-width: 0; overflow-wrap: anywhere; }
     .ocm-last5-arrow { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); color: var(--ocm-text-faint); font-size: 10px; }
+    #ocm-oh-table-wrap .ocm-oh-run-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 8px;
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 44px;
+      margin: 0 0 3px;
+      padding: 5px 9px;
+      color: var(--ocm-text);
+      background: var(--ocm-bg-card);
+      border: 1px solid var(--ocm-border, #444);
+      border-radius: 3px;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    #ocm-oh-table-wrap .ocm-oh-run-header:focus-visible { outline: 2px solid var(--ocm-accent, #80b8ff); outline-offset: -2px; }
+    #ocm-oh-table-wrap .ocm-oh-run-detail[hidden] { display: none !important; }
     .ocm-last5-detail, .ocm-oh-run-detail {
       padding: 8px 10px;
       background: var(--ocm-bg);
@@ -6367,7 +6387,8 @@ function initOcMobileUi(root) {
       + `<span class="ocm-phase-collapse">▼</span>`;
 
     // --- Next OC banner
-    const nextOc = planningAll.length > 0 ? planningAll[0].oc : null;
+    const nextEntry = planningAll[0];
+    const nextOc = nextEntry?.oc ?? null;
     const bannerEl = document.getElementById('ocm-next-banner');
 
     if (nextOc) {
@@ -6377,7 +6398,7 @@ function initOcMobileUi(root) {
       const timeLeft   = nextOc.time_left ?? null;
       const openCount  = ocSlotList.filter(s => !s.user).length;
 
-      let timeDisplay;
+      let timeDisplay, timerUnknown = false;
       if (executesAt) {
         const tctStr  = new Date(executesAt * 1000).toLocaleTimeString('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: false });
         const tctDate = new Date(executesAt * 1000).toLocaleDateString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short' });
@@ -6388,8 +6409,11 @@ function initOcMobileUi(root) {
         timeDisplay = `~${fmtTime(timeLeft)}${openExtra} <span style="opacity:.6;font-size:11px">(paused)</span>`;
       } else if (openCount > 0) {
         timeDisplay = `~${fmtTime(openCount * 24 * 3600)} <span style="opacity:.6;font-size:11px">(${openCount} slot${openCount > 1 ? 's' : ''} × 24h est.)</span>`;
-      } else {
+      } else if (nextEntry.badgeLabel === 'READY') {
         timeDisplay = `<span style="color:var(--ocm-cpr-good);font-weight:bold">Ready to initiate!</span>`;
+      } else {
+        timeDisplay = 'Timer unknown';
+        timerUnknown = true;
       }
 
       // Banner issues are intentionally limited to hard blockers that stop the OC
@@ -6397,6 +6421,7 @@ function initOcMobileUi(root) {
       // abroad, or a member missing their required item. (Armory-wide shortages and
       // CPR-fit advice live on the Items and Optimize tabs so the banner stays terse.)
       const issues = [];
+      let itemAvailabilityUnknown = false;
       for (const slot of ocSlotList) {
         const uid      = slot.user?.id ? String(slot.user.id) : null;
         const info     = uid ? mInfo[uid] : null;
@@ -6408,29 +6433,37 @@ function initOcMobileUi(root) {
           issues.push({ sev: 'crit', msg: `${info.name} — ${info.status}` });
         }
         const req = slot.item_requirement;
-        if (req && uid && !req.is_available) {
+        if (req && uid && req.is_available === false) {
           issues.push({ sev: 'warn', msg: `${info?.name || uid} missing: ${itemName(req)}` });
+        } else if (req && uid && req.is_available !== true) {
+          itemAvailabilityUnknown = true;
         }
       }
 
       const hasCritIssue = issues.some(i => i.sev === 'crit');
       const hasWarnIssue = issues.some(i => i.sev === 'warn');
-      const bannerClass  = hasCritIssue ? 'banner-crit' : hasWarnIssue ? 'banner-warn' : 'banner-ok';
-      const bannerIcon   = hasCritIssue ? '🔴' : hasWarnIssue ? '⚠️' : '✅';
+      const bannerClass  = hasCritIssue ? 'banner-crit' : hasWarnIssue ? 'banner-warn' : itemAvailabilityUnknown ? '' : 'banner-ok';
+      const bannerIcon   = hasCritIssue ? '🔴' : hasWarnIssue ? '⚠️' : itemAvailabilityUnknown ? '' : '✅';
 
       const issuesHtml = issues.length > 0
         ? `<div class="ocm-banner-issues">${issues.map(i => `<span class="ocm-banner-issue">${i.sev === 'crit' ? '🔴' : '⚠️'} ${esc(i.msg)}</span>`).join('')}</div>`
-        : `<div style="font-size:11px;margin-top:3px;opacity:.7">No issues — ready to initiate on schedule.</div>`;
+        : itemAvailabilityUnknown ? '' : `<div style="font-size:11px;margin-top:3px;opacity:.7">${timerUnknown ? 'No blockers reported.' : 'No issues — ready to initiate on schedule.'}</div>`;
 
+      const availabilityHtml = itemAvailabilityUnknown
+        ? '<div class="ocm-banner-availability" style="color:var(--ocm-text-dim);font-size:11px;margin-top:3px">Required item availability unknown</div>' : '';
       bannerEl.className = bannerClass;
       bannerEl.style.display = 'block';
       bannerEl.innerHTML = `
         <div class="ocm-banner-title">${bannerIcon} Next OC: <strong>${esc(nextOc.name)}</strong> &nbsp;·&nbsp; ${timeDisplay}</div>
-        ${issuesHtml}`;
+        ${issuesHtml}${availabilityHtml}`;
 
       GM_setValue(GMK.SIDEBAR_CACHE, JSON.stringify({
         name:       nextOc.name,
         executesAt: executesAt ?? null,
+        timeLeft,
+        openCount,
+        explicitReady: nextEntry.badgeLabel === 'READY',
+        ...(itemAvailabilityUnknown ? { itemAvailabilityUnknown } : {}),
         severity:   hasCritIssue ? 'crit' : hasWarnIssue ? 'warn' : 'ok',
         issues:     issues.slice(0, 3),
         cachedAt:   now,
@@ -6677,11 +6710,12 @@ function initOcMobileUi(root) {
       const hasCrit  = knownRates.some(rate => rate < CPR_CRIT);
       const hasLow   = knownRates.some(rate => rate < CPR_WARN);
       const hasBlock = ocSlots.some(s => { const u = s.user?.id ? String(s.user.id) : null; return u && mInfo[u] && isBlocked(mInfo[u].status); });
-      const hasMissing = ocSlots.some(s => s.user?.id && s.item_requirement && !s.item_requirement.is_available);
+      const missing = ocSlots.filter(s => s.user?.id && s.item_requirement?.is_available === false);
+      const hasUnknownItem = ocSlots.some(s => s.user?.id && s.item_requirement && typeof s.item_requirement.is_available !== 'boolean');
       let status = badgeLabel.toLowerCase();           // ready | blocked | planning | recruiting
       if (hasCrit)       status = 'crit';
       else if (hasBlock) status = 'blocked';
-      else if (hasLow || hasMissing) status = 'warn';
+      else if (hasLow || missing.length) status = 'warn';
 
       const openCount   = ocSlots.filter(s => !s.user).length;
       const filledCount = ocSlots.length - openCount;
@@ -6713,10 +6747,12 @@ function initOcMobileUi(root) {
         timeVal = `<span class="ocm-time" data-until="${expiredAt}">${secs > 0 ? fmtTime(secs) : 'Expired'}</span>`;
         timeSub = 'until expiry';
         if (secs < 86400) timeCls = 'is-soon';
-      } else {
+      } else if (badgeLabel === 'READY') {
         timeVal = 'Ready';
         timeSub = 'no timer';
         timeCls = 'is-ready';
+      } else {
+        timeVal = 'Timer unknown';
       }
 
       // ── slots: filled first (by planning progress), open slots last
@@ -6753,10 +6789,11 @@ function initOcMobileUi(root) {
         const tags = [];
         const req = slot.item_requirement;
         if (req) {
-          const st = !uid ? 'open' : req.is_available ? 'ok' : (armory[String(req.id)] ? 'armory' : 'missing');
-          const cls  = { ok: 't-ok', armory: 't-armory', missing: 't-missing', open: 't-open' }[st];
-          const icon = { ok: '✓', armory: '🏛', missing: '✗', open: '?' }[st];
-          const tip  = { ok: 'Has the item', armory: 'In armory — needs loaning', missing: 'MISSING — not in armory', open: 'Needed once filled' }[st];
+          const st = !uid ? 'open' : req.is_available === true ? 'ok'
+            : req.is_available === false ? (armory[String(req.id)] ? 'armory' : 'missing') : 'unknown';
+          const cls  = { ok: 't-ok', armory: 't-armory', missing: 't-missing', open: 't-open', unknown: 't-unknown' }[st];
+          const icon = { ok: '✓', armory: '🏛', missing: '✗', open: '?', unknown: '?' }[st];
+          const tip  = { ok: 'Has the item', armory: 'In armory — needs loaning', missing: 'MISSING — not in armory', open: 'Needed once filled', unknown: 'Item availability unknown' }[st];
           const kind = (req.is_reusable ?? false) ? '🔧' : '📦';
           tags.push(`<a class="oc2-tag ${cls}" href="${marketUrlOf(req.id)}" target="_blank" title="${esc(itemName(req))} ${kind}\n${tip}\nClick to open item market">${icon}${kind}</a>`);
         }
@@ -6815,13 +6852,13 @@ function initOcMobileUi(root) {
         .map(s => (s.user?.id ? mInfo[String(s.user.id)] : null))
         .filter(m => m && isBlocked(m.status));
       for (const m of blockedNames) issues.push({ c: 'i-crit', t: `${m.name}: ${m.status}` });
-      const missing = ocSlots.filter(s => s.user?.id && s.item_requirement && !s.item_requirement.is_available);
       for (const s of missing) {
         const m = mInfo[String(s.user.id)];
         issues.push({ c: 'i-crit', t: `${m?.name || s.user.id} needs ${itemName(s.item_requirement)}` });
       }
       if (hasCrit) issues.push({ c: 'i-crit', t: `CPR below ${CPR_CRIT}%` });
       else if (hasLow) issues.push({ c: 'i-warn', t: `CPR below ${CPR_WARN}%` });
+      if (hasUnknownItem) issues.push({ c: 'i-unknown', t: 'Required item availability unknown' });
       if (issues.length === 0) issues.push({ c: 'i-ok', t: '✓ No blockers' });
       const footHtml = `<div class="oc2-foot">${issues.slice(0, 4).map(i => `<span class="oc2-issue ${i.c}">${esc(i.t)}</span>`).join('')}${issues.length > 4 ? `<span class="oc2-issue i-warn">+${issues.length - 4} more</span>` : ''}</div>`;
 
@@ -7435,7 +7472,8 @@ function initOcMobileUi(root) {
         if (s === 'successful') memberStats[uid].success++;
         else if (s === 'failure') memberStats[uid].failure++;
         const cpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
-        if (cpr != null) { memberStats[uid].cprSum += cpr; memberStats[uid].cprCount++; }
+        // Expired slots can report a placeholder zero, not a measured CPR.
+        if (cpr != null && !(s === 'expired' && cpr === 0)) { memberStats[uid].cprSum += cpr; memberStats[uid].cprCount++; }
       }
     }
 
@@ -7454,14 +7492,14 @@ function initOcMobileUi(root) {
 
     const overallRate = outcomeRate(successes.length, failures.length);
 
-    // --- Last 5 ended OCs: expiry is the end time only when the outcome is Expired.
-    function last5EndTime(oc) {
+    // In completed history, expiry is the end time only when the outcome is Expired.
+    function completedHistoryEndTime(oc) {
       const raw = normStatus(oc.status) === 'expired' ? oc.expired_at : oc.executed_at;
       const ts = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : 0;
       return Number.isSafeInteger(ts) && ts > 0 && ts <= 8640000000000 ? ts : 0;
     }
     const last5 = [...completed]
-      .sort((a, b) => last5EndTime(b) - last5EndTime(a))
+      .sort((a, b) => completedHistoryEndTime(b) - completedHistoryEndTime(a))
       .slice(0, 5);
 
     const last5Html = last5.map((oc, idx) => {
@@ -7479,7 +7517,7 @@ function initOcMobileUi(root) {
       const avgCpr   = knownCprs.length > 0
         ? (knownCprs.reduce((sum, cpr) => sum + cpr, 0) / knownCprs.length).toFixed(1)
         : null;
-      const endTime  = last5EndTime(oc);
+      const endTime  = completedHistoryEndTime(oc);
       const endDate  = endTime
         ? new Date(endTime * 1000).toLocaleDateString('en-GB', { timeZone:'UTC', day:'2-digit', month:'short', year:'2-digit' })
         : '–';
@@ -7694,7 +7732,7 @@ function initOcMobileUi(root) {
           weight,
           cpr:        slot.checkpoint_pass_rate ?? null,
           outcome:    s,
-          executedAt: oc.executed_at ?? null,
+          executedAt: completedHistoryEndTime(oc) || null,
           respect,
         });
       }
@@ -7996,7 +8034,7 @@ function initOcMobileUi(root) {
           const role = sl.position_info?.label || sl.position || '?';
           const w    = getWeight(oc.name || '', role);
           const cpr  = readCheckpointPassRate(sl.checkpoint_pass_rate);
-          return { name, uid, role, weight: w, cpr };
+          return { name, uid, role, weight: w, cpr: s === 'expired' && cpr === 0 ? null : cpr };
         });
       // Avg of reported CPR across occupied slots
       const cprs   = slotDetail.filter(s => s.cpr != null).map(s => s.cpr);
@@ -8103,16 +8141,16 @@ function initOcMobileUi(root) {
         }).join('');
 
         return `
-          <div class="ocm-oh-run-header" data-oh-idx="${idx}" style="border-left:3px solid ${r.outcome === 'successful' ? '#3a5030' : r.outcome === 'failure' ? '#4a2820' : '#444'}">
+          <button type="button" class="ocm-oh-run-header" aria-expanded="false" aria-controls="ocm-oh-detail-${idx}" style="border-left:3px solid ${r.outcome === 'successful' ? '#3a5030' : r.outcome === 'failure' ? '#4a2820' : '#444'}">
             <span class="${outCls}">${outIcon}</span>
             <span style="color:var(--ocm-text-muted);font-size:10px;flex:0 0 70px">${dateStr}</span>
             <span style="color:var(--ocm-text-muted);font-size:10px;flex:0 0 30px">D${r.difficulty}</span>
             <span class="${outCls}" style="flex:1">${outText}</span>
             <span style="color:var(--ocm-text-dim);font-size:10px">Avg CPR: <strong class="${avgCol}">${avgStr}</strong></span>
             <span style="color:${respCol};font-size:10px;flex:0 0 60px;text-align:right">${respStr !== '—' ? `${respStr} resp` : '—'}</span>
-            <span style="color:var(--ocm-text-faint);font-size:10px;margin-left:4px">▼</span>
-          </div>
-          <div class="ocm-oh-run-detail" id="ocm-oh-detail-${idx}">
+            <span class="ocm-oh-run-arrow" aria-hidden="true" style="color:var(--ocm-text-faint);font-size:10px;margin-left:4px">▼</span>
+          </button>
+          <div class="ocm-oh-run-detail" id="ocm-oh-detail-${idx}" hidden>
             <table>
               <thead><tr>
                 <th>Member</th><th>Role</th>
@@ -8129,13 +8167,13 @@ function initOcMobileUi(root) {
       // Wire expand/collapse per run row
       tableWrap.querySelectorAll('.ocm-oh-run-header').forEach(header => {
         header.addEventListener('click', () => {
-          const idx    = header.dataset.ohIdx;
-          const detail = document.getElementById(`ocm-oh-detail-${idx}`);
-          if (!detail) return;
-          const isOpen = detail.style.display === 'block';
-          detail.style.display = isOpen ? 'none' : 'block';
-          const arrow = header.querySelector('span:last-child');
-          if (arrow) arrow.textContent = isOpen ? '▼' : '▲';
+          const detail = header.nextElementSibling;
+          if (!detail || detail.id !== header.getAttribute('aria-controls')) return;
+          const expand = detail.hidden;
+          detail.hidden = !expand;
+          header.setAttribute('aria-expanded', String(expand));
+          const arrow = header.querySelector('.ocm-oh-run-arrow');
+          if (arrow) arrow.textContent = expand ? '▲' : '▼';
         });
       });
     }
@@ -8165,6 +8203,7 @@ function initOcMobileUi(root) {
     }
 
     ohSearch.addEventListener('input', () => {
+      if (!ohSearch.value.trim()) { clearOhSearch(); return; }
       updateOhDropdown(ohSearch.value);
       const exact = ohAllScenarios.find(s => s.display.toLowerCase() === ohSearch.value.toLowerCase());
       if (exact) { renderOcHistory(exact.key); GM_setValue(GMK.OH_LAST, exact.display); }
@@ -8178,14 +8217,15 @@ function initOcMobileUi(root) {
       if (ohSearch.value.trim()) updateOhDropdown(ohSearch.value);
     });
 
-    ohClear.addEventListener('click', () => {
+    function clearOhSearch() {
       ohSearch.value = '';
       GM_setValue(GMK.OH_LAST, '');
-      ohDropdown.classList.remove('visible');
+      updateOhDropdown('');
       document.getElementById('ocm-oh-summary').style.display = 'none';
       document.getElementById('ocm-oh-table-wrap').innerHTML =
         `<div id="ocm-oh-empty">Type an OC name above to view all runs of that scenario.</div>`;
-    });
+    }
+    ohClear.addEventListener('click', clearOhSearch);
 
     // Restore last-viewed scenario after re-render (same rationale as member history)
     const ohLast = GM_getValue(GMK.OH_LAST, '');
@@ -8309,11 +8349,12 @@ function initOcMobileUi(root) {
       if (targetId === 'ocm-chart-cpr') {
         const cprBuckets = { '0–60': 0, '60–70': 0, '70–80': 0, '80–90': 0, '90–100': 0 };
         for (const oc of completed) {
+          const expired = normStatus(oc.status) === 'expired';
           const ocSlots = Array.isArray(oc.slots) ? oc.slots : Object.values(oc.slots || []);
           for (const slot of ocSlots) {
             if (!slot.user?.id) continue;
             const cpr = readCheckpointPassRate(slot.checkpoint_pass_rate);
-            if (cpr === null) continue;
+            if (cpr === null || (expired && cpr === 0)) continue;
             if (cpr < 60)       cprBuckets['0–60']++;
             else if (cpr < 70)  cprBuckets['60–70']++;
             else if (cpr < 80)  cprBuckets['70–80']++;
@@ -8538,8 +8579,10 @@ function initOcMobileUi(root) {
           + ' <span style="color:var(--ocm-text-faint);font-size:10px">(' + openCount + ' open slot' + (openCount > 1 ? 's' : '') + ' x 24h)</span>';
       } else if (expiredAt && expiredAt > nowTs) {
         timerHtml = '\u23F3 Expires in <span class="ocm-time" data-until="' + expiredAt + '">' + fmtTime(expiredAt - nowTs) + '</span>';
-      } else {
+      } else if (phase === 'ready') {
         timerHtml = '<span style="color:var(--ocm-cpr-good);font-weight:bold">Ready to initiate!</span>';
+      } else {
+        timerHtml = 'Timer unknown';
       }
 
       // My slot stats
@@ -8870,6 +8913,8 @@ function initOcMobileUi(root) {
         if (!rec || typeof rec !== 'object') continue;
         const cpr = readCheckpointPassRate(rec.cpr);
         if (cpr === null) continue;
+        // An undated expired run can carry a placeholder zero, not a measurement.
+        if (cpr === 0 && rec.outcome === 'expired' && !rec.executedAt && rec.source !== 'ts') continue;
         const rOc   = String(rec.ocName || '').toLowerCase().trim().replace(/\s+v\d+$/i, '');
         const rRole = String(rec.role   || '').toLowerCase().trim().replace(/\s*#\d+$/, '');
         const ocMatch = rOc === normOc || rOc.includes(normOc) || normOc.includes(rOc);
@@ -8992,7 +9037,7 @@ function initOcMobileUi(root) {
    * Returns:
    *   items:   [{ id, name, isTool, held, needed, filledMissing, openNeed, shortfall, unitValue, coverCost }]
    *   loans:   [{ uid, name, itemId, itemName, ocName, ocId, role, difficulty, readyAt, inArmory }]  (filled slots missing the item)
-   *   summary: { distinctItems, totalNeeded, totalHeld, totalShortfall, coverCost, loanCount, armoryGaps }
+   *   summary: { distinctItems, totalNeeded, totalHeld, totalShortfall, coverCost, loanCount, armoryGaps, unknownFilledRequirements }
    *
    * Terms:
    *   held          = quantity in faction armory
@@ -9004,6 +9049,7 @@ function initOcMobileUi(root) {
   function analyseOcItems(crimes, armory = {}, itemNames = {}, itemValues = {}, memberNames = {}) {
     const items = {};   // id -> aggregate
     const loans = [];   // per filled-slot-missing-item
+    let unknownFilledRequirements = 0;  // display evidence, not demand
     const ensure = (id) => {
       if (!items[id]) items[id] = {
         id, name: itemNames[String(id)] || `Item #${id}`, isTool: false,
@@ -9044,6 +9090,8 @@ function initOcMobileUi(root) {
               readyAt: oc.ready_at ?? oc.execute_at ?? null,
               inArmory: (Number(armory[id]) || 0) > 0,
             });
+          } else if (req.is_available !== true) {
+            unknownFilledRequirements++;
           }
         } else {
           // Open slot — will need the item once someone joins
@@ -9073,6 +9121,7 @@ function initOcMobileUi(root) {
       totalShortfall: itemList.reduce((s, r) => s + r.shortfall, 0),
       coverCost:      itemList.reduce((s, r) => s + r.coverCost, 0),
       loanCount:      loans.length,
+      unknownFilledRequirements,
       armoryGaps:     itemList.filter(r => r.shortfall > 0).length,
     };
     return { items: itemList, loans, summary };
@@ -9200,7 +9249,7 @@ function initOcMobileUi(root) {
     // hash+reload: Torn resolves the initial sub-tab from a `type=` QUERY
     // param, not from `sub=` in the hash, so a reload launched from the Crimes
     // tab (no type= present) lands on the FIRST tab — the reported bug.
-    if (!document.getElementById('faction-armoury-tabs')) {
+    if (!location.hash.includes('tab=armoury')) {
       location.hash = '#/tab=armoury';
     }
     initLoanAutofill();
@@ -9407,7 +9456,7 @@ function initOcMobileUi(root) {
         needByUser.set(`${uid}|${String(req.id)}`, {
           oc: oc.name || `OC #${ocId}`,
           role: s.position_info?.label || s.position || '?',
-          has: req.is_available !== false,
+          has: typeof req.is_available === 'boolean' ? req.is_available : null,
         });
       }
     }
@@ -9480,7 +9529,7 @@ function initOcMobileUi(root) {
           if (theirs && theirs.length) {
             const t = theirs[0];
             tip = `${holderName} is holding ${itemName}, but their role in ${t.oc} (${t.role}) needs a different item`
-                + (t.has ? ' — which they already have.' : ' — which they still need!')
+                + (t.has === true ? ' — which they already have.' : t.has === false ? ' — which they still need!' : '; availability is unknown.')
                 + ' This one can be retrieved.';
           } else {
             tip = `${holderName} isn't in an active OC that needs ${itemName}. This can be retrieved.`;
@@ -9846,6 +9895,8 @@ function initOcMobileUi(root) {
     const MAX_PAGES = 8;
     const PAGE_SETTLE_MS = 1600;
     let pagesTried = 1;
+    let sawUnavailableLoan = false;
+    const unavailableLoanMessage = 'No enabled Loan option on this item. Check faction loaning permissions or handle it manually; Give and Use were not selected.';
     let pageDeadline = Date.now() + PAGE_SETTLE_MS;
     function tryAdvancePage() {
       if (pagesTried >= MAX_PAGES) return false;
@@ -9934,7 +9985,7 @@ function initOcMobileUi(root) {
           clearInterval(tick);
           ocmToast(retrieving
             ? `Couldn't find ${intent.itemName} on any of ${pagesTried} page${pagesTried > 1 ? 's' : ''} checked for ${intent.memberName}. It may have already been returned, or check manually.`
-            : `Couldn't find ${intent.itemName} in the armoury (checked ${pagesTried} page${pagesTried > 1 ? 's' : ''}).`, 'warn');
+            : sawUnavailableLoan ? unavailableLoanMessage : `Couldn't find ${intent.itemName} in the armoury (checked ${pagesTried} page${pagesTried > 1 ? 's' : ''}).`, 'warn');
         }
         return;
       }
@@ -9950,8 +10001,12 @@ function initOcMobileUi(root) {
         row = rows.find(r => holderOf(r) === String(intent.uid));
       } else {
         // A row with free stock (nobody holding it) that offers the Loan control.
-        row = rows.find(r => !holderOf(r) && r.querySelector('a[data-role="loan"]'))
-           || rows.find(r => !holderOf(r));
+        row = rows.find(r => {
+          const link = r.querySelector('a[data-role="loan"]');
+          return !holderOf(r) && link && link.offsetParent !== null &&
+            link.getAttribute('aria-disabled') !== 'true' && !link.classList.contains('disabled');
+        });
+        if (!row && rows.some(r => !holderOf(r))) sawUnavailableLoan = true;
       }
       if (!row) {
         // Rows for this item id ARE on this page, just not the specific
@@ -9963,7 +10018,7 @@ function initOcMobileUi(root) {
           clearInterval(tick);
           ocmToast(retrieving
             ? `${intent.memberName} no longer appears to be holding ${intent.itemName} (checked ${pagesTried} page${pagesTried > 1 ? 's' : ''}).`
-            : `No free ${intent.itemName} in the armory to loan (checked ${pagesTried} page${pagesTried > 1 ? 's' : ''}).`, 'warn');
+            : sawUnavailableLoan ? unavailableLoanMessage : `No free ${intent.itemName} in the armory to loan (checked ${pagesTried} page${pagesTried > 1 ? 's' : ''}).`, 'warn');
         }
         return;
       }
@@ -9989,8 +10044,8 @@ function initOcMobileUi(root) {
 
       // ── Give: open the loan form on THIS row and fill it in.
       const loanLink = row.querySelector('a[data-role="loan"]');
-      if (!loanLink || loanLink.getAttribute('aria-disabled') === 'true' || loanLink.classList.contains('disabled')) {
-        ocmToast('No enabled Loan option on this item. Check faction loaning permissions or handle it manually; Give and Use were not selected.', 'warn');
+      if (!loanLink || loanLink.offsetParent === null || loanLink.getAttribute('aria-disabled') === 'true' || loanLink.classList.contains('disabled')) {
+        ocmToast(unavailableLoanMessage, 'warn');
         return;
       }
       if (!row.classList.contains('item-loan-act') && loanLink) loanLink.click();
@@ -10527,6 +10582,7 @@ ${tables}
   // Shared OC + armoury inputs, stashed each render so the Armoury → OC Stock
   // view can call analyseOcItems() without re-fetching.
   let _armDataCache = null;
+  let _financeBackfill = false;
   const _financePages = { ocs: 0, paid: 0, unpaid: 0 };
   function financePage(rows, key) {
     const mobilePageSize = ocIsPhoneLayout() ? 10 : 50;
@@ -10747,6 +10803,7 @@ ${tables}
           m.reqItemId   = String(req.id);
           m.reqItemName = itemName(req.id);
           m.hasReq      = req.is_available !== false;
+          m.alternateAvailabilityUnknown = typeof req.is_available !== "boolean";
           neededPairs.add(`${uid}|${req.id}`);
         }
       }
@@ -10807,7 +10864,12 @@ ${tables}
     }))).sort((a, b) => b.value - a.value);
 
     // Hand the computed loan worklist + retrievables to the Armoury → Loans view.
-    if (_armDataCache) { _armDataCache.loans = loans; _armDataCache.returnable = returnable; }
+    if (_armDataCache) {
+      _armDataCache.loans = loans;
+      // Availability evidence belongs to the suite row only, not the native loan snapshot.
+      _armDataCache.returnable = returnable.map(row => memberRows[row.uid].alternateAvailabilityUnknown
+        ? { ...row, alternateAvailabilityUnknown: true } : row);
+    }
 
     // Also persist a small snapshot to GM storage so the list can show on Torn's
     // OWN native armory page even when it's opened directly, without the Crimes
@@ -11581,39 +11643,6 @@ ${tables}
       }
     }
 
-    // ── wire the backfill button
-    const bfBtn = document.getElementById('ocm-backfill-btn');
-    const bfStatus = document.getElementById('ocm-backfill-status');
-    if (bfBtn && !bfBtn.__wired) {
-      bfBtn.__wired = true;
-      bfBtn.addEventListener('click', async () => {
-        const key = hubEffectiveTornKey();
-        if (!key) { bfStatus.innerHTML = '<span style="color:var(--ocm-cpr-crit)">Set your API key in Config first.</span>'; return; }
-        bfBtn.disabled = true;
-        bfBtn.textContent = 'Working…';
-        try {
-          await backfillOcHistory(key, (p) => {
-            if (p.error) {
-              bfStatus.innerHTML = `<span style="color:var(--ocm-cpr-warn)">A window failed (${esc(p.error)}) — skipping it and continuing…</span>`;
-            } else if (p.done) {
-              const gapWarn = p.gaps?.length
-                ? `<br><span style="color:var(--ocm-cpr-warn)">⚠ ${p.gaps.length} time window${p.gaps.length === 1 ? '' : 's'} couldn't be fetched even after retries — some OCs in ${p.gaps.length === 1 ? 'that period' : 'those periods'} are missing. Run it again to fill them in.</span>`
-                : '';
-              bfStatus.innerHTML = `<span style="color:var(--ocm-cpr-good)">✓ Archived ${p.total} OCs (${p.added} new) in ${p.calls} calls. Refreshing…</span>${gapWarn}`;
-            } else {
-              bfStatus.innerHTML = `Fetching… ${p.total} OCs archived, back to ${p.oldest.toLocaleDateString()} (${p.calls} calls)`;
-            }
-          });
-          setTimeout(() => loadData(hubEffectiveTornKey()), 800);
-        } catch (e) {
-          bfStatus.innerHTML = `<span style="color:var(--ocm-cpr-crit)">Backfill failed: ${esc(e.message)}</span>`;
-        } finally {
-          bfBtn.disabled = false;
-          bfBtn.textContent = '↻ Update history';
-        }
-      });
-    }
-
     syncStaticCollapse();
     restoreDynamicCollapse();
 
@@ -11632,8 +11661,9 @@ ${tables}
       const wins  = finished.filter(r => isWin(r.status)).length;
       const rate  = finished.length ? (wins / finished.length) * 100 : null;
 
-      const meta = (() => { try { return JSON.parse(GM_getValue(GMK.OC_ARCHIVE_META, 'null')); } catch (_) { return null; } })();
-      const archiveTotal = meta?.total || 0;
+      const meta = (() => { try { return JSON.parse(OCBulkStore.getRaw(GMK.OC_ARCHIVE_META, 'null')); } catch (_) { return null; } })();
+      const archiveTotal = Object.keys(archived).length;
+      const gaps = Number.isSafeInteger(meta?.gaps) && meta.gaps > 0 ? meta.gaps : 0;
       const oldest = perOc.reduce((m, r) => (r.executedAt && (!m || r.executedAt < m)) ? r.executedAt : m, null);
 
       const rateTile = rate == null ? '' : kpiTile(
@@ -11645,7 +11675,7 @@ ${tables}
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
           ${kpiTile('OCs tracked', perOc.length, archiveTotal ? `${archiveTotal} archived + live` : 'live API window only', 'var(--ocm-text)')}
           ${rateTile}
-          ${kpiTile('History back to', oldest ? dateStr(oldest) : '—', archiveTotal ? 'from the archive' : 'API limit — backfill for more', 'var(--ocm-text-dim)')}
+          ${kpiTile('Oldest tracked OC', oldest ? dateStr(oldest) : '—', archiveTotal ? 'in this view' : 'API limit — backfill for more', 'var(--ocm-text-dim)')}
         </div>
         <div id="ocm-backfill-box" style="border:1px solid var(--ocm-border-soft);border-radius:6px;padding:10px 12px;margin-bottom:12px;background:var(--ocm-bg-card)">
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
@@ -11653,11 +11683,12 @@ ${tables}
               <b style="color:var(--ocm-text)">Full history backfill.</b>
               Torn's live call only returns the ~100 most recent OCs — everything older is invisible to the dashboard,
               so payouts, respect and success rate all silently begin at that cutoff.
-              This walks the crimes API backwards a month at a time and archives the lot, permanently.
-              It's paced to stay well under Torn's API limit, so a long history takes a couple of minutes — once, ever.
+              This checks older history a month at a time and stores the completed crimes it can fetch.
+              Older history can take a few minutes and may be incomplete.
             </div>
-            <button id="ocm-backfill-btn" class="ocm-join-btn" style="padding:6px 14px">${archiveTotal ? '↻ Update history' : '⏬ Backfill full history'}</button>
+            <button id="ocm-backfill-btn" type="button" class="ocm-join-btn" style="padding:6px 14px" ${_financeBackfill ? 'disabled' : ''}>${_financeBackfill ? 'Working…' : archiveTotal ? 'Update history' : 'Backfill history'}</button>
           </div>
+          ${gaps ? `<p id="ocm-backfill-gaps" role="status" style="margin:8px 0 0;font-size:12px;line-height:1.5;color:var(--ocm-cpr-warn)">Last history check could not fetch ${gaps} time window${gaps === 1 ? '' : 's'}. Older records may be incomplete. Use the history button to try again.</p>` : ''}
           <div id="ocm-backfill-status" style="font-size:11px;color:var(--ocm-text-muted);margin-top:8px;min-height:15px"></div>
         </div>`;
       ocsPane = backfillBanner + ocsPane;
@@ -11667,6 +11698,45 @@ ${tables}
     put('ocm-money-summary',  summaryPane);
     put('ocm-money-payouts',  payoutsPane);
     put('ocm-money-ocs',      ocsPane);
+
+    // Bind after mounting so the visible button survives ledger renders.
+    const bfBtn = document.getElementById('ocm-backfill-btn');
+    const bfStatus = () => document.getElementById('ocm-backfill-status');
+    if (bfBtn && !bfBtn.__wired) {
+      bfBtn.__wired = true;
+      bfBtn.addEventListener('click', async () => {
+        if (_financeBackfill) return;
+        const key = hubEffectiveTornKey();
+        if (!key) { bfStatus().innerHTML = '<span style="color:var(--ocm-cpr-crit)">Set your API key in Config first.</span>'; return; }
+        _financeBackfill = true;
+        bfBtn.disabled = true;
+        bfBtn.textContent = 'Working…';
+        try {
+          await backfillOcHistory(key, (p) => {
+            if (!bfStatus()) return;
+            if (p.error) {
+              bfStatus().innerHTML = `<span style="color:var(--ocm-cpr-warn)">A window failed (${esc(p.error)}) — skipping it and continuing…</span>`;
+            } else if (p.done) {
+              const gapWarn = p.gaps?.length
+                ? `<br><span style="color:var(--ocm-cpr-warn)">⚠ ${p.gaps.length} time window${p.gaps.length === 1 ? '' : 's'} couldn't be fetched even after retries — some OCs in ${p.gaps.length === 1 ? 'that period' : 'those periods'} are missing. Run it again to fill them in.</span>`
+                : '';
+              bfStatus().innerHTML = `<span style="color:var(--ocm-cpr-good)">✓ Archived ${p.total} OCs (${p.added} new) in ${p.calls} calls. Refreshing…</span>${gapWarn}`;
+            } else {
+              bfStatus().innerHTML = `Fetching… ${p.total} OCs archived, back to ${p.oldest.toLocaleDateString()} (${p.calls} calls)`;
+            }
+          });
+          setTimeout(() => { if (hubEffectiveTornKey() === key) loadData(key); }, 800);
+        } catch (e) {
+          if (bfStatus()) bfStatus().innerHTML = `<span style="color:var(--ocm-cpr-crit)">Backfill failed: ${esc(e.message)}</span>`;
+        } finally {
+          _financeBackfill = false;
+          const current = document.getElementById('ocm-backfill-btn');
+          if (current) { current.disabled = false; current.textContent = 'Update history'; }
+        }
+      });
+    }
+
+
     put('ocm-money-members',  memberEarnPane);
     put('ocm-money-faction',  factionEarnPane);
     put('ocm-money-costs',    itemsPane);
@@ -12777,10 +12847,13 @@ ${tables}
     if (!d) return OCUI.card({ title: '🎯 OC item stock', body: '<div style="color:var(--ocm-text-dim)">Open the <b>Crimes</b> tab once so OC + armoury data loads, then come back.</div>' });
     const { items, summary } = analyseOcItems(d.crimes, d.armory, d.itemNames, d.itemValues, d.memberNames);
     const active = items.filter(it => it.needed > 0);
-    if (!active.length) return OCUI.card({ title: '🎯 OC item stock', body: '<div style="color:var(--ocm-text-dim)">No active OCs need items right now.</div>' });
+    const unknown = summary.unknownFilledRequirements > 0;
+    const availabilityNote = unknown
+      ? '<div style="color:var(--ocm-text-dim)">Required item availability is unknown for some members.</div>' : '';
+    if (!active.length) return OCUI.card({ title: '🎯 OC item stock', body: '<div style="color:var(--ocm-text-dim)">No confirmed OC item needs.</div>' + availabilityNote });
     const tiles = _armOverview([
       { v: _num(summary.totalHeld), l1: 'In stock', l2: 'items in armoury' },
-      { v: _num(summary.armoryGaps), l1: 'Items short', l2: _num(summary.totalShortfall) + ' to buy', color: summary.armoryGaps ? 'var(--ocm-cpr-crit)' : 'var(--ocm-cpr-good)' },
+      { v: _num(summary.armoryGaps), l1: 'Items short', l2: _num(summary.totalShortfall) + ' to buy', color: summary.armoryGaps ? 'var(--ocm-cpr-crit)' : unknown ? 'var(--ocm-text-dim)' : 'var(--ocm-cpr-good)' },
       { v: '$' + _num(summary.coverCost), l1: 'Cost to cover', l2: 'at market value' },
     ]);
     const row = (it) => {
@@ -12800,9 +12873,11 @@ ${tables}
     const short = active.filter(it => it.shortfall > 0);
     const covered = active.filter(it => it.shortfall === 0);
     const table = (list) => `<div style="overflow-x:auto"><table class="ocm-members-table"><thead><tr><th class="l">Item</th><th class="n" title="Needed by active OCs">Needed</th><th class="n">In stock</th><th class="n">Short</th><th class="n">Buy</th></tr></thead><tbody>${list.map(row).join('')}</tbody></table></div>`;
+    const stockCoverage = '<div style="color:' + (unknown ? 'var(--ocm-text-dim)' : 'var(--ocm-cpr-good)')
+      + '">Armoury stock covers the listed item needs.</div>';
     return tiles +
       OCUI.card({ title: '🛒 Missing for OCs', right: `${short.length} item${short.length === 1 ? '' : 's'} short`,
-        body: short.length ? table(short) : '<div style="color:var(--ocm-cpr-good)">Everything active OCs need is already in the armoury. 🎉</div>' }) +
+        body: availabilityNote + (short.length ? table(short) : stockCoverage) }) +
       (covered.length ? OCUI.card({ title: '✅ Covered by stock', right: `${covered.length}`, body: table(covered) }) : '');
   }
 
@@ -12845,14 +12920,14 @@ ${tables}
     const urgent = loans.filter(l => l.readyAt && (l.readyAt - now) < 6 * 3600);
     const later = loans.filter(l => !(l.readyAt && (l.readyAt - now) < 6 * 3600));
     const tiles = _armOverview([
-      { v: _num(loans.length), l1: 'To hand out', l2: loans.filter(l => l.inArmory).length + ' ready in armory', color: loans.length ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-good)' },
+      { v: _num(loans.length), l1: 'To hand out', l2: loans.filter(l => l.inArmory).length + ' ready in armory', color: loans.length ? 'var(--ocm-cpr-warn)' : 'var(--ocm-text-dim)' },
       { v: _num(urgent.length), l1: 'Urgent', l2: 'OC ready within 6h', color: urgent.length ? 'var(--ocm-cpr-crit)' : 'var(--ocm-text-dim)' },
       { v: _num(returnable.length), l1: 'Retrievable', l2: '$' + _num(returnable.reduce((s, r) => s + (r.value || 0), 0)) + ' idle', color: returnable.length ? 'var(--ocm-cpr-warn)' : 'var(--ocm-text-dim)' },
     ]);
 
     let handOut;
     if (!loans.length) {
-      handOut = OCUI.card({ title: '🤝 Loans to hand out', body: '<div style="color:var(--ocm-cpr-good)">✓ Every filled slot has its item. Nothing to loan.</div>' });
+      handOut = OCUI.card({ title: '🤝 Loans to hand out', body: '<div style="color:var(--ocm-text-dim)">No confirmed missing items to loan.</div>' });
     } else {
       handOut = OCUI.card({
         title: '🤝 Loans to hand out', right: `<button id="ocm-arm-loan-copy" style="${_btnStyle}">📋 Copy for chat</button>`,
@@ -12867,7 +12942,7 @@ ${tables}
     if (returnable.length) {
       const rrow = (r) => {
         const why = r.ocName
-          ? (r.needsInstead ? `In <b>${OCUI.esc(r.ocName)}</b> — needs ${OCUI.esc(r.needsInstead.name)}${r.needsInstead.has ? '' : ' (missing)'}, not this` : `In <b>${OCUI.esc(r.ocName)}</b> — role needs no item`)
+          ? (r.needsInstead ? `In <b>${OCUI.esc(r.ocName)}</b> — needs ${OCUI.esc(r.needsInstead.name)}${r.alternateAvailabilityUnknown ? ' (availability unknown)' : r.needsInstead.has === false ? ' (missing)' : ''}, not this` : `In <b>${OCUI.esc(r.ocName)}</b> — role needs no item`)
           : 'Not in an active OC';
         return `<tr>
           <td class="l">${_nameLink(r.holderName, r.uid)}</td>
@@ -13609,13 +13684,18 @@ ${tables}
       const executesAt = (nextOc.executed_at && nextOc.executed_at > now ? nextOc.executed_at : null)
                       ?? (nextOc.ready_at    && nextOc.ready_at    > now ? nextOc.ready_at    : null);
       const issues = [];
+      let itemAvailabilityUnknown = false;
       for (const slot of slots) {
         const uid  = slot.user?.id ? String(slot.user.id) : null;
         const info = uid ? mInfo[uid] : null;
         if (!uid)                                issues.push({ sev: 'crit', msg: `Open: ${slot.position_info?.label || slot.position || '?'}` });
         else if (info && isBlocked(info.status)) issues.push({ sev: 'crit', msg: `${info.name} — ${info.status}` });
         const req = slot.item_requirement;
-        if (req && uid && !req.is_available)     issues.push({ sev: 'warn', msg: `${info?.name || uid} missing item` });
+        if (req && uid && req.is_available === false) {
+          issues.push({ sev: 'warn', msg: `${info?.name || uid} missing item` });
+        } else if (req && uid && req.is_available !== true) {
+          itemAvailabilityUnknown = true;
+        }
       }
 
       GM_setValue(GMK.SIDEBAR_CACHE, JSON.stringify({
@@ -13623,6 +13703,8 @@ ${tables}
         executesAt: executesAt ?? null,
         timeLeft:   nextOc.time_left ?? null,
         openCount:  slots.filter(s => !s.user).length,
+        explicitReady: typeof nextOc.status === 'string' && nextOc.status.toLowerCase() === 'ready',
+        ...(itemAvailabilityUnknown ? { itemAvailabilityUnknown } : {}),
         severity:   issues.some(i => i.sev === 'crit') ? 'crit' : issues.some(i => i.sev === 'warn') ? 'warn' : 'ok',
         issues:     issues.slice(0, 3),
         cachedAt:   now,
@@ -13687,8 +13769,10 @@ ${tables}
 
     const now   = Math.floor(Date.now() / 1000);
     const stale = now - (data.cachedAt || 0) > 300;
-    const col   = stale ? '#555' : data.severity === 'crit' ? 'var(--ocm-cpr-crit)' : data.severity === 'warn' ? 'var(--ocm-cpr-warn)' : 'var(--ocm-cpr-good)';
-    const icon  = data.severity === 'crit' ? '🔴' : data.severity === 'warn' ? '⚠️' : '✅';
+    const itemAvailabilityUnknown = data.itemAvailabilityUnknown === true;
+    const unknownOnly = itemAvailabilityUnknown && data.severity === 'ok';
+    const col   = stale ? '#555' : data.severity === 'crit' ? 'var(--ocm-cpr-crit)' : data.severity === 'warn' ? 'var(--ocm-cpr-warn)' : unknownOnly ? 'var(--ocm-text-dim)' : 'var(--ocm-cpr-good)';
+    const icon  = unknownOnly ? '' : data.severity === 'crit' ? '🔴' : data.severity === 'warn' ? '⚠️' : '✅';
     const arrow = expanded ? '▲' : '▼';
 
     let timeStr = '';
@@ -13702,23 +13786,28 @@ ${tables}
     } else if (data.openCount > 0) {
       timeStr = `~${data.openCount * 24}h est.`;
     } else {
-      timeStr = 'Ready to initiate!';
+      // A missing or elapsed timer, including in older caches, is not a Ready phase.
+      const currentReady = data.explicitReady === true && Number.isSafeInteger(data.cachedAt)
+        && data.cachedAt <= now && !stale;
+      timeStr = currentReady ? 'Ready to initiate!' : 'Timer unknown';
     }
 
     const issueLines = (data.issues || [])
       .map(i => `<div style="color:var(--ocm-text-dim);font-size:10px;padding:1px 0">${i.sev === 'crit' ? '🔴' : '⚠️'} ${esc(i.msg)}</div>`)
       .join('');
 
+    const availabilityLine = itemAvailabilityUnknown
+      ? '<div style="color:var(--ocm-text-dim);font-size:10px;padding:1px 0">Required item availability unknown</div>' : '';
     const ocLink = `<a href="/factions.php?step=your#/tab=crimes" style="color:var(--ocm-text-faint);font-size:10px;text-decoration:none;float:right;margin-top:4px">Open →</a>`;
 
     widget.innerHTML = `
       <div id="ocm-sw-header" style="display:flex;align-items:center;justify-content:space-between;padding:5px 8px;cursor:pointer">
         <span style="color:var(--ocm-link);font-weight:bold;font-size:10px;letter-spacing:.5px">⚔ NEXT OC</span>
-        <span style="color:${col};font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0 6px" title="${data.name}">${icon} ${data.name}</span>
+        <span style="color:${col};font-weight:bold;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:0 6px" title="${esc(data.name)}">${icon ? icon + ' ' : ''}${esc(data.name)}</span>
         <span style="color:var(--ocm-text-faint);font-size:10px">${timeStr}</span>
         <span style="color:var(--ocm-text-muted);font-size:10px;margin-left:6px">${arrow}</span>
       </div>
-      ${expanded ? `<div style="padding:2px 8px 7px;border-top:1px solid #2a2a3a">${issueLines || '<div style="color:var(--ocm-text-faint);font-size:10px">No issues ✓</div>'}${ocLink}<div style="clear:both"></div></div>` : ''}`;
+      ${expanded ? `<div style="padding:2px 8px 7px;border-top:1px solid #2a2a3a">${issueLines || (itemAvailabilityUnknown ? '' : '<div style="color:var(--ocm-text-faint);font-size:10px">No issues ✓</div>')}${availabilityLine}${ocLink}<div style="clear:both"></div></div>` : ''}`;
 
     const header = document.getElementById('ocm-sw-header');
     if (header) {

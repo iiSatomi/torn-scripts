@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Banker Request Hub
 // @namespace    isatomi.torn.banker-request-hub
-// @version      1.0.7
+// @version      1.0.8
 // @description  Compact faction money requests, secure Cloudflare relay, Discord banker pings and balance-checked native payout preparation.
 // @author       iSatomi
 // @license      GPL-3.0
@@ -34,7 +34,7 @@
 (function(){
 'use strict';
 if(window.top!==window.self)return;
-const BANKER_REQUEST_VERSION="1.0.7";
+const BANKER_REQUEST_VERSION="1.0.8";
 // Public appearance data only. These functions are bundled into userscripts.
 function normalizeScriptUiTheme(raw) {
   const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -1749,7 +1749,7 @@ function installBankerRequestHub(){
   const credentialStore=createHubCredentialStorage(env,'brh-hub-private-v1'),hubStorageAvailable=credentialStore.eligible;
   const http=createBankerHttp(env), cleanups=[];
   let disposed=false,ready=false,settings={endpoint:'',useHub:false,remember:false},sessionKey='',sharedKey=null;
-  let identity=null,identityAt=0,pendingRequest=null,reviewRequest=null,cooldownUntil=0,job=false,generation=0;
+  let identity=null,identityAt=0,pendingRequest=null,reviewRequest=null,cooldownUntil=0,job=false,identityChecking=false,generation=0;
   let ui=null,themeClient=null,adapter=null,native=null,selected='request',pdaActive=typeof window.PDA_getTabState!=='function';
   let pendingExpired=false,connectionQueue=Promise.resolve();
   let storageQueue=Promise.resolve(),credentialClient=null,cooldownTimer=null;
@@ -1782,7 +1782,7 @@ function installBankerRequestHub(){
   function button(text,fn,cls){const b=node('button',text,cls);b.type='button';b.addEventListener('click',fn);return b;}
   function field(label,input){const wrap=node('label',undefined,'brh-field');wrap.append(node('span',label),input);return wrap;}
   function input(type,name){const e=node('input');e.type=type;e.id='brh-'+name;refs[name]=e;return e;}
-  function cancel(text){generation++;http.abort();job=false;native?.cancel?.();if(cooldownTimer!==null){clearTimeout(cooldownTimer);cooldownTimer=null;}if(refs.key)refs.key.value='';update();if(text)say(text);}
+  function cancel(text){generation++;http.abort();job=false;identityChecking=false;native?.cancel?.();if(cooldownTimer!==null){clearTimeout(cooldownTimer);cooldownTimer=null;}if(refs.key)refs.key.value='';update();if(text)say(text);}
   function syncBankerVisibility(){
     const allowed=identity?.banker===true;
     if(ui){
@@ -1810,7 +1810,8 @@ function installBankerRequestHub(){
     refs.forget.disabled=!ready;
     refs.dismissExpired.hidden=!pendingRequest||!pendingExpired;refs.dismissExpired.disabled=job;
     refs.checkRequest.hidden=!pendingRequest;refs.checkRequest.disabled=job;
-    refs.amount.disabled=job||refs.full.checked||!!pendingRequest;
+    // Verification only reads identity. Leave the focused amount available for typing.
+    refs.amount.disabled=(job&&!identityChecking)||refs.full.checked||!!pendingRequest;
     refs.amountWrap.hidden=refs.full.checked;refs.fullMessage.hidden=!refs.full.checked;
     refs.kindAmount.disabled=job||!!pendingRequest;refs.full.disabled=job||!!pendingRequest;
     refs.connectionHint.hidden=connected;
@@ -1835,10 +1836,10 @@ function installBankerRequestHub(){
   }
   async function verify(){
     if(job)return;
-    const own=++generation;job=true;update();say('Verifying your Torn account…');
+    const own=++generation;job=true;identityChecking=true;update();say('Verifying your Torn account…');
     try{const response=await call('/v1/identity',{});if(own!==generation||!usable())return;identity={user:checkOwner(response.user),banker:response.banker===true};identityAt=Date.now();settings={...settings,connected:true};await put('settings',settings);if(own!==generation||!usable())return;say('Account verified.');}
     catch(error){if(own===generation){identity=null;say(error.message,true);}}
-    finally{if(own===generation){job=false;update();if(identity)autoVerify();}}
+    finally{if(own===generation){job=false;identityChecking=false;update();if(identity)autoVerify();}}
   }
   async function send(checkPrevious=false){
     if(job)return;
